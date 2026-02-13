@@ -1,0 +1,23 @@
+{
+  "name": "trade",
+  "version-string": "0.1.0",
+  "description": "Quantitative trading decision support system",
+  "overrides": [],
+  "dependencies": [
+    {
+      "name": "arrow",
+      "features": ["parquet"]
+    },
+    "sqlite3",
+    "eigen3",
+    "spdlog",
+    "nlohmann-json",
+    "cpp-httplib",
+    "fmt",
+    "yaml-cpp",
+    "pugixml",
+    "curl",
+    "re2",
+    "gtest"
+  ]
+}

@@ -1,0 +1,90 @@
+# 金融情绪词典 (Financial Sentiment Dictionary)
+# Format: word<TAB>sentiment_score (-1.0 to 1.0)
+# Positive words have positive scores, negative words have negative scores
+# Used by the rule-based sentiment engine as MVP/fallback
+
+# === 强正面 (Strong Positive) ===
+涨停	1.0
+大涨	0.9
+暴涨	0.9
+利好	0.8
+突破	0.7
+创新高	0.8
+放量上涨	0.8
+主力买入	0.7
+机构增持	0.7
+北向流入	0.7
+超预期	0.7
+业绩大增	0.8
+回购	0.6
+增持	0.6
+重组	0.5
+并购	0.5
+
+# === 弱正面 (Mild Positive) ===
+上涨	0.5
+反弹	0.4
+企稳	0.3
+回暖	0.4
+看多	0.5
+看好	0.5
+乐观	0.4
+复苏	0.4
+景气	0.4
+龙头	0.3
+低估	0.3
+分红	0.4
+送股	0.3
+
+# === 强负面 (Strong Negative) ===
+跌停	-1.0
+大跌	-0.9
+暴跌	-0.9
+利空	-0.8
+崩盘	-1.0
+闪崩	-0.9
+爆仓	-0.9
+踩踏	-0.8
+恐慌	-0.8
+熔断	-0.9
+退市	-0.9
+ST	-0.7
+违规	-0.7
+造假	-0.9
+亏损	-0.7
+业绩暴雷	-0.9
+商誉减值	-0.7
+质押爆仓	-0.8
+
+# === 弱负面 (Mild Negative) ===
+下跌	-0.5
+回调	-0.3
+调整	-0.2
+承压	-0.4
+看空	-0.5
+利空	-0.6
+减持	-0.5
+套牢	-0.5
+割肉	-0.6
+高估	-0.3
+缩量	-0.2
+破位	-0.5
+北向流出	-0.6
+主力卖出	-0.6
+融券做空	-0.5
+
+# === 否定词 (Negation words - reverse sentiment) ===
+# These are handled specially by the rule engine
+# 不	NEGATE
+# 没	NEGATE
+# 未	NEGATE
+# 非	NEGATE
+# 无	NEGATE
+# 难以	NEGATE
+# 不再	NEGATE
+
+# === 程度副词 (Intensifiers) ===
+# 非常	INTENSIFY:1.5
+# 极其	INTENSIFY:1.8
+# 略微	INTENSIFY:0.5
+# 稍微	INTENSIFY:0.5

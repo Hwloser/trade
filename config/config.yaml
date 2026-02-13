@@ -1,0 +1,46 @@
+data:
+  data_root: "data"
+  raw_dir: "raw"
+  curated_dir: "curated"
+  models_dir: "models"
+
+akshare:
+  base_url: "http://127.0.0.1:8080"
+  timeout_ms: 30000
+  retry_count: 3
+  retry_delay_ms: 1000
+
+cost:
+  stamp_tax_rate: 0.0005
+  commission_rate: 0.00025
+  commission_min_yuan: 5.0
+  transfer_fee_rate: 0.00001
+
+risk:
+  target_annual_vol: 0.11
+  max_single_weight: 0.10
+  soft_single_weight: 0.08
+  max_industry_weight: 0.35
+  soft_industry_weight: 0.30
+  max_top3_weight: 0.22
+  max_style_z: 1.0
+  beta_low: 0.6
+  beta_high: 1.2
+  max_liquidation_days: 2.5
+  base_cash_pct: 0.10
+
+backtest:
+  initial_capital: 1000000.0
+  max_positions: 25
+  min_positions: 15
+  min_adv_participation: 0.08
+  max_adv_participation: 0.12
+  rebalance_threshold: 0.01
+  alpha_cost_multiple: 1.5
+
+sentiment:
+  dict_path: "config/sentiment_dict.txt"
+  onnx_model_path: ""
+  tokenizer_path: ""
+  use_onnx: false
+  rss_fetch_interval_min: 15

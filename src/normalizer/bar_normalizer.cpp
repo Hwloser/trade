@@ -1,0 +1,47 @@
+#include "trade/normalizer/bar_normalizer.h"
+#include <algorithm>
+
+namespace trade {
+
+FieldMapping FieldMapping::akshare_daily() {
+    return FieldMapping{
+        .date_field = "日期",
+        .open_field = "开盘",
+        .high_field = "最高",
+        .low_field = "最低",
+        .close_field = "收盘",
+        .volume_field = "成交量",
+        .amount_field = "成交额",
+        .turnover_field = "换手率",
+    };
+}
+
+std::vector<Bar> BarNormalizer::normalize(std::vector<Bar> bars) {
+    sort_by_date(bars);
+    fill_prev_close(bars);
+    compute_vwap(bars);
+    return bars;
+}
+
+void BarNormalizer::fill_prev_close(std::vector<Bar>& bars) {
+    for (size_t i = 0; i < bars.size(); ++i) {
+        if (bars[i].prev_close <= 0 && i > 0) {
+            bars[i].prev_close = bars[i - 1].close;
+        }
+    }
+}
+
+void BarNormalizer::compute_vwap(std::vector<Bar>& bars) {
+    for (auto& bar : bars) {
+        if (bar.vwap <= 0 && bar.volume > 0) {
+            bar.vwap = bar.amount / static_cast<double>(bar.volume);
+        }
+    }
+}
+
+void BarNormalizer::sort_by_date(std::vector<Bar>& bars) {
+    std::sort(bars.begin(), bars.end(),
+              [](const Bar& a, const Bar& b) { return a.date < b.date; });
+}
+
+} // namespace trade

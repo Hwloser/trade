@@ -1,0 +1,42 @@
+# Build
+build/
+out/
+cmake-build-*/
+
+# vcpkg
+vcpkg_installed/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.so
+*.dylib
+
+# Data (too large for git)
+data/raw/
+data/curated/
+data/models/*.model
+data/models/sentiment/*.onnx
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# Compiled objects
+*.o
+*.a
+*.lib
+
+# Claude
+.claude/
+
+.venv
