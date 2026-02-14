@@ -44,4 +44,19 @@ void BarNormalizer::sort_by_date(std::vector<Bar>& bars) {
               [](const Bar& a, const Bar& b) { return a.date < b.date; });
 }
 
+void BarNormalizer::compute_limits(std::vector<Bar>& bars, Board board) {
+    for (auto& bar : bars) {
+        if (bar.prev_close <= 0) continue;
+        double pct = price_limit_pct(board);
+        bar.limit_up = bar.prev_close * (1.0 + pct);
+        bar.limit_down = bar.prev_close * (1.0 - pct);
+        // Round to 2 decimal places (A-share tick size = 0.01)
+        bar.limit_up = static_cast<int>(bar.limit_up * 100 + 0.5) / 100.0;
+        bar.limit_down = static_cast<int>(bar.limit_down * 100 + 0.5) / 100.0;
+        bar.hit_limit_up = (bar.close >= bar.limit_up - 0.005);
+        bar.hit_limit_down = (bar.close <= bar.limit_down + 0.005);
+        bar.board = board;
+    }
+}
+
 } // namespace trade

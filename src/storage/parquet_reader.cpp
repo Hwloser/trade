@@ -11,18 +11,33 @@ namespace {
 Bar row_to_bar(const std::shared_ptr<arrow::Table>& table, int64_t row) {
     Bar bar;
     auto get_string = [&](const std::string& col) -> std::string {
-        auto arr = std::static_pointer_cast<arrow::StringArray>(
-            table->GetColumnByName(col)->chunk(0));
+        auto column = table->GetColumnByName(col);
+        if (!column) return "";
+        auto arr = std::static_pointer_cast<arrow::StringArray>(column->chunk(0));
         return arr->GetString(row);
     };
     auto get_double = [&](const std::string& col) -> double {
-        auto arr = std::static_pointer_cast<arrow::DoubleArray>(
-            table->GetColumnByName(col)->chunk(0));
+        auto column = table->GetColumnByName(col);
+        if (!column) return 0.0;
+        auto arr = std::static_pointer_cast<arrow::DoubleArray>(column->chunk(0));
         return arr->Value(row);
     };
     auto get_int64 = [&](const std::string& col) -> int64_t {
-        auto arr = std::static_pointer_cast<arrow::Int64Array>(
-            table->GetColumnByName(col)->chunk(0));
+        auto column = table->GetColumnByName(col);
+        if (!column) return 0;
+        auto arr = std::static_pointer_cast<arrow::Int64Array>(column->chunk(0));
+        return arr->Value(row);
+    };
+    auto get_bool = [&](const std::string& col) -> bool {
+        auto column = table->GetColumnByName(col);
+        if (!column) return false;
+        auto arr = std::static_pointer_cast<arrow::BooleanArray>(column->chunk(0));
+        return arr->Value(row);
+    };
+    auto get_uint8 = [&](const std::string& col) -> uint8_t {
+        auto column = table->GetColumnByName(col);
+        if (!column) return 0;
+        auto arr = std::static_pointer_cast<arrow::UInt8Array>(column->chunk(0));
         return arr->Value(row);
     };
 
@@ -37,6 +52,27 @@ Bar row_to_bar(const std::shared_ptr<arrow::Table>& table, int64_t row) {
     bar.turnover_rate = get_double("turnover_rate");
     bar.prev_close = get_double("prev_close");
     bar.vwap = get_double("vwap");
+
+    // Extended fields (schema evolution: missing columns → defaults)
+    bar.limit_up = get_double("limit_up");
+    bar.limit_down = get_double("limit_down");
+    bar.hit_limit_up = get_bool("hit_limit_up");
+    bar.hit_limit_down = get_bool("hit_limit_down");
+    // Support both old "status" and new "bar_status" column names
+    if (table->GetColumnByName("bar_status")) {
+        bar.bar_status = static_cast<TradingStatus>(get_uint8("bar_status"));
+    } else {
+        bar.bar_status = static_cast<TradingStatus>(get_uint8("status"));
+    }
+    bar.board = static_cast<Board>(get_uint8("board"));
+
+    double north = get_double("north_net_buy");
+    if (north != 0.0) bar.north_net_buy = north;
+    double margin = get_double("margin_balance");
+    if (margin != 0.0) bar.margin_balance = margin;
+    double short_v = get_double("short_sell_volume");
+    if (short_v != 0.0) bar.short_sell_volume = short_v;
+
     return bar;
 }
 
@@ -67,56 +103,6 @@ std::vector<Bar> ParquetReader::read_bars(const std::string& path,
         filtered.push_back(std::move(bar));
     }
     return filtered;
-}
-
-std::vector<ExtBar> ParquetReader::read_ext_bars(const std::string& path) {
-    auto table = read_table(path);
-    if (!table) return {};
-
-    std::vector<ExtBar> bars;
-    bars.reserve(table->num_rows());
-    for (int64_t i = 0; i < table->num_rows(); ++i) {
-        ExtBar bar;
-        // Fill base Bar fields
-        static_cast<Bar&>(bar) = row_to_bar(table, i);
-
-        // Extended fields
-        auto get_double = [&](const std::string& col) -> double {
-            auto column = table->GetColumnByName(col);
-            if (!column) return 0.0;
-            auto arr = std::static_pointer_cast<arrow::DoubleArray>(column->chunk(0));
-            return arr->Value(i);
-        };
-        auto get_bool = [&](const std::string& col) -> bool {
-            auto column = table->GetColumnByName(col);
-            if (!column) return false;
-            auto arr = std::static_pointer_cast<arrow::BooleanArray>(column->chunk(0));
-            return arr->Value(i);
-        };
-        auto get_uint8 = [&](const std::string& col) -> uint8_t {
-            auto column = table->GetColumnByName(col);
-            if (!column) return 0;
-            auto arr = std::static_pointer_cast<arrow::UInt8Array>(column->chunk(0));
-            return arr->Value(i);
-        };
-
-        bar.limit_up = get_double("limit_up");
-        bar.limit_down = get_double("limit_down");
-        bar.hit_limit_up = get_bool("hit_limit_up");
-        bar.hit_limit_down = get_bool("hit_limit_down");
-        bar.status = static_cast<TradingStatus>(get_uint8("status"));
-        bar.board = static_cast<Board>(get_uint8("board"));
-
-        double north = get_double("north_net_buy");
-        if (north != 0.0) bar.north_net_buy = north;
-        double margin = get_double("margin_balance");
-        if (margin != 0.0) bar.margin_balance = margin;
-        double short_v = get_double("short_sell_volume");
-        if (short_v != 0.0) bar.short_sell_volume = short_v;
-
-        bars.push_back(std::move(bar));
-    }
-    return bars;
 }
 
 std::shared_ptr<arrow::Table> ParquetReader::read_table(const std::string& path) {

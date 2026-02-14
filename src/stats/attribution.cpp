@@ -404,7 +404,7 @@ std::vector<Anomaly> ReturnAttribution::detect_all_anomalies(
 // ===========================================================================
 
 std::vector<EventTag> ReturnAttribution::label_limit_hits(
-    const std::vector<ExtBar>& bars) {
+    const std::vector<Bar>& bars) {
 
     std::vector<EventTag> tags;
 

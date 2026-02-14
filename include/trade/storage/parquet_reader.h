@@ -18,9 +18,6 @@ public:
                                        std::optional<Date> start,
                                        std::optional<Date> end);
 
-    // Read extended bars
-    static std::vector<ExtBar> read_ext_bars(const std::string& path);
-
     // Read raw Arrow table
     static std::shared_ptr<arrow::Table> read_table(const std::string& path);
 

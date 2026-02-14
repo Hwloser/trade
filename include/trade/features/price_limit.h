@@ -100,7 +100,7 @@ private:
     AuctionMap auction_;
 
     // Extract limit-related fields from BarSeries.
-    // If bars are not ExtBar, limit prices are recomputed from prev_close + board.
+    // If limit prices are zero, they are recomputed from prev_close + board.
     static void extract_limit_fields(
         const BarSeries& bs,
         const Instrument& inst,

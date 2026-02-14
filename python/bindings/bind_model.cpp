@@ -136,23 +136,6 @@ void bind_model(nb::module_& m) {
         .def("is_valid", &trade::Bar::is_valid);
 
     // -----------------------------------------------------------------------
-    // ExtBar (inherits from Bar)
-    // -----------------------------------------------------------------------
-
-    nb::class_<trade::ExtBar, trade::Bar>(m, "ExtBar")
-        .def(nb::init<>())
-        .def_rw("limit_up", &trade::ExtBar::limit_up)
-        .def_rw("limit_down", &trade::ExtBar::limit_down)
-        .def_rw("hit_limit_up", &trade::ExtBar::hit_limit_up)
-        .def_rw("hit_limit_down", &trade::ExtBar::hit_limit_down)
-        .def_rw("status", &trade::ExtBar::status)
-        .def_rw("board", &trade::ExtBar::board)
-        .def_rw("north_net_buy", &trade::ExtBar::north_net_buy)
-        .def_rw("margin_balance", &trade::ExtBar::margin_balance)
-        .def_rw("short_sell_volume", &trade::ExtBar::short_sell_volume)
-        .def("compute_limits", &trade::ExtBar::compute_limits);
-
-    // -----------------------------------------------------------------------
     // BarSeries
     // -----------------------------------------------------------------------
 

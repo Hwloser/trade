@@ -55,36 +55,6 @@ struct Bar {
     }
 };
 
-// Extended bar with additional A-share specific fields
-struct ExtBar : Bar {
-    // Price limits
-    double limit_up = 0.0;
-    double limit_down = 0.0;
-    bool hit_limit_up = false;
-    bool hit_limit_down = false;
-
-    // Trading status
-    TradingStatus status = TradingStatus::kNormal;
-    Board board = Board::kMain;
-
-    // Fund flow (optional, may not be available daily)
-    std::optional<double> north_net_buy;      // 北向资金净买入 (万元)
-    std::optional<double> margin_balance;      // 融资余额 (万元)
-    std::optional<double> short_sell_volume;   // 融券卖出量
-
-    // Computed limit prices from prev_close and board
-    void compute_limits() {
-        double pct = price_limit_pct(board);
-        limit_up = prev_close * (1.0 + pct);
-        limit_down = prev_close * (1.0 - pct);
-        // Round to 2 decimal places (A-share tick size = 0.01)
-        limit_up = static_cast<int>(limit_up * 100 + 0.5) / 100.0;
-        limit_down = static_cast<int>(limit_down * 100 + 0.5) / 100.0;
-        hit_limit_up = (close >= limit_up - 0.005);
-        hit_limit_down = (close <= limit_down + 0.005);
-    }
-};
-
 // Time series of bars for a single symbol
 struct BarSeries {
     Symbol symbol;

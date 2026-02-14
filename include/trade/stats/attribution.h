@@ -183,9 +183,9 @@ public:
 
     // ----- Event labelling -------------------------------------------------
 
-    /// Label limit-up / limit-down hits from ExtBar data.
+    /// Label limit-up / limit-down hits from Bar data.
     static std::vector<EventTag> label_limit_hits(
-        const std::vector<ExtBar>& bars);
+        const std::vector<Bar>& bars);
 
     /// Label earnings announcement windows.
     /// @param symbol           Stock symbol.

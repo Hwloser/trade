@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "trade/model/bar.h"
+#include "trade/normalizer/bar_normalizer.h"
 
 using namespace trade;
 
@@ -50,7 +51,6 @@ TEST(BarTest, ChangePctNoPrevClose) {
 
 TEST(BarTest, AmplitudeBasic) {
     Bar b = make_bar("600000.SH", 10.0, 11.0, 9.0, 10.5, 1000, 10.0);
-    // amplitude = (11.0 - 9.0) / 10.0 = 0.20
     EXPECT_NEAR(b.amplitude(), 0.20, 1e-9);
 }
 
@@ -70,13 +70,11 @@ TEST(BarTest, AmplitudeFlat) {
 
 TEST(BarTest, OpenGapUp) {
     Bar b = make_bar("600000.SH", 10.5, 11.0, 10.0, 10.8, 1000, 10.0);
-    // open_gap = (10.5 - 10.0) / 10.0 = 0.05
     EXPECT_NEAR(b.open_gap(), 0.05, 1e-9);
 }
 
 TEST(BarTest, OpenGapDown) {
     Bar b = make_bar("600000.SH", 9.5, 10.0, 9.0, 9.8, 1000, 10.0);
-    // open_gap = (9.5 - 10.0) / 10.0 = -0.05
     EXPECT_NEAR(b.open_gap(), -0.05, 1e-9);
 }
 
@@ -105,13 +103,11 @@ TEST(BarTest, IsValidZeroOpen) {
 }
 
 TEST(BarTest, IsValidHighBelowOpen) {
-    // high < open should be invalid
     Bar b = make_bar("600000.SH", 11.0, 10.0, 9.5, 10.5, 1000);
     EXPECT_FALSE(b.is_valid());
 }
 
 TEST(BarTest, IsValidLowAboveOpen) {
-    // low > open should be invalid
     Bar b = make_bar("600000.SH", 9.0, 11.0, 10.0, 10.5, 1000);
     EXPECT_FALSE(b.is_valid());
 }
@@ -127,7 +123,6 @@ TEST(BarTest, IsValidZeroClose) {
 }
 
 TEST(BarTest, IsValidZeroVolume) {
-    // volume >= 0 is allowed (suspended stocks can have 0 volume)
     Bar b = make_bar("600000.SH", 10.0, 11.0, 9.5, 10.5, 0);
     EXPECT_TRUE(b.is_valid());
 }
@@ -138,109 +133,123 @@ TEST(BarTest, IsValidNegativeVolume) {
 }
 
 // =============================================================================
-// ExtBar::compute_limits tests
+// BarNormalizer::compute_limits tests
 // =============================================================================
 
-TEST(ExtBarTest, ComputeLimitsMain) {
-    ExtBar eb;
-    eb.symbol = "600000.SH";
-    eb.prev_close = 10.0;
-    eb.close = 10.50;
-    eb.board = Board::kMain;
+TEST(ComputeLimitsTest, Main) {
+    std::vector<Bar> bars;
+    Bar b;
+    b.symbol = "600000.SH";
+    b.prev_close = 10.0;
+    b.close = 10.50;
+    b.open = 10.50;
+    b.high = 10.50;
+    b.low = 10.50;
+    b.volume = 1000;
+    bars.push_back(b);
 
-    eb.compute_limits();
+    BarNormalizer::compute_limits(bars, Board::kMain);
 
-    // limit_up = 10.0 * 1.10 = 11.00
-    // limit_down = 10.0 * 0.90 = 9.00
-    EXPECT_NEAR(eb.limit_up, 11.00, 0.01);
-    EXPECT_NEAR(eb.limit_down, 9.00, 0.01);
-    EXPECT_FALSE(eb.hit_limit_up);
-    EXPECT_FALSE(eb.hit_limit_down);
+    EXPECT_NEAR(bars[0].limit_up, 11.00, 0.01);
+    EXPECT_NEAR(bars[0].limit_down, 9.00, 0.01);
+    EXPECT_FALSE(bars[0].hit_limit_up);
+    EXPECT_FALSE(bars[0].hit_limit_down);
 }
 
-TEST(ExtBarTest, ComputeLimitsST) {
-    ExtBar eb;
-    eb.symbol = "000001.SZ";
-    eb.prev_close = 5.0;
-    eb.close = 5.25;
-    eb.board = Board::kST;
+TEST(ComputeLimitsTest, ST) {
+    std::vector<Bar> bars;
+    Bar b;
+    b.symbol = "000001.SZ";
+    b.prev_close = 5.0;
+    b.close = 5.25;
+    b.open = 5.0;
+    b.high = 5.25;
+    b.low = 5.0;
+    b.volume = 1000;
+    bars.push_back(b);
 
-    eb.compute_limits();
+    BarNormalizer::compute_limits(bars, Board::kST);
 
-    // limit_up = 5.0 * 1.05 = 5.25
-    // limit_down = 5.0 * 0.95 = 4.75
-    EXPECT_NEAR(eb.limit_up, 5.25, 0.01);
-    EXPECT_NEAR(eb.limit_down, 4.75, 0.01);
-    // close >= limit_up - 0.005 => 5.25 >= 5.245 => true
-    EXPECT_TRUE(eb.hit_limit_up);
-    EXPECT_FALSE(eb.hit_limit_down);
+    EXPECT_NEAR(bars[0].limit_up, 5.25, 0.01);
+    EXPECT_NEAR(bars[0].limit_down, 4.75, 0.01);
+    EXPECT_TRUE(bars[0].hit_limit_up);
+    EXPECT_FALSE(bars[0].hit_limit_down);
 }
 
-TEST(ExtBarTest, ComputeLimitsChiNext) {
-    ExtBar eb;
-    eb.symbol = "300001.SZ";
-    eb.prev_close = 20.0;
-    eb.close = 16.01;
-    eb.board = Board::kChiNext;
+TEST(ComputeLimitsTest, ChiNext) {
+    std::vector<Bar> bars;
+    Bar b;
+    b.symbol = "300001.SZ";
+    b.prev_close = 20.0;
+    b.close = 16.01;
+    b.open = 20.0;
+    b.high = 20.0;
+    b.low = 16.01;
+    b.volume = 1000;
+    bars.push_back(b);
 
-    eb.compute_limits();
+    BarNormalizer::compute_limits(bars, Board::kChiNext);
 
-    // limit_up = 20.0 * 1.20 = 24.00
-    // limit_down = 20.0 * 0.80 = 16.00
-    EXPECT_NEAR(eb.limit_up, 24.00, 0.01);
-    EXPECT_NEAR(eb.limit_down, 16.00, 0.01);
-    EXPECT_FALSE(eb.hit_limit_up);
-    // close <= limit_down + 0.005 => 16.01 <= 16.005 => false
-    EXPECT_FALSE(eb.hit_limit_down);
+    EXPECT_NEAR(bars[0].limit_up, 24.00, 0.01);
+    EXPECT_NEAR(bars[0].limit_down, 16.00, 0.01);
+    EXPECT_FALSE(bars[0].hit_limit_up);
+    EXPECT_FALSE(bars[0].hit_limit_down);
 }
 
-TEST(ExtBarTest, ComputeLimitsHitLimitDown) {
-    ExtBar eb;
-    eb.symbol = "600000.SH";
-    eb.prev_close = 10.0;
-    eb.close = 9.00;
-    eb.board = Board::kMain;
+TEST(ComputeLimitsTest, HitLimitDown) {
+    std::vector<Bar> bars;
+    Bar b;
+    b.symbol = "600000.SH";
+    b.prev_close = 10.0;
+    b.close = 9.00;
+    b.open = 10.0;
+    b.high = 10.0;
+    b.low = 9.0;
+    b.volume = 1000;
+    bars.push_back(b);
 
-    eb.compute_limits();
+    BarNormalizer::compute_limits(bars, Board::kMain);
 
-    // limit_down = 9.00
-    // close <= limit_down + 0.005 => 9.00 <= 9.005 => true
-    EXPECT_TRUE(eb.hit_limit_down);
-    EXPECT_FALSE(eb.hit_limit_up);
+    EXPECT_TRUE(bars[0].hit_limit_down);
+    EXPECT_FALSE(bars[0].hit_limit_up);
 }
 
-TEST(ExtBarTest, ComputeLimitsBSE) {
-    ExtBar eb;
-    eb.symbol = "830001.BJ";
-    eb.prev_close = 10.0;
-    eb.close = 12.99;
-    eb.board = Board::kBSE;
+TEST(ComputeLimitsTest, BSE) {
+    std::vector<Bar> bars;
+    Bar b;
+    b.symbol = "830001.BJ";
+    b.prev_close = 10.0;
+    b.close = 12.99;
+    b.open = 10.0;
+    b.high = 12.99;
+    b.low = 10.0;
+    b.volume = 1000;
+    bars.push_back(b);
 
-    eb.compute_limits();
+    BarNormalizer::compute_limits(bars, Board::kBSE);
 
-    // limit_up = 10.0 * 1.30 = 13.00
-    // limit_down = 10.0 * 0.70 = 7.00
-    EXPECT_NEAR(eb.limit_up, 13.00, 0.01);
-    EXPECT_NEAR(eb.limit_down, 7.00, 0.01);
-    // close >= limit_up - 0.005 => 12.99 >= 12.995 => false
-    EXPECT_FALSE(eb.hit_limit_up);
-    EXPECT_FALSE(eb.hit_limit_down);
+    EXPECT_NEAR(bars[0].limit_up, 13.00, 0.01);
+    EXPECT_NEAR(bars[0].limit_down, 7.00, 0.01);
+    EXPECT_FALSE(bars[0].hit_limit_up);
+    EXPECT_FALSE(bars[0].hit_limit_down);
 }
 
-TEST(ExtBarTest, ComputeLimitsRounding) {
-    // Test that limit prices are rounded to 2 decimal places
-    ExtBar eb;
-    eb.symbol = "600000.SH";
-    eb.prev_close = 13.37;
-    eb.close = 14.00;
-    eb.board = Board::kMain;
+TEST(ComputeLimitsTest, Rounding) {
+    std::vector<Bar> bars;
+    Bar b;
+    b.symbol = "600000.SH";
+    b.prev_close = 13.37;
+    b.close = 14.00;
+    b.open = 14.00;
+    b.high = 14.00;
+    b.low = 14.00;
+    b.volume = 1000;
+    bars.push_back(b);
 
-    eb.compute_limits();
+    BarNormalizer::compute_limits(bars, Board::kMain);
 
-    // limit_up = 13.37 * 1.10 = 14.707 -> rounded to 14.71
-    // limit_down = 13.37 * 0.90 = 12.033 -> rounded to 12.03
-    EXPECT_NEAR(eb.limit_up, 14.71, 0.01);
-    EXPECT_NEAR(eb.limit_down, 12.03, 0.01);
+    EXPECT_NEAR(bars[0].limit_up, 14.71, 0.01);
+    EXPECT_NEAR(bars[0].limit_down, 12.03, 0.01);
 }
 
 // =============================================================================

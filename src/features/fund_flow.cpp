@@ -11,7 +11,7 @@ FundFlowCalculator::FundFlowCalculator(FloatMktCap float_mktcap)
     : float_mktcap_(std::move(float_mktcap)) {}
 
 // ============================================================================
-// Extract helpers -- extract optional ExtBar fields, NaN where unavailable
+// Extract helpers -- extract optional Bar fields, NaN where unavailable
 // ============================================================================
 
 Eigen::VectorXd FundFlowCalculator::extract_north_net_buy(const BarSeries& bs) {

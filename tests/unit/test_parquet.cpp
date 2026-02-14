@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "trade/model/bar.h"
+#include "trade/normalizer/bar_normalizer.h"
 #include "trade/storage/parquet_writer.h"
 #include "trade/storage/parquet_reader.h"
 
@@ -94,7 +95,7 @@ protected:
 };
 
 // =============================================================================
-// Phase 0 verification: write bars, read back, verify all fields match
+// Write bars, read back, verify all fields match (full 20-column schema)
 // =============================================================================
 
 TEST_F(ParquetRoundTripTest, WriteAndReadBars) {
@@ -166,20 +167,19 @@ TEST_F(ParquetRoundTripTest, ReadTable) {
     auto table = ParquetReader::read_table(temp_path_);
     ASSERT_NE(table, nullptr);
     EXPECT_EQ(table->num_rows(), static_cast<int64_t>(bars.size()));
-    // Should have at least columns for symbol, date, open, high, low, close, volume, amount
-    EXPECT_GE(table->num_columns(), 8);
+    EXPECT_EQ(table->num_columns(), 20);
 }
 
 // =============================================================================
-// ExtBar round-trip test
+// Full schema round-trip: test extended fields (limit, status, fund flow)
 // =============================================================================
 
-class ExtBarParquetTest : public ::testing::Test {
+class FullSchemaParquetTest : public ::testing::Test {
 protected:
     std::string temp_path_;
 
     void SetUp() override {
-        temp_path_ = "/tmp/trade_test_ext_parquet_roundtrip.parquet";
+        temp_path_ = "/tmp/trade_test_full_schema_parquet.parquet";
         std::filesystem::remove(temp_path_);
     }
 
@@ -188,35 +188,38 @@ protected:
     }
 };
 
-TEST_F(ExtBarParquetTest, WriteAndReadExtBars) {
-    std::vector<ExtBar> ext_bars;
+TEST_F(FullSchemaParquetTest, WriteAndReadFullSchema) {
+    std::vector<Bar> bars;
 
     {
-        ExtBar eb;
-        eb.symbol = "600000.SH";
-        eb.date = make_date(2024, 1, 2);
-        eb.open = 10.50;
-        eb.high = 11.20;
-        eb.low = 10.30;
-        eb.close = 10.80;
-        eb.volume = 1000000;
-        eb.amount = 10800000.0;
-        eb.turnover_rate = 0.025;
-        eb.prev_close = 10.40;
-        eb.vwap = 10.80;
-        eb.board = Board::kMain;
-        eb.status = TradingStatus::kNormal;
-        eb.compute_limits();
-        ext_bars.push_back(eb);
+        Bar b;
+        b.symbol = "600000.SH";
+        b.date = make_date(2024, 1, 2);
+        b.open = 10.50;
+        b.high = 11.20;
+        b.low = 10.30;
+        b.close = 10.80;
+        b.volume = 1000000;
+        b.amount = 10800000.0;
+        b.turnover_rate = 0.025;
+        b.prev_close = 10.40;
+        b.vwap = 10.80;
+        b.board = Board::kMain;
+        b.bar_status = TradingStatus::kNormal;
+        bars.push_back(b);
     }
 
-    ParquetWriter::write_ext_bars(temp_path_, ext_bars);
+    BarNormalizer::compute_limits(bars, Board::kMain);
+
+    ParquetWriter::write_bars(temp_path_, bars);
     ASSERT_TRUE(std::filesystem::exists(temp_path_));
 
-    auto read_ext = ParquetReader::read_ext_bars(temp_path_);
-    ASSERT_EQ(read_ext.size(), 1u);
+    auto read = ParquetReader::read_bars(temp_path_);
+    ASSERT_EQ(read.size(), 1u);
 
-    EXPECT_EQ(read_ext[0].symbol, "600000.SH");
-    EXPECT_NEAR(read_ext[0].limit_up, ext_bars[0].limit_up, 0.01);
-    EXPECT_NEAR(read_ext[0].limit_down, ext_bars[0].limit_down, 0.01);
+    EXPECT_EQ(read[0].symbol, "600000.SH");
+    EXPECT_NEAR(read[0].limit_up, bars[0].limit_up, 0.01);
+    EXPECT_NEAR(read[0].limit_down, bars[0].limit_down, 0.01);
+    EXPECT_EQ(read[0].board, Board::kMain);
+    EXPECT_EQ(read[0].bar_status, TradingStatus::kNormal);
 }

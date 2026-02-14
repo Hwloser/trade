@@ -32,6 +32,9 @@ public:
 
     // Sort by date ascending
     static void sort_by_date(std::vector<Bar>& bars);
+
+    // Compute price limits from prev_close and board, detect limit hits
+    static void compute_limits(std::vector<Bar>& bars, Board board);
 };
 
 } // namespace trade

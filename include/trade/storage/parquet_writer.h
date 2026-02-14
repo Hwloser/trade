@@ -10,11 +10,8 @@ namespace trade {
 
 class ParquetWriter {
 public:
-    // Write bars to a parquet file
+    // Write bars to a parquet file (full 20-column schema)
     static void write_bars(const std::string& path, const std::vector<Bar>& bars);
-
-    // Write extended bars with A-share specific fields
-    static void write_ext_bars(const std::string& path, const std::vector<ExtBar>& bars);
 
     // Write arbitrary Arrow table
     static void write_table(const std::string& path,
@@ -22,9 +19,7 @@ public:
 
 private:
     static std::shared_ptr<arrow::Schema> bar_schema();
-    static std::shared_ptr<arrow::Schema> ext_bar_schema();
     static std::shared_ptr<arrow::Table> bars_to_table(const std::vector<Bar>& bars);
-    static std::shared_ptr<arrow::Table> ext_bars_to_table(const std::vector<ExtBar>& bars);
 };
 
 } // namespace trade

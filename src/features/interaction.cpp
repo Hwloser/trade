@@ -353,7 +353,7 @@ FeatureSet InteractionCalculator::compute(
     mat.col(2) = rank_interaction(rank_neg_ret_5d, rank_turnover_5d); // proxy for vol ratio
     mat.col(3) = rank_interaction(rank_ret_60d, rank_turnover_20d);
     mat.col(4) = rank_interaction(rank_ret_60d, rank_neg_vol);
-    // northbound, vwap_dev not available from raw bars without ExtBar
+    // northbound, vwap_dev require optional Bar fields
     mat.col(6) = rank_interaction(rank_neg_ret_5d, rank_neg_vol);
 
     // Limit x Volatility (limited from raw bars)

@@ -16,7 +16,7 @@ namespace trade {
 // ============================================================================
 //
 // These factors capture institutional and leveraged capital dynamics that
-// are specific to the A-share market.  They require ExtBar fields
+// are specific to the A-share market.  They use optional Bar fields
 // (north_net_buy, margin_balance, short_sell_volume) and an estimate of
 // float market-cap.
 //
@@ -46,7 +46,7 @@ namespace trade {
 //   short_sell_ratio_cs_rank     cross-sectional rank
 //   short_sell_ratio_ts_z        ts_zscore(short_sell_ratio, 60)
 //
-// NOTE: When ExtBar optional fields are missing, the corresponding feature
+// NOTE: When Bar optional fields are missing, the corresponding feature
 //       values are set to NaN (handled by the preprocessor pipeline).
 //
 class FundFlowCalculator : public FeatureCalculator {
@@ -94,7 +94,7 @@ public:
 private:
     FloatMktCap float_mktcap_;
 
-    // Extract optional ExtBar fields, returning NaN where unavailable
+    // Extract optional Bar fields, returning NaN where unavailable
     static Eigen::VectorXd extract_north_net_buy(const BarSeries& bs);
     static Eigen::VectorXd extract_margin_balance(const BarSeries& bs);
     static Eigen::VectorXd extract_short_sell_volume(const BarSeries& bs);
