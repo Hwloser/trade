@@ -2,6 +2,7 @@
 #include "trade/common/time_utils.h"
 #include <sqlite3.h>
 #include <spdlog/spdlog.h>
+#include <filesystem>
 #include <stdexcept>
 
 namespace trade {
@@ -25,6 +26,10 @@ struct MetadataStore::Impl {
 };
 
 MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_unique<Impl>()) {
+    auto parent = std::filesystem::path(db_path).parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
     int rc = sqlite3_open(db_path.c_str(), &impl_->db);
     if (rc != SQLITE_OK) {
         throw std::runtime_error("Failed to open database: " + db_path);

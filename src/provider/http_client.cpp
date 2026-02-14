@@ -61,7 +61,8 @@ std::string HttpClient::build_url(
 
 std::optional<std::string> HttpClient::get(
     const std::string& url,
-    const std::unordered_map<std::string, std::string>& params) const {
+    const std::unordered_map<std::string, std::string>& params,
+    const std::unordered_map<std::string, std::string>& headers) const {
 
     std::string full_url = build_url(url, params);
 
@@ -87,11 +88,22 @@ std::optional<std::string> HttpClient::get(
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
 
+        // Custom headers
+        struct curl_slist* header_list = nullptr;
+        for (const auto& [key, value] : headers) {
+            std::string h = key + ": " + value;
+            header_list = curl_slist_append(header_list, h.c_str());
+        }
+        if (header_list) {
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+        }
+
         CURLcode res = curl_easy_perform(curl);
 
         if (res == CURLE_OK) {
             long http_code = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+            curl_slist_free_all(header_list);
             curl_easy_cleanup(curl);
 
             if (http_code == 200) {
@@ -101,6 +113,7 @@ std::optional<std::string> HttpClient::get(
         } else {
             spdlog::warn("curl error for {} (attempt {}): {}",
                          full_url, attempt, curl_easy_strerror(res));
+            curl_slist_free_all(header_list);
             curl_easy_cleanup(curl);
         }
 

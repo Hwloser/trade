@@ -31,7 +31,8 @@ public:
     // GET request with automatic retry + rate limiting
     std::optional<std::string> get(
         const std::string& url,
-        const std::unordered_map<std::string, std::string>& params = {}) const;
+        const std::unordered_map<std::string, std::string>& params = {},
+        const std::unordered_map<std::string, std::string>& headers = {}) const;
 
 private:
     Config config_;
