@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <functional>
+#include <unordered_map>
 
 namespace trade {
 
@@ -13,7 +14,7 @@ class IDataProvider {
 public:
     virtual ~IDataProvider() = default;
 
-    // Provider name (e.g., "akshare", "tushare")
+    // Provider name (e.g., "eastmoney", "akshare")
     virtual std::string name() const = 0;
 
     // Fetch daily bars for a symbol in [start, end]
@@ -25,6 +26,25 @@ public:
 
     // Test connectivity
     virtual bool ping() = 0;
+
+    // --- Optional capabilities (default: not supported) ---
+
+    // Northbound (HK Connect) net buy per stock for a date
+    virtual bool supports_northbound() const { return false; }
+    virtual std::unordered_map<Symbol, double> fetch_northbound(Date /*date*/) { return {}; }
+
+    // Margin balance per stock for a date
+    virtual bool supports_margin() const { return false; }
+    virtual std::unordered_map<Symbol, double> fetch_margin(Date /*date*/) { return {}; }
+
+    // Industry classification
+    virtual bool supports_industry() const { return false; }
+    virtual std::unordered_map<Symbol, SWIndustry> fetch_industry_map() { return {}; }
+
+    // Share capital
+    virtual bool supports_share_capital() const { return false; }
+    struct ShareCapital { int64_t total_shares = 0; int64_t float_shares = 0; };
+    virtual std::unordered_map<Symbol, ShareCapital> fetch_share_capital() { return {}; }
 };
 
 // Callback for progress reporting

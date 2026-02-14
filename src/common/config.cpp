@@ -16,11 +16,12 @@ Config Config::load(const std::string& path) {
             if (n["models_dir"]) cfg.data.models_dir = n["models_dir"].as<std::string>();
         }
 
-        if (auto n = root["akshare"]) {
-            if (n["base_url"]) cfg.akshare.base_url = n["base_url"].as<std::string>();
-            if (n["timeout_ms"]) cfg.akshare.timeout_ms = n["timeout_ms"].as<int>();
-            if (n["retry_count"]) cfg.akshare.retry_count = n["retry_count"].as<int>();
-            if (n["retry_delay_ms"]) cfg.akshare.retry_delay_ms = n["retry_delay_ms"].as<int>();
+        if (auto n = root["eastmoney"]) {
+            if (n["timeout_ms"]) cfg.eastmoney.timeout_ms = n["timeout_ms"].as<int>();
+            if (n["retry_count"]) cfg.eastmoney.retry_count = n["retry_count"].as<int>();
+            if (n["retry_delay_ms"]) cfg.eastmoney.retry_delay_ms = n["retry_delay_ms"].as<int>();
+            if (n["rate_limit_ms"]) cfg.eastmoney.rate_limit_ms = n["rate_limit_ms"].as<int>();
+            if (n["forward_adjust"]) cfg.eastmoney.forward_adjust = n["forward_adjust"].as<bool>();
         }
 
         if (auto n = root["cost"]) {

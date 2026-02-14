@@ -1,5 +1,6 @@
 #include "trade/storage/storage_path.h"
 #include "trade/common/time_utils.h"
+#include <chrono>
 #include <fmt/format.h>
 
 namespace trade {
@@ -41,6 +42,25 @@ std::string StoragePath::model_file(const std::string& name) const {
 
 std::string StoragePath::onnx_model(const std::string& name) const {
     return (root_ / "models" / "sentiment" / (name + ".onnx")).string();
+}
+
+std::string StoragePath::raw_minute(const Symbol& symbol, int year, int month) const {
+    return (root_ / "raw" / "cn_a" / "minute" / std::to_string(year) /
+            fmt::format("{:02d}", month) / (symbol + ".parquet")).string();
+}
+
+std::string StoragePath::raw_tick(const Symbol& symbol, Date date) const {
+    auto ymd = std::chrono::year_month_day{date};
+    int year = static_cast<int>(ymd.year());
+    unsigned month = static_cast<unsigned>(ymd.month());
+    unsigned day = static_cast<unsigned>(ymd.day());
+    return (root_ / "raw" / "cn_a" / "tick" / std::to_string(year) /
+            fmt::format("{:02d}", month) / fmt::format("{:02d}", day) /
+            (symbol + ".parquet")).string();
+}
+
+std::string StoragePath::models_dir() const {
+    return (root_ / "models").string();
 }
 
 std::string StoragePath::metadata_db() const {

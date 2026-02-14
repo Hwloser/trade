@@ -12,11 +12,12 @@ struct DataConfig {
     std::string models_dir = "models";
 };
 
-struct AkShareConfig {
-    std::string base_url = "http://127.0.0.1:8080";
+struct EastMoneyConfig {
     int timeout_ms = 30000;
     int retry_count = 3;
     int retry_delay_ms = 1000;
+    int rate_limit_ms = 200;
+    bool forward_adjust = true;
 };
 
 struct TradingCostConfig {
@@ -62,7 +63,7 @@ struct SentimentConfig {
 
 struct Config {
     DataConfig data;
-    AkShareConfig akshare;
+    EastMoneyConfig eastmoney;
     TradingCostConfig cost;
     RiskConfig risk;
     BacktestConfig backtest;

@@ -68,7 +68,7 @@ Options:
   --symbol <symbol>     Stock symbol (e.g., 600000.SH)
   --start <date>        Start date (YYYY-MM-DD)
   --end <date>          End date (YYYY-MM-DD)
-  --provider <name>     Data provider (default: akshare)
+  --provider <name>     Data provider (default: eastmoney)
   --model <name>        Model name (e.g., lgbm)
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)
@@ -84,7 +84,7 @@ struct CliArgs {
     std::string symbol;
     std::string start_date;
     std::string end_date;
-    std::string provider = "akshare";
+    std::string provider = "eastmoney";
     std::string model;
     std::string strategy;
     std::string source;
@@ -148,8 +148,7 @@ std::vector<trade::Bar> load_bars(const std::string& symbol,
 int cmd_download(const CliArgs& args, const trade::Config& config) {
     auto provider = trade::ProviderFactory::create(args.provider, config);
     if (!provider->ping()) {
-        spdlog::error("Cannot connect to {} at {}", args.provider, config.akshare.base_url);
-        spdlog::info("Start AkShare server: pip install aktools && python -m aktools");
+        spdlog::error("Cannot connect to {} provider", args.provider);
         return 1;
     }
     trade::Collector collector(std::move(provider), config);

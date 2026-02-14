@@ -4,11 +4,12 @@ data:
   curated_dir: "curated"
   models_dir: "models"
 
-akshare:
-  base_url: "http://127.0.0.1:8080"
+eastmoney:
   timeout_ms: 30000
   retry_count: 3
   retry_delay_ms: 1000
+  rate_limit_ms: 200
+  forward_adjust: true
 
 cost:
   stamp_tax_rate: 0.0005

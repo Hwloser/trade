@@ -3,19 +3,6 @@
 
 namespace trade {
 
-FieldMapping FieldMapping::akshare_daily() {
-    return FieldMapping{
-        .date_field = "日期",
-        .open_field = "开盘",
-        .high_field = "最高",
-        .low_field = "最低",
-        .close_field = "收盘",
-        .volume_field = "成交量",
-        .amount_field = "成交额",
-        .turnover_field = "换手率",
-    };
-}
-
 std::vector<Bar> BarNormalizer::normalize(std::vector<Bar> bars) {
     sort_by_date(bars);
     fill_prev_close(bars);

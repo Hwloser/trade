@@ -81,7 +81,8 @@ add_library(trade_core
     src/storage/storage_path.cpp
     # Provider
     src/provider/provider_factory.cpp
-    src/provider/akshare_provider.cpp
+    src/provider/http_client.cpp
+    src/provider/eastmoney_provider.cpp
     # Normalizer
     src/normalizer/bar_normalizer.cpp
     # Validator

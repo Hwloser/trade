@@ -25,6 +25,13 @@ public:
     std::string model_file(const std::string& name) const;
     std::string onnx_model(const std::string& name) const;
 
+    // Future data paths
+    std::string raw_minute(const Symbol& symbol, int year, int month) const;
+    std::string raw_tick(const Symbol& symbol, Date date) const;
+
+    // Models directory
+    std::string models_dir() const;
+
     // Metadata
     std::string metadata_db() const;
 
