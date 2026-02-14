@@ -31,7 +31,8 @@ public:
         int max_items_per_request = 100;                    // page size
     };
 
-    explicit Jin10Source(Config cfg = {});
+    Jin10Source();
+    explicit Jin10Source(Config cfg);
     ~Jin10Source() override;
 
     // -- ITextSource ---------------------------------------------------------

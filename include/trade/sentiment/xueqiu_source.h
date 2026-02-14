@@ -33,7 +33,8 @@ public:
         int max_pages = 5;                                 // pages per fetch
     };
 
-    explicit XueqiuSource(Config cfg = {});
+    XueqiuSource();
+    explicit XueqiuSource(Config cfg);
     ~XueqiuSource() override;
 
     // -- ITextSource ---------------------------------------------------------

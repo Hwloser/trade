@@ -1,9 +1,11 @@
 #include "trade/sentiment/rss_source.h"
 #include "trade/sentiment/text_cleaner.h"
 
+#include <curl/curl.h>
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <chrono>
-#include <iostream>
 #include <sstream>
 #include <thread>
 
@@ -258,12 +260,60 @@ std::vector<TextEvent> RssSource::parse_atom(const std::string& xml,
     return events;
 }
 
+// libcurl write callback: appends received data to a std::string
+static size_t curl_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* buf = static_cast<std::string*>(userdata);
+    size_t total = size * nmemb;
+    buf->append(ptr, total);
+    return total;
+}
+
 std::string RssSource::http_get(const std::string& url) {
-    // Stub: actual HTTP requires libcurl which may not be linked.
-    // When libcurl is available, this will be replaced with a real implementation
-    // using curl_easy_perform with retries and exponential back-off.
-    std::cerr << "[RssSource] http_get stub called for URL: " << url
-              << " -- libcurl not linked, returning empty response.\n";
+    std::string response;
+
+    int delay_ms = config_.retry_delay_ms;
+    for (int attempt = 0; attempt <= config_.retry_count; ++attempt) {
+        if (attempt > 0) {
+            spdlog::debug("[RssSource] retry {}/{} for {} (delay {}ms)",
+                          attempt, config_.retry_count, url, delay_ms);
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            delay_ms *= 2; // exponential backoff
+        }
+
+        response.clear();
+        CURL* curl = curl_easy_init();
+        if (!curl) {
+            spdlog::error("[RssSource] curl_easy_init failed");
+            continue;
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(config_.timeout_ms));
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, config_.user_agent.c_str());
+        curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // auto decompress
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);        // thread safety
+
+        CURLcode res = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        curl_easy_cleanup(curl);
+
+        if (res == CURLE_OK && http_code >= 200 && http_code < 300) {
+            spdlog::debug("[RssSource] fetched {} ({} bytes, HTTP {})",
+                          url, response.size(), http_code);
+            return response;
+        }
+
+        spdlog::warn("[RssSource] HTTP GET {} failed: curl={} http={}",
+                     url, static_cast<int>(res), http_code);
+    }
+
+    spdlog::error("[RssSource] all retries exhausted for {}", url);
     return "";
 }
 

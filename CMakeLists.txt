@@ -131,6 +131,8 @@ add_library(trade_core
     src/backtest/reporting.cpp
     # Sentiment
     src/sentiment/rss_source.cpp
+    src/sentiment/xueqiu_source.cpp
+    src/sentiment/jin10_source.cpp
     src/sentiment/text_cleaner.cpp
     src/sentiment/symbol_linker.cpp
     src/sentiment/rule_sentiment.cpp
