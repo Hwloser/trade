@@ -223,3 +223,109 @@ TEST_F(FullSchemaParquetTest, WriteAndReadFullSchema) {
     EXPECT_EQ(read[0].board, Board::kMain);
     EXPECT_EQ(read[0].bar_status, TradingStatus::kNormal);
 }
+
+// =============================================================================
+// ParquetStore merge semantics for sentiment and bars
+// =============================================================================
+
+TEST_F(ParquetRoundTripTest, MergeBarsByDate) {
+    auto bars = make_test_bars();
+    ParquetStore::write_bars(temp_path_, bars, ParquetStore::MergeMode::kReplace);
+
+    std::vector<Bar> update;
+    {
+        Bar b = bars[1];
+        b.close = 99.99;
+        update.push_back(b);
+    }
+    ParquetStore::write_bars(temp_path_, update, ParquetStore::MergeMode::kMergeByKey);
+
+    auto read = ParquetReader::read_bars(temp_path_);
+    ASSERT_EQ(read.size(), bars.size());
+
+    bool found = false;
+    for (const auto& b : read) {
+        if (b.date == bars[1].date) {
+            found = true;
+            EXPECT_NEAR(b.close, 99.99, 1e-6);
+        }
+    }
+    EXPECT_TRUE(found);
+}
+
+TEST_F(ParquetRoundTripTest, MergeTextEventsByHash) {
+    const auto ts = std::chrono::system_clock::now();
+
+    TextEvent e1;
+    e1.source = "rss";
+    e1.url = "https://example.com/a";
+    e1.timestamp = ts;
+    e1.title = "A";
+    e1.raw_text = "alpha";
+    e1.clean_text = "alpha";
+    e1.content_hash = "h1";
+
+    TextEvent e2 = e1;
+    e2.title = "A-updated"; // same hash => overwrite
+
+    TextEvent e3;
+    e3.source = "rss";
+    e3.url = "https://example.com/b";
+    e3.timestamp = ts;
+    e3.title = "B";
+    e3.raw_text = "beta";
+    e3.clean_text = "beta";
+    e3.content_hash = "h2";
+
+    ParquetStore::write_text_events(temp_path_, {e1}, ParquetStore::MergeMode::kMergeByKey);
+    ParquetStore::write_text_events(temp_path_, {e2, e3}, ParquetStore::MergeMode::kMergeByKey);
+
+    auto t = ParquetReader::read_table(temp_path_);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(t->num_rows(), 2);
+}
+
+TEST_F(ParquetRoundTripTest, MergeNlpResultsBySymbolDateSource) {
+    NlpResult r1;
+    r1.symbol = "600000.SH";
+    r1.date = make_date(2024, 1, 2);
+    r1.source = "rss";
+    r1.sentiment.positive = 0.7;
+    r1.sentiment.neutral = 0.2;
+    r1.sentiment.negative = 0.1;
+    r1.article_count = 10;
+
+    NlpResult r2 = r1;
+    r2.sentiment.positive = 0.5;
+    r2.article_count = 20;
+
+    NlpResult r3 = r1;
+    r3.source = "xueqiu";
+
+    ParquetStore::write_nlp_results(temp_path_, {r1}, ParquetStore::MergeMode::kMergeByKey);
+    ParquetStore::write_nlp_results(temp_path_, {r2, r3}, ParquetStore::MergeMode::kMergeByKey);
+
+    auto t = ParquetReader::read_table(temp_path_);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(t->num_rows(), 2);
+}
+
+TEST_F(ParquetRoundTripTest, MergeSentimentFactorsBySymbolDate) {
+    SentimentFactors f1;
+    f1.symbol = "600000.SH";
+    f1.date = make_date(2024, 1, 2);
+    f1.net_sentiment = 0.1;
+
+    SentimentFactors f2 = f1;
+    f2.net_sentiment = 0.9;
+
+    SentimentFactors f3 = f1;
+    f3.date = make_date(2024, 1, 3);
+
+    ParquetStore::write_sentiment_factors(temp_path_, {f1}, ParquetStore::MergeMode::kMergeByKey);
+    ParquetStore::write_sentiment_factors(temp_path_, {f2, f3}, ParquetStore::MergeMode::kMergeByKey);
+
+    auto t = ParquetReader::read_table(temp_path_);
+    ASSERT_NE(t, nullptr);
+    EXPECT_EQ(t->num_rows(), 2);
+}

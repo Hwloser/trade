@@ -40,6 +40,7 @@ std::string factor_key(const SentimentFactors& f) {
 }
 
 std::vector<TextEvent> read_text_events(const std::string& path) {
+    if (!std::filesystem::exists(path)) return {};
     auto table = ParquetReader::read_table(path);
     if (!table) return {};
 
@@ -107,6 +108,7 @@ std::shared_ptr<arrow::Table> text_events_to_table(const std::vector<TextEvent>&
 }
 
 std::vector<NlpResult> read_nlp_results(const std::string& path) {
+    if (!std::filesystem::exists(path)) return {};
     auto table = ParquetReader::read_table(path);
     if (!table) return {};
 
@@ -175,6 +177,7 @@ std::shared_ptr<arrow::Table> nlp_results_to_table(const std::vector<NlpResult>&
 }
 
 std::vector<SentimentFactors> read_sentiment_factors(const std::string& path) {
+    if (!std::filesystem::exists(path)) return {};
     auto table = ParquetReader::read_table(path);
     if (!table) return {};
 
