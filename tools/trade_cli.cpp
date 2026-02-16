@@ -102,7 +102,7 @@ struct CliArgs {
     std::string output;
     std::string file;  // for view command
     bool verbose = false;
-    bool refresh = false;  // force full re-download
+    bool refresh = true;  // force full re-download
     int limit = 0;  // max rows for view command
 };
 
@@ -173,14 +173,10 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
     trade::StoragePath paths(config.data.data_root);
     trade::MetadataStore metadata(paths.metadata_db());
 
-    // Default start: Jan 1 of last year
+    // Default start: last 30 days
     auto now_tp = std::chrono::system_clock::now();
-    auto now_ymd = std::chrono::year_month_day{
-        std::chrono::floor<std::chrono::days>(now_tp)};
-    auto last_year_ymd = std::chrono::year_month_day{
-        now_ymd.year() - std::chrono::years{1},
-        std::chrono::January, std::chrono::day{1}};
-    auto default_start = std::chrono::sys_days{last_year_ymd};
+    auto now_day = std::chrono::floor<std::chrono::days>(now_tp);
+    auto default_start = now_day - std::chrono::days{30};
     std::string default_start_str = trade::format_date(default_start);
 
     if (!args.symbol.empty()) {
