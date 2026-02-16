@@ -228,3 +228,32 @@ TEST_F(MetadataStoreFileTest, PersistAcrossInstances) {
         EXPECT_EQ(result->name, "Test");
     }
 }
+
+// =============================================================================
+// Incremental watermark + ingestion run tests
+// =============================================================================
+
+TEST_F(MetadataStoreTest, UpsertAndGetWatermarkDate) {
+    auto date1 = make_date(2024, 1, 31);
+    auto date2 = make_date(2024, 2, 29);
+
+    store_->upsert_watermark("eastmoney", "cn_a_daily_bar", "600000.SH", date1);
+    auto wm1 = store_->last_watermark_date("eastmoney", "cn_a_daily_bar", "600000.SH");
+    ASSERT_TRUE(wm1.has_value());
+    EXPECT_EQ(*wm1, date1);
+
+    store_->upsert_watermark("eastmoney", "cn_a_daily_bar", "600000.SH", date2,
+                             R"({"cursor":"test"})");
+    auto wm2 = store_->last_watermark_date("eastmoney", "cn_a_daily_bar", "600000.SH");
+    ASSERT_TRUE(wm2.has_value());
+    EXPECT_EQ(*wm2, date2);
+}
+
+TEST_F(MetadataStoreTest, IngestionRunLifecycle) {
+    const std::string run_id = "run-test-001";
+    store_->begin_ingestion_run(run_id, "eastmoney", "cn_a_daily_bar", "600000.SH", "incremental");
+    store_->finish_ingestion_run(run_id, true, 100, 90);
+
+    // No read API yet; lifecycle should complete without throw/crash.
+    SUCCEED();
+}

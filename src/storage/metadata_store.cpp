@@ -1,8 +1,8 @@
 #include "trade/storage/metadata_store.h"
 #include "trade/common/time_utils.h"
-#include <sqlite3.h>
-#include <spdlog/spdlog.h>
 #include <filesystem>
+#include <spdlog/spdlog.h>
+#include <sqlite3.h>
 #include <stdexcept>
 
 namespace trade {
@@ -35,7 +35,6 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
         throw std::runtime_error("Failed to open database: " + db_path);
     }
 
-    // Create tables
     impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS instruments (
             symbol TEXT PRIMARY KEY,
@@ -52,8 +51,12 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
     )");
 
     // Schema migration: add columns if missing (for existing DBs)
-    sqlite3_exec(impl_->db, "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0", nullptr, nullptr, nullptr);
-    sqlite3_exec(impl_->db, "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0", nullptr, nullptr, nullptr);
+    sqlite3_exec(impl_->db,
+                 "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0",
+                 nullptr, nullptr, nullptr);
+    sqlite3_exec(impl_->db,
+                 "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0",
+                 nullptr, nullptr, nullptr);
 
     impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS downloads (
@@ -67,11 +70,42 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
     )");
 
     impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS watermarks (
+            source TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            last_event_date TEXT NOT NULL,
+            cursor_payload TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source, dataset, symbol)
+        )
+    )");
+
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS ingestion_runs (
+            run_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            start_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            end_time TEXT,
+            status TEXT NOT NULL,
+            rows_in INTEGER NOT NULL DEFAULT 0,
+            rows_out INTEGER NOT NULL DEFAULT 0,
+            error TEXT NOT NULL DEFAULT ''
+        )
+    )");
+
+    impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS holidays (
             date TEXT PRIMARY KEY,
             year INTEGER
         )
     )");
+
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_downloads_symbol_end ON downloads(symbol, end_date)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_watermarks_lookup ON watermarks(source, dataset, symbol)");
 
     spdlog::debug("MetadataStore initialized at {}", db_path);
 }
@@ -96,7 +130,6 @@ void MetadataStore::upsert_instrument(const Instrument& inst) {
     sqlite3_bind_int(stmt, 4, static_cast<int>(inst.board));
     sqlite3_bind_int(stmt, 5, static_cast<int>(inst.industry));
 
-    // list_date: use temporary variable to keep string alive during bind
     std::string list_str = format_date(inst.list_date);
     sqlite3_bind_text(stmt, 6, list_str.c_str(), -1, SQLITE_TRANSIENT);
 
@@ -160,6 +193,8 @@ std::vector<Instrument> MetadataStore::get_all_instruments() {
         auto delist = sqlite3_column_text(stmt, 6);
         if (delist) inst.delist_date = parse_date(reinterpret_cast<const char*>(delist));
         inst.status = static_cast<TradingStatus>(sqlite3_column_int(stmt, 7));
+        inst.total_shares = sqlite3_column_int64(stmt, 8);
+        inst.float_shares = sqlite3_column_int64(stmt, 9);
         result.push_back(std::move(inst));
     }
     sqlite3_finalize(stmt);
@@ -185,16 +220,18 @@ std::vector<Instrument> MetadataStore::get_instruments_by_industry(SWIndustry in
 }
 
 void MetadataStore::record_download(const Symbol& symbol, Date start, Date end,
-                                     int64_t row_count) {
+                                    int64_t row_count) {
     const char* sql = R"(
         INSERT OR REPLACE INTO downloads (symbol, start_date, end_date, row_count)
         VALUES (?, ?, ?, ?)
     )";
     sqlite3_stmt* stmt;
     sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    std::string start_s = format_date(start);
+    std::string end_s = format_date(end);
     sqlite3_bind_text(stmt, 1, symbol.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, format_date(start).c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, format_date(end).c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, start_s.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, end_s.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 4, row_count);
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -219,7 +256,6 @@ std::vector<Symbol> MetadataStore::symbols_needing_update(Date cutoff) {
     std::vector<Symbol> result;
     std::string cutoff_str = format_date(cutoff);
 
-    // Find symbols with no download or last download before cutoff
     const char* sql = R"(
         SELECT i.symbol FROM instruments i
         LEFT JOIN (
@@ -237,6 +273,122 @@ std::vector<Symbol> MetadataStore::symbols_needing_update(Date cutoff) {
     }
     sqlite3_finalize(stmt);
     return result;
+}
+
+void MetadataStore::upsert_watermark(const std::string& source,
+                                     const std::string& dataset,
+                                     const Symbol& symbol,
+                                     Date last_event_date,
+                                     const std::string& cursor_payload) {
+    const char* sql = R"(
+        INSERT INTO watermarks (source, dataset, symbol, last_event_date, cursor_payload, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(source, dataset, symbol)
+        DO UPDATE SET
+            last_event_date = excluded.last_event_date,
+            cursor_payload = excluded.cursor_payload,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_watermark: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    std::string date_s = format_date(last_event_date);
+    sqlite3_bind_text(stmt, 1, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, symbol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, date_s.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, cursor_payload.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert watermark {}/{}/{}: {}",
+                      source, dataset, symbol, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::optional<Date> MetadataStore::last_watermark_date(const std::string& source,
+                                                       const std::string& dataset,
+                                                       const Symbol& symbol) {
+    const char* sql = R"(
+        SELECT last_event_date FROM watermarks
+        WHERE source = ? AND dataset = ? AND symbol = ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, symbol.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<Date> out;
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_text(stmt, 0)) {
+        out = parse_date(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::begin_ingestion_run(const std::string& run_id,
+                                        const std::string& source,
+                                        const std::string& dataset,
+                                        const Symbol& symbol,
+                                        const std::string& mode) {
+    const char* sql = R"(
+        INSERT OR REPLACE INTO ingestion_runs
+        (run_id, source, dataset, symbol, mode, status, start_time)
+        VALUES (?, ?, ?, ?, ?, 'running', CURRENT_TIMESTAMP)
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare begin_ingestion_run: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    sqlite3_bind_text(stmt, 1, run_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, dataset.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, symbol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, mode.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to begin ingestion run {}: {}", run_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+void MetadataStore::finish_ingestion_run(const std::string& run_id,
+                                         bool success,
+                                         int64_t rows_in,
+                                         int64_t rows_out,
+                                         const std::string& error) {
+    const char* sql = R"(
+        UPDATE ingestion_runs
+        SET end_time = CURRENT_TIMESTAMP,
+            status = ?,
+            rows_in = ?,
+            rows_out = ?,
+            error = ?
+        WHERE run_id = ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare finish_ingestion_run: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    const char* status = success ? "success" : "failed";
+    sqlite3_bind_text(stmt, 1, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 2, rows_in);
+    sqlite3_bind_int64(stmt, 3, rows_out);
+    sqlite3_bind_text(stmt, 4, error.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, run_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to finish ingestion run {}: {}", run_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
 }
 
 void MetadataStore::load_holidays(const std::vector<Date>& holidays) {

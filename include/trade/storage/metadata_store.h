@@ -2,9 +2,10 @@
 
 #include "trade/common/types.h"
 #include "trade/model/instrument.h"
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
-#include <optional>
 
 namespace trade {
 
@@ -26,6 +27,28 @@ public:
                         int64_t row_count);
     std::optional<Date> last_download_date(const Symbol& symbol);
     std::vector<Symbol> symbols_needing_update(Date cutoff);
+
+    // Incremental watermarks (source + dataset + symbol)
+    void upsert_watermark(const std::string& source,
+                          const std::string& dataset,
+                          const Symbol& symbol,
+                          Date last_event_date,
+                          const std::string& cursor_payload = "{}");
+    std::optional<Date> last_watermark_date(const std::string& source,
+                                            const std::string& dataset,
+                                            const Symbol& symbol);
+
+    // Ingestion run logs
+    void begin_ingestion_run(const std::string& run_id,
+                             const std::string& source,
+                             const std::string& dataset,
+                             const Symbol& symbol,
+                             const std::string& mode);
+    void finish_ingestion_run(const std::string& run_id,
+                              bool success,
+                              int64_t rows_in,
+                              int64_t rows_out,
+                              const std::string& error = "");
 
     // Holiday calendar
     void load_holidays(const std::vector<Date>& holidays);
