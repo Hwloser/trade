@@ -29,6 +29,7 @@
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
 #include "trade/storage/storage_path.h"
+#include "trade/storage/remote_sync.h"
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 
@@ -68,6 +69,7 @@ Commands:
   risk        Assess risk for a position
   backtest    Run backtest
   sentiment   Analyze sentiment from RSS feeds
+  offload     Sync local data to remote storage (Baidu via rclone)
   report      Generate decision report
   info        Show data info
 
@@ -84,6 +86,8 @@ Options:
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
+  --target <name>       Storage target (default: baidu, for offload)
+  --dry-run             Print/verify without actual sync (for offload)
   --verbose             Enable verbose logging
   --help                Show this help
 )" << std::endl;
@@ -101,8 +105,10 @@ struct CliArgs {
     std::string source;
     std::string output;
     std::string file;  // for view command
+    std::string target = "baidu";
     bool verbose = false;
-    bool refresh = true;  // force full re-download
+    bool refresh = false;  // force full re-download
+    bool dry_run = false;
     int limit = 0;  // max rows for view command
 };
 
@@ -123,10 +129,12 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--strategy" && i + 1 < argc) args.strategy = argv[++i];
         else if (arg == "--source" && i + 1 < argc) args.source = argv[++i];
         else if (arg == "--output" && i + 1 < argc) args.output = argv[++i];
+        else if (arg == "--target" && i + 1 < argc) args.target = argv[++i];
         else if (arg == "--file" && i + 1 < argc) args.file = argv[++i];
         else if (arg == "--limit" && i + 1 < argc) args.limit = std::stoi(argv[++i]);
         else if (arg == "--verbose") args.verbose = true;
         else if (arg == "--refresh") args.refresh = true;
+        else if (arg == "--dry-run") args.dry_run = true;
         else if (arg == "--help") { print_usage(); std::exit(0); }
     }
     return args;
@@ -918,6 +926,52 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
 
 
 // ============================================================================
+// offload
+// ============================================================================
+int cmd_offload(const CliArgs& args, const trade::Config& config) {
+    std::string target = args.target.empty() ? "baidu" : args.target;
+    if (target != "baidu") {
+        spdlog::error("Unsupported target: {} (currently only 'baidu')", target);
+        return 1;
+    }
+
+    if (!config.storage.enabled) {
+        spdlog::error("storage.enabled is false in config/config.yaml");
+        return 1;
+    }
+
+    if (config.storage.backend != "baidu") {
+        spdlog::error("storage.backend must be 'baidu' to use offload target baidu (current: {})",
+                      config.storage.backend);
+        return 1;
+    }
+
+    if (!trade::RemoteSync::rclone_exists(config.storage.rclone_bin)) {
+        spdlog::error("rclone not found: {}", config.storage.rclone_bin);
+        spdlog::error("Install rclone and configure Baidu remote first.");
+        return 1;
+    }
+
+    std::cout << "Offloading data root: " << config.data.data_root << "\n"
+              << "Target: " << config.storage.baidu_remote << ":" << config.storage.baidu_path << "\n"
+              << (args.dry_run ? "Mode: dry-run\n" : "Mode: sync\n")
+              << std::endl;
+
+    bool ok = trade::RemoteSync::sync_to_baidu(config.data.data_root,
+                                               config.storage.rclone_bin,
+                                               config.storage.baidu_remote,
+                                               config.storage.baidu_path,
+                                               args.dry_run);
+    if (!ok) {
+        spdlog::error("Offload failed");
+        return 1;
+    }
+
+    std::cout << "Offload complete." << std::endl;
+    return 0;
+}
+
+// ============================================================================
 // report
 // ============================================================================
 int cmd_report(const CliArgs& args, const trade::Config& config) {
@@ -1029,6 +1083,7 @@ int main(int argc, char* argv[]) {
         if (args.command == "risk")      return cmd_risk(args, config);
         if (args.command == "backtest")  return cmd_backtest(args, config);
         if (args.command == "sentiment") return cmd_sentiment(args, config);
+        if (args.command == "offload")   return cmd_offload(args, config);
         if (args.command == "report")    return cmd_report(args, config);
         spdlog::error("Unknown command: {}", args.command);
         print_usage();

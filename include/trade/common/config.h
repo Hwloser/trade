@@ -20,6 +20,15 @@ struct EastMoneyConfig {
     bool forward_adjust = true;
 };
 
+
+struct StorageConfig {
+    bool enabled = false;
+    std::string backend = "local";      // local, baidu
+    std::string rclone_bin = "rclone";
+    std::string baidu_remote = "";      // rclone remote name, e.g. baidu_trade
+    std::string baidu_path = "/trade";  // remote base path
+};
+
 struct TradingCostConfig {
     double stamp_tax_rate = 0.0005;        // 印花税 0.05% (卖出)
     double commission_rate = 0.00025;       // 佣金 0.025% (双向)
@@ -64,6 +73,7 @@ struct SentimentConfig {
 struct Config {
     DataConfig data;
     EastMoneyConfig eastmoney;
+    StorageConfig storage;
     TradingCostConfig cost;
     RiskConfig risk;
     BacktestConfig backtest;

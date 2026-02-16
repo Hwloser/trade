@@ -79,6 +79,7 @@ add_library(trade_core
     src/storage/parquet_reader.cpp
     src/storage/metadata_store.cpp
     src/storage/storage_path.cpp
+    src/storage/remote_sync.cpp
     # Provider
     src/provider/provider_factory.cpp
     src/provider/http_client.cpp

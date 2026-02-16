@@ -24,6 +24,15 @@ Config Config::load(const std::string& path) {
             if (n["forward_adjust"]) cfg.eastmoney.forward_adjust = n["forward_adjust"].as<bool>();
         }
 
+
+        if (auto n = root["storage"]) {
+            if (n["enabled"]) cfg.storage.enabled = n["enabled"].as<bool>();
+            if (n["backend"]) cfg.storage.backend = n["backend"].as<std::string>();
+            if (n["rclone_bin"]) cfg.storage.rclone_bin = n["rclone_bin"].as<std::string>();
+            if (n["baidu_remote"]) cfg.storage.baidu_remote = n["baidu_remote"].as<std::string>();
+            if (n["baidu_path"]) cfg.storage.baidu_path = n["baidu_path"].as<std::string>();
+        }
+
         if (auto n = root["cost"]) {
             if (n["stamp_tax_rate"]) cfg.cost.stamp_tax_rate = n["stamp_tax_rate"].as<double>();
             if (n["commission_rate"]) cfg.cost.commission_rate = n["commission_rate"].as<double>();

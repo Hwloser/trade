@@ -11,6 +11,13 @@ eastmoney:
   rate_limit_ms: 200
   forward_adjust: true
 
+storage:
+  enabled: false
+  backend: "local"
+  rclone_bin: "rclone"
+  baidu_remote: ""
+  baidu_path: "/trade"
+
 cost:
   stamp_tax_rate: 0.0005
   commission_rate: 0.00025
