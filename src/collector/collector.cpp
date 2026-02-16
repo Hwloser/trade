@@ -12,35 +12,61 @@ namespace trade {
 
 namespace {
 
-void merge_and_write_bars(const std::string& path,
-                          std::vector<Bar> incoming,
-                          Board default_board) {
+std::vector<Bar> merge_by_date(std::vector<Bar> existing, std::vector<Bar> incoming) {
+    std::unordered_map<Date, size_t> idx_by_date;
+    idx_by_date.reserve(existing.size() + incoming.size());
+
+    for (size_t i = 0; i < existing.size(); ++i) {
+        idx_by_date[existing[i].date] = i;
+    }
+
+    for (auto& bar : incoming) {
+        auto it = idx_by_date.find(bar.date);
+        if (it == idx_by_date.end()) {
+            idx_by_date[bar.date] = existing.size();
+            existing.push_back(std::move(bar));
+        } else {
+            existing[it->second] = std::move(bar);
+        }
+    }
+
+    std::sort(existing.begin(), existing.end(),
+              [](const Bar& a, const Bar& b) { return a.date < b.date; });
+    return existing;
+}
+
+void merge_and_write_raw_bars(const std::string& path,
+                              std::vector<Bar> incoming) {
+    std::vector<Bar> merged;
+    if (std::filesystem::exists(path)) {
+        try {
+            merged = ParquetReader::read_bars(path);
+        } catch (const std::exception& e) {
+            spdlog::warn("Failed to read existing raw partition {}: {}", path, e.what());
+        }
+    }
+
+    merged = merge_by_date(std::move(merged), std::move(incoming));
+
+    // Raw layer keeps provider fields close to source semantics.
+    StoragePath::ensure_dir(path);
+    ParquetWriter::write_bars(path, merged);
+}
+
+void merge_and_write_curated_bars(const std::string& path,
+                                  std::vector<Bar> incoming,
+                                  Board default_board) {
     std::vector<Bar> merged;
 
     if (std::filesystem::exists(path)) {
         try {
             merged = ParquetReader::read_bars(path);
         } catch (const std::exception& e) {
-            spdlog::warn("Failed to read existing partition {}: {}", path, e.what());
+            spdlog::warn("Failed to read existing curated partition {}: {}", path, e.what());
         }
     }
 
-    std::unordered_map<Date, size_t> idx_by_date;
-    idx_by_date.reserve(merged.size() + incoming.size());
-    for (size_t i = 0; i < merged.size(); ++i) {
-        idx_by_date[merged[i].date] = i;
-    }
-
-    for (auto& bar : incoming) {
-        auto it = idx_by_date.find(bar.date);
-        if (it == idx_by_date.end()) {
-            idx_by_date[bar.date] = merged.size();
-            merged.push_back(std::move(bar));
-        } else {
-            merged[it->second] = std::move(bar);
-        }
-    }
-
+    merged = merge_by_date(std::move(merged), std::move(incoming));
     merged = BarNormalizer::normalize(std::move(merged));
     if (!merged.empty()) {
         Board board = merged.front().board != Board::kMain ? merged.front().board : default_board;
@@ -64,21 +90,21 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
     spdlog::info("Collecting {} [{}, {}]", symbol, format_date(start), format_date(end));
 
     // 1. Fetch from provider
-    auto bars = provider_->fetch_daily(symbol, start, end);
-    if (bars.empty()) {
+    auto raw_bars = provider_->fetch_daily(symbol, start, end);
+    if (raw_bars.empty()) {
         spdlog::warn("No data returned for {}", symbol);
         return QualityReport{};
     }
 
-    // 2. Normalize (sort, fill prev_close, compute vwap)
-    bars = BarNormalizer::normalize(std::move(bars));
+    // 2. Build curated bars from raw bars
+    auto bars = BarNormalizer::normalize(raw_bars);
 
-    // 3. Compute price limits
+    // 3. Compute price limits for curated layer
     Board board = (!bars.empty() && bars[0].board != Board::kMain)
         ? bars[0].board : Board::kMain;
     BarNormalizer::compute_limits(bars, board);
 
-    // 4. Merge northbound data by date (optional)
+    // 4. Merge northbound data by date (optional) into curated layer
     if (provider_->supports_northbound() && !bars.empty()) {
         std::set<Date> dates;
         for (const auto& bar : bars) dates.insert(bar.date);
@@ -101,7 +127,7 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 5. Merge margin data by date (optional)
+    // 5. Merge margin data by date (optional) into curated layer
     if (provider_->supports_margin() && !bars.empty()) {
         std::set<Date> dates;
         for (const auto& bar : bars) dates.insert(bar.date);
@@ -124,7 +150,7 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 6. Validate fetched window
+    // 6. Validate curated window
     auto report = DataValidator::validate(bars);
     if (!report.is_clean()) {
         for (const auto& w : report.warnings) {
@@ -132,20 +158,25 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 7. Partition by bar year and merge-write (incremental safe)
-    std::map<int, std::vector<Bar>> bars_by_year;
-    for (const auto& bar : bars) {
-        bars_by_year[date_year(bar.date)].push_back(bar);
+    // 7. Partition by year and write raw/curated separately
+    std::map<int, std::vector<Bar>> raw_by_year;
+    for (const auto& bar : raw_bars) {
+        raw_by_year[date_year(bar.date)].push_back(bar);
     }
 
-    for (auto& [year, year_bars] : bars_by_year) {
-        auto raw_path = paths_.raw_daily(symbol, year);
-        auto curated_path = paths_.curated_daily(symbol, year);
+    std::map<int, std::vector<Bar>> curated_by_year;
+    for (const auto& bar : bars) {
+        curated_by_year[date_year(bar.date)].push_back(bar);
+    }
 
-        // raw and curated currently share the same normalized bar model;
-        // keeping both paths for future divergence.
-        merge_and_write_bars(raw_path, year_bars, board);
-        merge_and_write_bars(curated_path, std::move(year_bars), board);
+    for (auto& [year, year_raw] : raw_by_year) {
+        auto raw_path = paths_.raw_daily(symbol, year);
+        merge_and_write_raw_bars(raw_path, std::move(year_raw));
+    }
+
+    for (auto& [year, year_curated] : curated_by_year) {
+        auto curated_path = paths_.curated_daily(symbol, year);
+        merge_and_write_curated_bars(curated_path, std::move(year_curated), board);
     }
 
     // 8. Upsert instrument record
