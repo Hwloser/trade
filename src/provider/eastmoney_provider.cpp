@@ -137,6 +137,82 @@ std::vector<Bar> EastMoneyProvider::parse_kline(
 }
 
 // ============================================================================
+// fetch_instrument — 单只股票元数据 (使用 push2 spot API)
+// ============================================================================
+std::optional<Instrument> EastMoneyProvider::fetch_instrument(const Symbol& symbol) {
+    std::string secid = to_secid(symbol);
+    auto resp = http_.get(
+        "https://push2.eastmoney.com/api/qt/stock/get",
+        {
+            {"secid", secid},
+            {"ut", "fa5fd1943c7b386f172d6893dbbd1104"},
+            {"fields", "f57,f58,f84,f85,f116,f117,f162,f163,f189"},
+            // f57=code, f58=name, f84=total_shares, f85=float_shares,
+            // f116=total_cap, f117=float_cap, f162=PE, f163=PB,
+            // f189=list_date (YYYYMMDD)
+        });
+
+    if (!resp) return std::nullopt;
+
+    try {
+        auto j = nlohmann::json::parse(*resp);
+        auto data = j.value("data", nlohmann::json{});
+        if (data.is_null()) return std::nullopt;
+
+        std::string code = data.value("f57", "");
+        std::string name_val = data.value("f58", "");
+        if (code.empty()) return std::nullopt;
+
+        Instrument inst;
+        inst.symbol = symbol;
+        inst.name = name_val;
+
+        // Market/board from symbol
+        if (symbol.size() >= 9) {
+            std::string suffix = symbol.substr(7);
+            if (suffix == "SH") inst.market = Market::kSH;
+            else if (suffix == "SZ") inst.market = Market::kSZ;
+            else if (suffix == "BJ") inst.market = Market::kBJ;
+        }
+
+        if (code.starts_with("688")) inst.board = Board::kSTAR;
+        else if (code.starts_with("3")) inst.board = Board::kChiNext;
+        else if (code.starts_with("8") || code.starts_with("4") || code.starts_with("9")) inst.board = Board::kBSE;
+        else inst.board = Board::kMain;
+
+        // ST detection
+        if (name_val.find("*ST") != std::string::npos) {
+            inst.status = TradingStatus::kStarST;
+            inst.board = Board::kST;
+        } else if (name_val.find("ST") != std::string::npos) {
+            inst.status = TradingStatus::kST;
+            inst.board = Board::kST;
+        }
+
+        // total_shares (f84, 股), float_shares (f85, 股)
+        int64_t total_shares = data.value("f84", static_cast<int64_t>(0));
+        if (total_shares > 0) inst.total_shares = total_shares;
+        int64_t float_shares = data.value("f85", static_cast<int64_t>(0));
+        if (float_shares > 0) inst.float_shares = float_shares;
+
+        // list_date (f189, YYYYMMDD integer)
+        int list_date_int = data.value("f189", 0);
+        if (list_date_int > 19900101) {
+            int y = list_date_int / 10000;
+            int m = (list_date_int % 10000) / 100;
+            int d = list_date_int % 100;
+            inst.list_date = std::chrono::year{y} / std::chrono::month{static_cast<unsigned>(m)} /
+                             std::chrono::day{static_cast<unsigned>(d)};
+        }
+
+        return inst;
+    } catch (const std::exception& e) {
+        spdlog::debug("Failed to fetch instrument for {}: {}", symbol, e.what());
+        return std::nullopt;
+    }
+}
+
+// ============================================================================
 // fetch_instruments — 股票列表 (参考 AkShare stock_zh_a_spot_em)
 // ============================================================================
 std::vector<Instrument> EastMoneyProvider::fetch_instruments() {

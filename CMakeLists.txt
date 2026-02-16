@@ -176,9 +176,26 @@ if(HAVE_ONNXRUNTIME)
     target_link_libraries(trade_core PUBLIC onnxruntime::onnxruntime)
 endif()
 
+# ── Output layout ──────────────────────────────────────────────────
+# Binaries → build/<preset>/bin/
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 # CLI tool
 add_executable(trade_cli tools/trade_cli.cpp)
 target_link_libraries(trade_cli PRIVATE trade_core)
+
+# Pass the source dir to the binary so it can resolve default paths
+target_compile_definitions(trade_cli PRIVATE
+    TRADE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
+# ── Symlinks in build dir ─────────────────────────────────────────
+# Create symlinks so CLI works from build dir:
+#   build/<preset>/config  →  <source>/config
+#   build/<preset>/data    →  <source>/data
+file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/config
+     ${CMAKE_BINARY_DIR}/config SYMBOLIC)
+file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/data
+     ${CMAKE_BINARY_DIR}/data SYMBOLIC)
 
 # Tests
 if(BUILD_TESTING)

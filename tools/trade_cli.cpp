@@ -25,8 +25,11 @@
 #include "trade/sentiment/text_cleaner.h"
 #include "trade/decision/decision_report.h"
 #include "trade/provider/provider_factory.h"
+#include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/storage_path.h"
+#include <arrow/api.h>
+#include <arrow/io/api.h>
 
 #ifdef HAVE_LIGHTGBM
 #include "trade/ml/lgbm_model.h"
@@ -53,7 +56,9 @@ Usage:
   trade_cli <command> [options]
 
 Commands:
-  download    Download market data
+  download    Download market data (incremental by default)
+  view        View parquet file contents
+  sql         Open DuckDB SQL shell with data pre-loaded
   features    Compute features for a symbol
   train       Train ML model
   predict     Generate predictions
@@ -69,6 +74,9 @@ Options:
   --start <date>        Start date (YYYY-MM-DD)
   --end <date>          End date (YYYY-MM-DD)
   --provider <name>     Data provider (default: eastmoney)
+  --refresh             Force full re-download (overwrite existing data)
+  --file <path>         Parquet file path (for view command)
+  --limit <n>           Max rows to display (for view command, default: all)
   --model <name>        Model name (e.g., lgbm)
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)
@@ -89,7 +97,10 @@ struct CliArgs {
     std::string strategy;
     std::string source;
     std::string output;
+    std::string file;  // for view command
     bool verbose = false;
+    bool refresh = false;  // force full re-download
+    int limit = 0;  // max rows for view command
 };
 
 CliArgs parse_args(int argc, char* argv[]) {
@@ -109,7 +120,10 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--strategy" && i + 1 < argc) args.strategy = argv[++i];
         else if (arg == "--source" && i + 1 < argc) args.source = argv[++i];
         else if (arg == "--output" && i + 1 < argc) args.output = argv[++i];
+        else if (arg == "--file" && i + 1 < argc) args.file = argv[++i];
+        else if (arg == "--limit" && i + 1 < argc) args.limit = std::stoi(argv[++i]);
         else if (arg == "--verbose") args.verbose = true;
+        else if (arg == "--refresh") args.refresh = true;
         else if (arg == "--help") { print_usage(); std::exit(0); }
     }
     return args;
@@ -152,18 +166,65 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
         return 1;
     }
     trade::Collector collector(std::move(provider), config);
-    auto [start, end] = resolve_dates(args, "2020-01-01");
+
+    // Default start: Jan 1 of last year
+    auto now_tp = std::chrono::system_clock::now();
+    auto now_ymd = std::chrono::year_month_day{
+        std::chrono::floor<std::chrono::days>(now_tp)};
+    auto last_year_ymd = std::chrono::year_month_day{
+        now_ymd.year() - std::chrono::years{1},
+        std::chrono::January, std::chrono::day{1}};
+    auto default_start = std::chrono::sys_days{last_year_ymd};
+    std::string default_start_str = trade::format_date(default_start);
+
     if (!args.symbol.empty()) {
+        trade::Date start, end;
+        end = args.end_date.empty()
+            ? std::chrono::floor<std::chrono::days>(now_tp)
+            : trade::parse_date(args.end_date);
+
+        // Incremental download: check last download date unless --refresh
+        if (!args.refresh && args.start_date.empty()) {
+            trade::StoragePath paths(config.data.data_root);
+            trade::MetadataStore metadata(paths.metadata_db());
+            auto last = metadata.last_download_date(args.symbol);
+            if (last) {
+                start = trade::next_trading_day(*last);
+                if (start > end) {
+                    std::cout << "Already up to date (last: "
+                              << trade::format_date(*last) << ")" << std::endl;
+                    return 0;
+                }
+                spdlog::info("Incremental download from {} (last: {})",
+                             trade::format_date(start), trade::format_date(*last));
+            } else {
+                start = default_start;
+            }
+        } else {
+            start = args.start_date.empty()
+                ? default_start
+                : trade::parse_date(args.start_date);
+        }
+
         auto report = collector.collect_symbol(args.symbol, start, end);
         std::cout << "Downloaded " << report.total_bars << " bars for " << args.symbol
                   << " (quality: " << std::fixed << std::setprecision(1)
                   << (report.quality_score() * 100) << "%)" << std::endl;
     } else {
-        collector.collect_all(start, end,
-            [](const trade::Symbol& sym, int cur, int total) {
-                std::cout << "\r[" << cur << "/" << total << "] " << sym
-                         << "                " << std::flush;
-            });
+        if (args.refresh) {
+            auto [start, end] = resolve_dates(args, default_start_str);
+            collector.collect_all(start, end,
+                [](const trade::Symbol& sym, int cur, int total) {
+                    std::cout << "\r[" << cur << "/" << total << "] " << sym
+                             << "                " << std::flush;
+                });
+        } else {
+            collector.update_all(
+                [](const trade::Symbol& sym, int cur, int total) {
+                    std::cout << "\r[" << cur << "/" << total << "] " << sym
+                             << "                " << std::flush;
+                });
+        }
         std::cout << "\nDownload complete." << std::endl;
     }
     return 0;
@@ -187,6 +248,152 @@ int cmd_info(const CliArgs& args, const trade::Config& config) {
                  << args.provider << std::endl;
     }
     return 0;
+}
+
+// ============================================================================
+// view — display parquet file contents as a table
+// ============================================================================
+int cmd_view(const CliArgs& args, const trade::Config& config) {
+    std::string path = args.file;
+
+    // If no --file, try to find from --symbol
+    if (path.empty() && !args.symbol.empty()) {
+        trade::StoragePath paths(config.data.data_root);
+        auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+        int year = trade::date_year(now);
+        path = paths.curated_daily(args.symbol, year);
+    }
+
+    if (path.empty()) {
+        spdlog::error("Specify --file <path.parquet> or --symbol <symbol>");
+        return 1;
+    }
+
+    std::shared_ptr<arrow::Table> table;
+    try {
+        table = trade::ParquetReader::read_table(path);
+    } catch (const std::exception& e) {
+        spdlog::error("Failed to read {}: {}", path, e.what());
+        return 1;
+    }
+
+    int64_t num_rows = table->num_rows();
+    int num_cols = table->num_columns();
+    int display_rows = (args.limit > 0 && args.limit < num_rows)
+        ? args.limit : static_cast<int>(num_rows);
+
+    std::cout << "File: " << path << "\n"
+              << "Rows: " << num_rows << "  Columns: " << num_cols << "\n\n";
+
+    // Compute column widths
+    std::vector<int> widths(num_cols);
+    std::vector<std::string> col_names(num_cols);
+    for (int c = 0; c < num_cols; ++c) {
+        col_names[c] = table->schema()->field(c)->name();
+        widths[c] = static_cast<int>(col_names[c].size());
+    }
+
+    // Get string representations for each cell
+    std::vector<std::vector<std::string>> cells(display_rows, std::vector<std::string>(num_cols));
+    for (int c = 0; c < num_cols; ++c) {
+        auto col = table->column(c);
+        for (int r = 0; r < display_rows; ++r) {
+            int chunk_idx = 0;
+            int64_t offset = r;
+            while (chunk_idx < col->num_chunks() &&
+                   offset >= col->chunk(chunk_idx)->length()) {
+                offset -= col->chunk(chunk_idx)->length();
+                ++chunk_idx;
+            }
+            if (chunk_idx < col->num_chunks()) {
+                auto arr = col->chunk(chunk_idx);
+                if (arr->IsNull(offset)) {
+                    cells[r][c] = "null";
+                } else {
+                    auto scalar = arr->GetScalar(offset);
+                    if (scalar.ok()) {
+                        cells[r][c] = (*scalar)->ToString();
+                    } else {
+                        cells[r][c] = "?";
+                    }
+                }
+            }
+            widths[c] = std::max(widths[c], static_cast<int>(cells[r][c].size()));
+        }
+    }
+
+    // Print header
+    for (int c = 0; c < num_cols; ++c) {
+        std::cout << std::left << std::setw(widths[c] + 2) << col_names[c];
+    }
+    std::cout << "\n";
+    for (int c = 0; c < num_cols; ++c) {
+        std::cout << std::string(widths[c], '-') << "  ";
+    }
+    std::cout << "\n";
+
+    // Print rows
+    for (int r = 0; r < display_rows; ++r) {
+        for (int c = 0; c < num_cols; ++c) {
+            std::cout << std::left << std::setw(widths[c] + 2) << cells[r][c];
+        }
+        std::cout << "\n";
+    }
+
+    if (display_rows < num_rows) {
+        std::cout << "... (" << (num_rows - display_rows)
+                  << " more rows)" << std::endl;
+    }
+
+    return 0;
+}
+
+// ============================================================================
+// sql — launch DuckDB CLI with data directory pre-configured
+// ============================================================================
+int cmd_sql(const CliArgs& args, const trade::Config& config) {
+    // Check if duckdb is available
+    if (std::system("which duckdb > /dev/null 2>&1") != 0) {
+        spdlog::error("duckdb not found. Install with: brew install duckdb");
+        return 1;
+    }
+
+    trade::StoragePath paths(config.data.data_root);
+    std::string curated_dir = config.data.data_root + "/curated/cn_a/daily";
+    std::string raw_dir = config.data.data_root + "/raw/cn_a/daily";
+
+    // Build init SQL: create views for convenient querying
+    std::string init_sql;
+    init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM read_parquet('" + curated_dir + "/**/*.parquet', union_by_name=true);";
+    init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM read_parquet('" + raw_dir + "/**/*.parquet', union_by_name=true);";
+
+    // If a specific file is given, also create a 'data' view
+    if (!args.file.empty()) {
+        init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" + args.file + "');";
+    } else if (!args.symbol.empty()) {
+        // Find parquet files for this symbol
+        auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+        int year = trade::date_year(now);
+        std::string path = paths.curated_daily(args.symbol, year);
+        init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" + path + "');";
+    }
+
+    std::cout << "Starting DuckDB SQL shell...\n"
+              << "Pre-configured views:\n"
+              << "  daily  - all curated daily bars\n"
+              << "  raw    - all raw daily bars\n";
+    if (!args.file.empty() || !args.symbol.empty()) {
+        std::cout << "  data   - specific file/symbol data\n";
+    }
+    std::cout << "\nExample queries:\n"
+              << "  SELECT * FROM daily WHERE symbol='600000.SH' ORDER BY date;\n"
+              << "  SELECT symbol, count(*) as bars FROM daily GROUP BY symbol;\n"
+              << "  SELECT * FROM daily WHERE date >= '2026-02-10';\n"
+              << std::endl;
+
+    // Launch duckdb with init commands
+    std::string cmd = "duckdb -init /dev/null -cmd \"" + init_sql + "\"";
+    return std::system(cmd.c_str());
 }
 
 // ============================================================================
@@ -609,14 +816,35 @@ int main(int argc, char* argv[]) {
     spdlog::set_level(args.verbose ? spdlog::level::debug : spdlog::level::info);
 
     trade::Config config;
-    try { config = trade::Config::load(args.config_path); }
-    catch (...) {
-        spdlog::debug("Config not found at {}, using defaults", args.config_path);
+    // Try config relative to executable, then source dir, then CWD
+    std::vector<std::string> config_search = {args.config_path};
+#ifdef TRADE_SOURCE_DIR
+    config_search.push_back(std::string(TRADE_SOURCE_DIR) + "/config/config.yaml");
+#endif
+    bool loaded = false;
+    for (const auto& cp : config_search) {
+        try {
+            config = trade::Config::load(cp);
+            loaded = true;
+            break;
+        } catch (...) {}
+    }
+    if (!loaded) {
+        spdlog::debug("Config not found, using defaults");
         config = trade::Config::defaults();
+    }
+
+    // Resolve relative data_root to project source dir
+    if (!config.data.data_root.empty() && config.data.data_root[0] != '/') {
+#ifdef TRADE_SOURCE_DIR
+        config.data.data_root = std::string(TRADE_SOURCE_DIR) + "/" + config.data.data_root;
+#endif
     }
 
     try {
         if (args.command == "download")  return cmd_download(args, config);
+        if (args.command == "view")      return cmd_view(args, config);
+        if (args.command == "sql")       return cmd_sql(args, config);
         if (args.command == "info")      return cmd_info(args, config);
         if (args.command == "features")  return cmd_features(args, config);
         if (args.command == "train")     return cmd_train(args, config);

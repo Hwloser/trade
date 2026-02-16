@@ -4,6 +4,7 @@
 #include "trade/model/instrument.h"
 #include <vector>
 #include <string>
+#include <optional>
 #include <functional>
 #include <unordered_map>
 
@@ -23,6 +24,9 @@ public:
 
     // Fetch instrument list
     virtual std::vector<Instrument> fetch_instruments() = 0;
+
+    // Fetch single instrument metadata (default: empty)
+    virtual std::optional<Instrument> fetch_instrument(const Symbol& /*symbol*/) { return std::nullopt; }
 
     // Test connectivity
     virtual bool ping() = 0;

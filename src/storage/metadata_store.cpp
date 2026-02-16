@@ -45,9 +45,15 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
             industry INTEGER,
             list_date TEXT,
             delist_date TEXT,
-            status INTEGER
+            status INTEGER,
+            total_shares INTEGER DEFAULT 0,
+            float_shares INTEGER DEFAULT 0
         )
     )");
+
+    // Schema migration: add columns if missing (for existing DBs)
+    sqlite3_exec(impl_->db, "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0", nullptr, nullptr, nullptr);
+    sqlite3_exec(impl_->db, "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0", nullptr, nullptr, nullptr);
 
     impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS downloads (
@@ -74,26 +80,40 @@ MetadataStore::~MetadataStore() = default;
 
 void MetadataStore::upsert_instrument(const Instrument& inst) {
     const char* sql = R"(
-        INSERT OR REPLACE INTO instruments (symbol, name, market, board, industry, list_date, delist_date, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO instruments (symbol, name, market, board, industry, list_date, delist_date, status, total_shares, float_shares)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
-    sqlite3_stmt* stmt;
-    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_instrument: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
 
     sqlite3_bind_text(stmt, 1, inst.symbol.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, inst.name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 3, static_cast<int>(inst.market));
     sqlite3_bind_int(stmt, 4, static_cast<int>(inst.board));
     sqlite3_bind_int(stmt, 5, static_cast<int>(inst.industry));
-    sqlite3_bind_text(stmt, 6, format_date(inst.list_date).c_str(), -1, SQLITE_TRANSIENT);
+
+    // list_date: use temporary variable to keep string alive during bind
+    std::string list_str = format_date(inst.list_date);
+    sqlite3_bind_text(stmt, 6, list_str.c_str(), -1, SQLITE_TRANSIENT);
+
     if (inst.delist_date) {
-        sqlite3_bind_text(stmt, 7, format_date(*inst.delist_date).c_str(), -1, SQLITE_TRANSIENT);
+        std::string delist_str = format_date(*inst.delist_date);
+        sqlite3_bind_text(stmt, 7, delist_str.c_str(), -1, SQLITE_TRANSIENT);
     } else {
         sqlite3_bind_null(stmt, 7);
     }
     sqlite3_bind_int(stmt, 8, static_cast<int>(inst.status));
+    sqlite3_bind_int64(stmt, 9, inst.total_shares);
+    sqlite3_bind_int64(stmt, 10, inst.float_shares);
 
-    sqlite3_step(stmt);
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        spdlog::error("Failed to upsert instrument {}: {}", inst.symbol, sqlite3_errmsg(impl_->db));
+    }
     sqlite3_finalize(stmt);
 }
 
@@ -114,6 +134,8 @@ std::optional<Instrument> MetadataStore::get_instrument(const Symbol& symbol) {
         auto delist = sqlite3_column_text(stmt, 6);
         if (delist) inst.delist_date = parse_date(reinterpret_cast<const char*>(delist));
         inst.status = static_cast<TradingStatus>(sqlite3_column_int(stmt, 7));
+        inst.total_shares = sqlite3_column_int64(stmt, 8);
+        inst.float_shares = sqlite3_column_int64(stmt, 9);
         sqlite3_finalize(stmt);
         return inst;
     }

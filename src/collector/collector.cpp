@@ -80,7 +80,13 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
     StoragePath::ensure_dir(curated_path);
     ParquetWriter::write_bars(curated_path, bars);
 
-    // 9. Record in metadata
+    // 9. Upsert instrument record
+    auto inst_opt = provider_->fetch_instrument(symbol);
+    if (inst_opt) {
+        metadata_.upsert_instrument(*inst_opt);
+    }
+
+    // 10. Record download
     metadata_.record_download(symbol, start, end, static_cast<int64_t>(bars.size()));
 
     spdlog::info("Collected {} bars for {} (quality: {:.1f}%)",

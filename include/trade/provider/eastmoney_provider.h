@@ -16,6 +16,7 @@ public:
     bool ping() override;
     std::vector<Bar> fetch_daily(const Symbol& symbol, Date start, Date end) override;
     std::vector<Instrument> fetch_instruments() override;
+    std::optional<Instrument> fetch_instrument(const Symbol& symbol) override;
 
     bool supports_northbound() const override { return true; }
     std::unordered_map<Symbol, double> fetch_northbound(Date date) override;
