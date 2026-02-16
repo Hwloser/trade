@@ -170,6 +170,9 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
     }
     trade::Collector collector(std::move(provider), config);
 
+    trade::StoragePath paths(config.data.data_root);
+    trade::MetadataStore metadata(paths.metadata_db());
+
     // Default start: Jan 1 of last year
     auto now_tp = std::chrono::system_clock::now();
     auto now_ymd = std::chrono::year_month_day{
@@ -186,52 +189,89 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
             ? std::chrono::floor<std::chrono::days>(now_tp)
             : trade::parse_date(args.end_date);
 
-        // Incremental download: check last download date unless --refresh
-        if (!args.refresh && args.start_date.empty()) {
-            trade::StoragePath paths(config.data.data_root);
-            trade::MetadataStore metadata(paths.metadata_db());
-            auto last = metadata.last_download_date(args.symbol);
-            if (last) {
-                start = trade::next_trading_day(*last);
+        std::string run_id = args.provider + "_dl_" + args.symbol + "_" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                now_tp.time_since_epoch()).count());
+        std::string mode = args.refresh ? "full" : "incremental";
+        metadata.begin_ingestion_run(run_id, args.provider, "cn_a_daily_bar", args.symbol, mode);
+
+        try {
+            // Incremental download: prefer watermark, fallback to last download
+            if (!args.refresh && args.start_date.empty()) {
+                constexpr int kLookbackDays = 5;
+                auto wm = metadata.last_watermark_date(args.provider, "cn_a_daily_bar", args.symbol);
+                if (wm) {
+                    start = *wm - std::chrono::days{kLookbackDays};
+                    if (start < default_start) start = default_start;
+                    spdlog::info("Incremental from watermark {} (lookback {}d => {})",
+                                 trade::format_date(*wm), kLookbackDays, trade::format_date(start));
+                } else {
+                    auto last = metadata.last_download_date(args.symbol);
+                    if (last) {
+                        start = trade::next_trading_day(*last);
+                        spdlog::info("Incremental from last download {} (start: {})",
+                                     trade::format_date(*last), trade::format_date(start));
+                    } else {
+                        start = default_start;
+                    }
+                }
+
                 if (start > end) {
-                    std::cout << "Already up to date (last: "
-                              << trade::format_date(*last) << ")" << std::endl;
+                    metadata.finish_ingestion_run(run_id, true, 0, 0);
+                    std::cout << "Already up to date (last target: "
+                              << trade::format_date(end) << ")" << std::endl;
                     return 0;
                 }
-                spdlog::info("Incremental download from {} (last: {})",
-                             trade::format_date(start), trade::format_date(*last));
             } else {
-                start = default_start;
+                start = args.start_date.empty()
+                    ? default_start
+                    : trade::parse_date(args.start_date);
             }
-        } else {
-            start = args.start_date.empty()
-                ? default_start
-                : trade::parse_date(args.start_date);
-        }
 
-        auto report = collector.collect_symbol(args.symbol, start, end);
-        std::cout << "Downloaded " << report.total_bars << " bars for " << args.symbol
-                  << " (quality: " << std::fixed << std::setprecision(1)
-                  << (report.quality_score() * 100) << "%)" << std::endl;
-    } else {
-        if (args.refresh) {
-            auto [start, end] = resolve_dates(args, default_start_str);
-            collector.collect_all(start, end,
-                [](const trade::Symbol& sym, int cur, int total) {
-                    std::cout << "\r[" << cur << "/" << total << "] " << sym
-                             << "                " << std::flush;
-                });
-        } else {
-            collector.update_all(
-                [](const trade::Symbol& sym, int cur, int total) {
-                    std::cout << "\r[" << cur << "/" << total << "] " << sym
-                             << "                " << std::flush;
-                });
+            auto report = collector.collect_symbol(args.symbol, start, end);
+            metadata.finish_ingestion_run(run_id, true,
+                                          static_cast<int64_t>(report.total_bars),
+                                          static_cast<int64_t>(report.valid_bars));
+
+            std::cout << "Downloaded " << report.total_bars << " bars for " << args.symbol
+                      << " (quality: " << std::fixed << std::setprecision(1)
+                      << (report.quality_score() * 100) << "%)" << std::endl;
+        } catch (const std::exception& e) {
+            metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
+            throw;
         }
-        std::cout << "\nDownload complete." << std::endl;
+    } else {
+        std::string run_id = args.provider + "_dl_all_" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                now_tp.time_since_epoch()).count());
+        std::string mode = args.refresh ? "full" : "incremental";
+        metadata.begin_ingestion_run(run_id, args.provider, "cn_a_daily_bar", "*", mode);
+
+        try {
+            if (args.refresh) {
+                auto [start_all, end_all] = resolve_dates(args, default_start_str);
+                collector.collect_all(start_all, end_all,
+                    [](const trade::Symbol& sym, int cur, int total) {
+                        std::cout << "\r[" << cur << "/" << total << "] " << sym
+                                 << "                " << std::flush;
+                    });
+            } else {
+                collector.update_all(
+                    [](const trade::Symbol& sym, int cur, int total) {
+                        std::cout << "\r[" << cur << "/" << total << "] " << sym
+                                 << "                " << std::flush;
+                    });
+            }
+            metadata.finish_ingestion_run(run_id, true, 0, 0);
+            std::cout << "\nDownload complete." << std::endl;
+        } catch (const std::exception& e) {
+            metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
+            throw;
+        }
     }
     return 0;
 }
+
 
 // ============================================================================
 // info
