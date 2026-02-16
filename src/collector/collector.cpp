@@ -222,8 +222,17 @@ void Collector::update_all(ProgressCallback progress) {
                      static_cast<int>(symbols.size()));
         }
 
-        auto last = metadata_.last_download_date(symbols[i]);
-        Date start = last ? next_trading_day(*last) : parse_date("2020-01-01");
+        Date start;
+        constexpr int kLookbackDays = 5;
+        auto wm = metadata_.last_watermark_date(provider_->name(), "cn_a_daily_bar", symbols[i]);
+        if (wm) {
+            start = *wm - std::chrono::days{kLookbackDays};
+            Date floor = parse_date("2020-01-01");
+            if (start < floor) start = floor;
+        } else {
+            auto last = metadata_.last_download_date(symbols[i]);
+            start = last ? next_trading_day(*last) : parse_date("2020-01-01");
+        }
         collect_symbol(symbols[i], start, today);
     }
 }
