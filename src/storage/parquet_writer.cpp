@@ -1,18 +1,262 @@
 #include "trade/storage/parquet_writer.h"
+
 #include "trade/common/time_utils.h"
+#include "trade/storage/parquet_reader.h"
+#include "trade/normalizer/bar_normalizer.h"
+
 #include <arrow/builder.h>
 #include <arrow/io/file.h>
 #include <arrow/table.h>
+#include <filesystem>
 #include <parquet/arrow/writer.h>
 #include <spdlog/spdlog.h>
-#include <filesystem>
+#include <unordered_map>
 
 namespace trade {
+namespace {
 
-std::shared_ptr<arrow::Schema> ParquetWriter::bar_schema() {
+int64_t to_epoch_ms(Timestamp ts) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               ts.time_since_epoch())
+        .count();
+}
+
+Timestamp from_epoch_ms(int64_t ms) {
+    return Timestamp{std::chrono::milliseconds{ms}};
+}
+
+std::string event_key(const TextEvent& e) {
+    if (!e.content_hash.empty()) return e.content_hash;
+    return e.source + "|" + e.url + "|" + std::to_string(to_epoch_ms(e.timestamp)) +
+           "|" + e.title;
+}
+
+std::string nlp_key(const NlpResult& r) {
+    return r.symbol + "|" + format_date(r.date) + "|" + r.source;
+}
+
+std::string factor_key(const SentimentFactors& f) {
+    return f.symbol + "|" + format_date(f.date);
+}
+
+std::vector<TextEvent> read_text_events(const std::string& path) {
+    auto table = ParquetReader::read_table(path);
+    if (!table) return {};
+
+    auto combined_res = table->CombineChunks(arrow::default_memory_pool());
+    if (!combined_res.ok()) return {};
+    auto t = *combined_res;
+
+    auto source = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("source")->chunk(0));
+    auto url = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("url")->chunk(0));
+    auto ts = std::static_pointer_cast<arrow::Int64Array>(t->GetColumnByName("event_time_ms")->chunk(0));
+    auto title = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("title")->chunk(0));
+    auto raw = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("raw_text")->chunk(0));
+    auto clean = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("clean_text")->chunk(0));
+    auto hash = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("content_hash")->chunk(0));
+
+    std::vector<TextEvent> out;
+    out.reserve(static_cast<size_t>(t->num_rows()));
+    for (int64_t i = 0; i < t->num_rows(); ++i) {
+        TextEvent e;
+        e.source = source->GetString(i);
+        e.url = url->GetString(i);
+        e.timestamp = from_epoch_ms(ts->Value(i));
+        e.title = title->GetString(i);
+        e.raw_text = raw->GetString(i);
+        e.clean_text = clean->GetString(i);
+        e.content_hash = hash->GetString(i);
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+std::shared_ptr<arrow::Table> text_events_to_table(const std::vector<TextEvent>& events) {
+    arrow::StringBuilder source_b, url_b, title_b, raw_b, clean_b, hash_b;
+    arrow::Int64Builder ts_b;
+
+    for (const auto& e : events) {
+        (void)source_b.Append(e.source);
+        (void)url_b.Append(e.url);
+        (void)ts_b.Append(to_epoch_ms(e.timestamp));
+        (void)title_b.Append(e.title);
+        (void)raw_b.Append(e.raw_text);
+        (void)clean_b.Append(e.clean_text);
+        (void)hash_b.Append(e.content_hash);
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays(7);
+    (void)source_b.Finish(&arrays[0]);
+    (void)url_b.Finish(&arrays[1]);
+    (void)ts_b.Finish(&arrays[2]);
+    (void)title_b.Finish(&arrays[3]);
+    (void)raw_b.Finish(&arrays[4]);
+    (void)clean_b.Finish(&arrays[5]);
+    (void)hash_b.Finish(&arrays[6]);
+
+    auto schema = arrow::schema({
+        arrow::field("source", arrow::utf8()),
+        arrow::field("url", arrow::utf8()),
+        arrow::field("event_time_ms", arrow::int64()),
+        arrow::field("title", arrow::utf8()),
+        arrow::field("raw_text", arrow::utf8()),
+        arrow::field("clean_text", arrow::utf8()),
+        arrow::field("content_hash", arrow::utf8()),
+    });
+    return arrow::Table::Make(schema, arrays);
+}
+
+std::vector<NlpResult> read_nlp_results(const std::string& path) {
+    auto table = ParquetReader::read_table(path);
+    if (!table) return {};
+
+    auto combined_res = table->CombineChunks(arrow::default_memory_pool());
+    if (!combined_res.ok()) return {};
+    auto t = *combined_res;
+
+    auto symbol = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("symbol")->chunk(0));
+    auto date = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("date")->chunk(0));
+    auto source = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("source")->chunk(0));
+    auto pos = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("positive")->chunk(0));
+    auto neu = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("neutral")->chunk(0));
+    auto neg = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("negative")->chunk(0));
+    auto cnt = std::static_pointer_cast<arrow::Int32Array>(t->GetColumnByName("article_count")->chunk(0));
+
+    std::vector<NlpResult> out;
+    out.reserve(static_cast<size_t>(t->num_rows()));
+    for (int64_t i = 0; i < t->num_rows(); ++i) {
+        NlpResult r;
+        r.symbol = symbol->GetString(i);
+        r.date = parse_date(date->GetString(i));
+        r.source = source->GetString(i);
+        r.sentiment.positive = pos->Value(i);
+        r.sentiment.neutral = neu->Value(i);
+        r.sentiment.negative = neg->Value(i);
+        r.article_count = cnt->Value(i);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::shared_ptr<arrow::Table> nlp_results_to_table(const std::vector<NlpResult>& results) {
+    arrow::StringBuilder symbol_b, date_b, source_b;
+    arrow::DoubleBuilder pos_b, neu_b, neg_b;
+    arrow::Int32Builder count_b;
+
+    for (const auto& r : results) {
+        (void)symbol_b.Append(r.symbol);
+        (void)date_b.Append(format_date(r.date));
+        (void)source_b.Append(r.source);
+        (void)pos_b.Append(r.sentiment.positive);
+        (void)neu_b.Append(r.sentiment.neutral);
+        (void)neg_b.Append(r.sentiment.negative);
+        (void)count_b.Append(r.article_count);
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays(7);
+    (void)symbol_b.Finish(&arrays[0]);
+    (void)date_b.Finish(&arrays[1]);
+    (void)source_b.Finish(&arrays[2]);
+    (void)pos_b.Finish(&arrays[3]);
+    (void)neu_b.Finish(&arrays[4]);
+    (void)neg_b.Finish(&arrays[5]);
+    (void)count_b.Finish(&arrays[6]);
+
+    auto schema = arrow::schema({
+        arrow::field("symbol", arrow::utf8()),
+        arrow::field("date", arrow::utf8()),
+        arrow::field("source", arrow::utf8()),
+        arrow::field("positive", arrow::float64()),
+        arrow::field("neutral", arrow::float64()),
+        arrow::field("negative", arrow::float64()),
+        arrow::field("article_count", arrow::int32()),
+    });
+    return arrow::Table::Make(schema, arrays);
+}
+
+std::vector<SentimentFactors> read_sentiment_factors(const std::string& path) {
+    auto table = ParquetReader::read_table(path);
+    if (!table) return {};
+
+    auto combined_res = table->CombineChunks(arrow::default_memory_pool());
+    if (!combined_res.ok()) return {};
+    auto t = *combined_res;
+
+    auto symbol = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("symbol")->chunk(0));
+    auto date = std::static_pointer_cast<arrow::StringArray>(t->GetColumnByName("date")->chunk(0));
+    auto net = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("net_sentiment")->chunk(0));
+    auto shock = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("neg_shock")->chunk(0));
+    auto vel = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("sent_velocity")->chunk(0));
+    auto vol = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("sent_volatility")->chunk(0));
+    auto disp = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("source_dispersion")->chunk(0));
+    auto cross_v = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("sent_volume_cross")->chunk(0));
+    auto cross_t = std::static_pointer_cast<arrow::DoubleArray>(t->GetColumnByName("sent_turnover_cross")->chunk(0));
+
+    std::vector<SentimentFactors> out;
+    out.reserve(static_cast<size_t>(t->num_rows()));
+    for (int64_t i = 0; i < t->num_rows(); ++i) {
+        SentimentFactors f;
+        f.symbol = symbol->GetString(i);
+        f.date = parse_date(date->GetString(i));
+        f.net_sentiment = net->Value(i);
+        f.neg_shock = shock->Value(i);
+        f.sent_velocity = vel->Value(i);
+        f.sent_volatility = vol->Value(i);
+        f.source_dispersion = disp->Value(i);
+        f.sent_volume_cross = cross_v->Value(i);
+        f.sent_turnover_cross = cross_t->Value(i);
+        out.push_back(std::move(f));
+    }
+    return out;
+}
+
+std::shared_ptr<arrow::Table> sentiment_factors_to_table(const std::vector<SentimentFactors>& factors) {
+    arrow::StringBuilder symbol_b, date_b;
+    arrow::DoubleBuilder net_b, shock_b, vel_b, vol_b, disp_b, cross_v_b, cross_t_b;
+
+    for (const auto& f : factors) {
+        (void)symbol_b.Append(f.symbol);
+        (void)date_b.Append(format_date(f.date));
+        (void)net_b.Append(f.net_sentiment);
+        (void)shock_b.Append(f.neg_shock);
+        (void)vel_b.Append(f.sent_velocity);
+        (void)vol_b.Append(f.sent_volatility);
+        (void)disp_b.Append(f.source_dispersion);
+        (void)cross_v_b.Append(f.sent_volume_cross);
+        (void)cross_t_b.Append(f.sent_turnover_cross);
+    }
+
+    std::vector<std::shared_ptr<arrow::Array>> arrays(9);
+    (void)symbol_b.Finish(&arrays[0]);
+    (void)date_b.Finish(&arrays[1]);
+    (void)net_b.Finish(&arrays[2]);
+    (void)shock_b.Finish(&arrays[3]);
+    (void)vel_b.Finish(&arrays[4]);
+    (void)vol_b.Finish(&arrays[5]);
+    (void)disp_b.Finish(&arrays[6]);
+    (void)cross_v_b.Finish(&arrays[7]);
+    (void)cross_t_b.Finish(&arrays[8]);
+
+    auto schema = arrow::schema({
+        arrow::field("symbol", arrow::utf8()),
+        arrow::field("date", arrow::utf8()),
+        arrow::field("net_sentiment", arrow::float64()),
+        arrow::field("neg_shock", arrow::float64()),
+        arrow::field("sent_velocity", arrow::float64()),
+        arrow::field("sent_volatility", arrow::float64()),
+        arrow::field("source_dispersion", arrow::float64()),
+        arrow::field("sent_volume_cross", arrow::float64()),
+        arrow::field("sent_turnover_cross", arrow::float64()),
+    });
+    return arrow::Table::Make(schema, arrays);
+}
+
+} // namespace
+
+std::shared_ptr<arrow::Schema> ParquetStore::bar_schema() {
     return arrow::schema({
         arrow::field("symbol", arrow::utf8()),
-        arrow::field("date", arrow::utf8()),    // YYYY-MM-DD string
+        arrow::field("date", arrow::utf8()),
         arrow::field("open", arrow::float64()),
         arrow::field("high", arrow::float64()),
         arrow::field("low", arrow::float64()),
@@ -34,7 +278,7 @@ std::shared_ptr<arrow::Schema> ParquetWriter::bar_schema() {
     });
 }
 
-std::shared_ptr<arrow::Table> ParquetWriter::bars_to_table(const std::vector<Bar>& bars) {
+std::shared_ptr<arrow::Table> ParquetStore::bars_to_table(const std::vector<Bar>& bars) {
     arrow::StringBuilder symbol_builder, date_builder;
     arrow::DoubleBuilder open_b, high_b, low_b, close_b, amount_b, turnover_b, prev_close_b, vwap_b;
     arrow::Int64Builder volume_b;
@@ -91,14 +335,77 @@ std::shared_ptr<arrow::Table> ParquetWriter::bars_to_table(const std::vector<Bar
     return arrow::Table::Make(bar_schema(), arrays);
 }
 
-void ParquetWriter::write_bars(const std::string& path, const std::vector<Bar>& bars) {
-    auto table = bars_to_table(bars);
-    write_table(path, table);
+void ParquetStore::write_bars(const std::string& path,
+                              const std::vector<Bar>& bars,
+                              MergeMode mode) {
+    if (mode == MergeMode::kReplace) {
+        write_table(path, bars_to_table(bars));
+        return;
+    }
+
+    std::unordered_map<Date, Bar> by_date;
+    for (auto& b : ParquetReader::read_bars(path)) {
+        by_date[b.date] = std::move(b);
+    }
+    for (const auto& b : bars) {
+        by_date[b.date] = b;
+    }
+
+    std::vector<Bar> merged;
+    merged.reserve(by_date.size());
+    for (auto& [_, b] : by_date) merged.push_back(std::move(b));
+    merged = BarNormalizer::normalize(std::move(merged));
+
+    write_table(path, bars_to_table(merged));
 }
 
-void ParquetWriter::write_table(const std::string& path,
-                                 const std::shared_ptr<arrow::Table>& table) {
-    // Ensure parent directory exists
+void ParquetStore::write_text_events(const std::string& path,
+                                     const std::vector<TextEvent>& events,
+                                     MergeMode mode) {
+    std::vector<TextEvent> merged = events;
+    if (mode == MergeMode::kMergeByKey) {
+        std::unordered_map<std::string, TextEvent> dedup;
+        for (auto& e : read_text_events(path)) dedup[event_key(e)] = std::move(e);
+        for (const auto& e : events) dedup[event_key(e)] = e;
+        merged.clear();
+        merged.reserve(dedup.size());
+        for (auto& [_, e] : dedup) merged.push_back(std::move(e));
+    }
+    write_table(path, text_events_to_table(merged));
+}
+
+void ParquetStore::write_nlp_results(const std::string& path,
+                                     const std::vector<NlpResult>& results,
+                                     MergeMode mode) {
+    std::vector<NlpResult> merged = results;
+    if (mode == MergeMode::kMergeByKey) {
+        std::unordered_map<std::string, NlpResult> dedup;
+        for (auto& r : read_nlp_results(path)) dedup[nlp_key(r)] = std::move(r);
+        for (const auto& r : results) dedup[nlp_key(r)] = r;
+        merged.clear();
+        merged.reserve(dedup.size());
+        for (auto& [_, r] : dedup) merged.push_back(std::move(r));
+    }
+    write_table(path, nlp_results_to_table(merged));
+}
+
+void ParquetStore::write_sentiment_factors(const std::string& path,
+                                           const std::vector<SentimentFactors>& factors,
+                                           MergeMode mode) {
+    std::vector<SentimentFactors> merged = factors;
+    if (mode == MergeMode::kMergeByKey) {
+        std::unordered_map<std::string, SentimentFactors> dedup;
+        for (auto& f : read_sentiment_factors(path)) dedup[factor_key(f)] = std::move(f);
+        for (const auto& f : factors) dedup[factor_key(f)] = f;
+        merged.clear();
+        merged.reserve(dedup.size());
+        for (auto& [_, f] : dedup) merged.push_back(std::move(f));
+    }
+    write_table(path, sentiment_factors_to_table(merged));
+}
+
+void ParquetStore::write_table(const std::string& path,
+                               const std::shared_ptr<arrow::Table>& table) {
     auto parent = std::filesystem::path(path).parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent);
@@ -111,12 +418,12 @@ void ParquetWriter::write_table(const std::string& path,
     }
 
     auto writer_props = parquet::WriterProperties::Builder()
-        .compression(parquet::Compression::SNAPPY)
-        ->build();
+                            .compression(parquet::Compression::SNAPPY)
+                            ->build();
 
     auto status = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
-                                              *outfile, /*chunk_size=*/65536,
-                                              writer_props);
+                                             *outfile, /*chunk_size=*/65536,
+                                             writer_props);
     if (!status.ok()) {
         spdlog::error("Failed to write parquet {}: {}", path, status.ToString());
     } else {

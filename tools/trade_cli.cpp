@@ -27,6 +27,7 @@
 #include "trade/provider/provider_factory.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
+#include "trade/storage/parquet_writer.h"
 #include "trade/storage/storage_path.h"
 #include <arrow/api.h>
 #include <arrow/io/api.h>
@@ -43,7 +44,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -693,52 +696,190 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
         return 1;
     }
 
-    trade::RssSource rss;
-    rss.add_feed("https://rsshub.app/cls/telegraph", "CLS");
-    rss.add_feed("https://rsshub.app/sina/finance", "Sina");
+    trade::StoragePath paths(config.data.data_root);
+    trade::MetadataStore metadata(paths.metadata_db());
 
     auto [start, end] = resolve_dates(args, "2024-01-01");
-    auto events = rss.fetch(end);
-    if (events.empty()) {
-        std::cout << "No events fetched (check network)." << std::endl;
-        return 0;
+    if (args.start_date.empty()) {
+        auto wm = metadata.last_watermark_date(src, "sentiment_text", src);
+        if (wm) {
+            auto next = *wm + std::chrono::days{1};
+            if (next > start) start = next;
+        }
     }
 
-    trade::TextCleaner cleaner;
-    for (auto& ev : events)
-        ev.clean_text = cleaner.clean(ev.raw_text);
+    auto run_id = src + "_sent_" +
+        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    metadata.begin_ingestion_run(run_id, src, "sentiment_pipeline", src, "incremental");
 
-    trade::RuleSentiment model;
-    if (!config.sentiment.dict_path.empty())
-        model.load_dict(config.sentiment.dict_path);
+    try {
+        trade::RssSource rss;
+        rss.add_feed("https://rsshub.app/cls/telegraph", "CLS");
+        rss.add_feed("https://rsshub.app/sina/finance", "Sina");
 
-    int pos = 0, neg = 0, neu = 0;
-    std::cout << "=== Sentiment (" << events.size() << " articles) ===\n" << std::endl;
-    for (const auto& ev : events) {
-        auto r = model.predict(ev.clean_text.empty() ? ev.raw_text : ev.clean_text);
-        const char* lbl = "neutral";
-        if (r.positive > r.neutral && r.positive > r.negative) { lbl = "positive"; ++pos; }
-        else if (r.negative > r.neutral && r.negative > r.positive) { lbl = "negative"; ++neg; }
-        else { ++neu; }
-        std::cout << "[" << lbl << "] " << ev.title << std::endl;
-    }
+        auto events = rss.fetch_range(start, end);
+        if (events.empty()) {
+            metadata.finish_ingestion_run(run_id, true, 0, 0);
+            std::cout << "No new sentiment events in range "
+                      << trade::format_date(start) << " to " << trade::format_date(end)
+                      << std::endl;
+            return 0;
+        }
 
-    int total = pos + neg + neu;
-    std::cout << "\nSummary: " << pos << " pos / " << neu << " neu / " << neg << " neg\n";
-    if (total > 0)
-        std::cout << "Net sentiment: " << std::showpos << std::fixed << std::setprecision(3)
-                  << (double(pos - neg) / total) << std::endl;
+        trade::TextCleaner cleaner;
+        for (auto& ev : events) {
+            ev.clean_text = cleaner.clean(ev.raw_text);
+        }
 
-    if (!args.symbol.empty()) {
+        // Bronze write by date partition
+        std::map<trade::Date, std::vector<trade::TextEvent>> bronze_by_date;
+        for (const auto& ev : events) {
+            auto d = std::chrono::floor<std::chrono::days>(ev.timestamp);
+            bronze_by_date[d].push_back(ev);
+        }
+        for (auto& [d, day_events] : bronze_by_date) {
+            auto ymd = std::chrono::year_month_day{d};
+            int y = static_cast<int>(ymd.year());
+            int m = static_cast<unsigned>(ymd.month());
+            auto path = paths.sentiment_bronze(y, m, src, d);
+            trade::ParquetStore::write_text_events(path, day_events,
+                trade::ParquetStore::MergeMode::kMergeByKey);
+        }
+
+        trade::RuleSentiment model;
+        if (!config.sentiment.dict_path.empty()) {
+            model.load_dict(config.sentiment.dict_path);
+        }
+
         trade::SymbolLinker linker;
-        linker.add_alias(args.symbol, args.symbol);
-        int matched = 0;
-        for (const auto& ev : events)
-            if (!linker.link(ev.raw_text).empty()) ++matched;
-        std::cout << "Articles linked to " << args.symbol << ": " << matched << std::endl;
+        auto instruments = metadata.get_all_instruments();
+        linker.build_index(instruments);
+
+        struct Agg {
+            double pos = 0.0;
+            double neu = 0.0;
+            double neg = 0.0;
+            int count = 0;
+        };
+        std::unordered_map<std::string, Agg> agg;
+
+        int pos_cnt = 0, neg_cnt = 0, neu_cnt = 0;
+        for (const auto& ev : events) {
+            const auto txt = ev.clean_text.empty() ? ev.raw_text : ev.clean_text;
+            auto score = model.predict(txt);
+
+            if (score.positive > score.neutral && score.positive > score.negative) ++pos_cnt;
+            else if (score.negative > score.neutral && score.negative > score.positive) ++neg_cnt;
+            else ++neu_cnt;
+
+            auto day = std::chrono::floor<std::chrono::days>(ev.timestamp);
+            std::vector<trade::Symbol> syms;
+            if (!args.symbol.empty()) {
+                syms.push_back(args.symbol);
+            } else {
+                syms = linker.link_symbols(ev.title + " " + txt);
+            }
+            if (syms.empty()) continue;
+
+            for (const auto& sym : syms) {
+                auto key = sym + "|" + trade::format_date(day) + "|" + src;
+                auto& a = agg[key];
+                a.pos += score.positive;
+                a.neu += score.neutral;
+                a.neg += score.negative;
+                a.count += 1;
+            }
+        }
+
+        std::vector<trade::NlpResult> nlp_results;
+        nlp_results.reserve(agg.size());
+        for (const auto& [key, a] : agg) {
+            auto p1 = key.find('|');
+            auto p2 = key.find('|', p1 + 1);
+            if (p1 == std::string::npos || p2 == std::string::npos || a.count <= 0) continue;
+
+            trade::NlpResult r;
+            r.symbol = key.substr(0, p1);
+            r.date = trade::parse_date(key.substr(p1 + 1, p2 - p1 - 1));
+            r.source = key.substr(p2 + 1);
+            r.sentiment.positive = a.pos / a.count;
+            r.sentiment.neutral = a.neu / a.count;
+            r.sentiment.negative = a.neg / a.count;
+            r.article_count = a.count;
+            nlp_results.push_back(std::move(r));
+        }
+
+        // Silver write by date partition
+        std::map<trade::Date, std::vector<trade::NlpResult>> silver_by_date;
+        for (const auto& r : nlp_results) {
+            silver_by_date[r.date].push_back(r);
+        }
+        for (auto& [d, day_results] : silver_by_date) {
+            auto ymd = std::chrono::year_month_day{d};
+            int y = static_cast<int>(ymd.year());
+            int m = static_cast<unsigned>(ymd.month());
+            auto path = paths.sentiment_silver(y, m, d);
+            trade::ParquetStore::write_nlp_results(path, day_results,
+                trade::ParquetStore::MergeMode::kMergeByKey);
+        }
+
+        // Gold factors
+        std::unordered_map<trade::Symbol, trade::BarSeries> bar_map;
+        for (const auto& r : nlp_results) {
+            if (!bar_map.count(r.symbol)) {
+                trade::BarSeries series;
+                series.symbol = r.symbol;
+                series.bars = load_bars(r.symbol, config);
+                bar_map[r.symbol] = std::move(series);
+            }
+        }
+
+        trade::SentimentFactorCalculator calc;
+        auto factors = calc.compute(nlp_results, bar_map);
+
+        std::map<trade::Date, std::vector<trade::SentimentFactors>> gold_by_date;
+        for (const auto& f : factors) {
+            gold_by_date[f.date].push_back(f);
+        }
+        for (auto& [d, day_factors] : gold_by_date) {
+            auto ymd = std::chrono::year_month_day{d};
+            int y = static_cast<int>(ymd.year());
+            int m = static_cast<unsigned>(ymd.month());
+            auto path = paths.sentiment_gold(y, m, d);
+            trade::ParquetStore::write_sentiment_factors(path, day_factors,
+                trade::ParquetStore::MergeMode::kMergeByKey);
+        }
+
+        trade::Date max_date = start;
+        for (const auto& [d, _] : bronze_by_date) {
+            if (d > max_date) max_date = d;
+        }
+        metadata.upsert_watermark(src, "sentiment_text", src, max_date);
+
+        int total = pos_cnt + neg_cnt + neu_cnt;
+        std::cout << "=== Sentiment Incremental ===\n"
+                  << "Range: " << trade::format_date(start) << " to " << trade::format_date(end) << "\n"
+                  << "Events: " << events.size() << "\n"
+                  << "NLP rows: " << nlp_results.size() << "\n"
+                  << "Factor rows: " << factors.size() << "\n"
+                  << "Summary: " << pos_cnt << " pos / " << neu_cnt << " neu / " << neg_cnt << " neg\n";
+        if (total > 0) {
+            std::cout << "Net sentiment: " << std::showpos << std::fixed << std::setprecision(3)
+                      << (double(pos_cnt - neg_cnt) / total) << std::noshowpos << "\n";
+        }
+
+        metadata.finish_ingestion_run(run_id, true,
+                                      static_cast<int64_t>(events.size()),
+                                      static_cast<int64_t>(nlp_results.size() + factors.size()));
+        return 0;
+    } catch (const std::exception& e) {
+        metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
+        spdlog::error("Sentiment pipeline failed: {}", e.what());
+        return 1;
     }
-    return 0;
 }
+
 
 // ============================================================================
 // report
