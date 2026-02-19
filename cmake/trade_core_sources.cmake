@@ -1,31 +1,27 @@
-set(TRADE_CORE_SOURCES
-    # Common
+# Source groups for modular core build.
+
+set(TRADE_BASE_SOURCES
     src/common/config.cpp
     src/common/time_utils.cpp
-    # Model
     src/model/bar.cpp
     src/model/instrument.cpp
-    # Storage
+)
+
+set(TRADE_DATA_SOURCES
     src/storage/parquet_writer.cpp
     src/storage/parquet_reader.cpp
     src/storage/metadata_store.cpp
     src/storage/storage_path.cpp
     src/storage/baidu_netdisk_client.cpp
-    # Provider
     src/provider/provider_factory.cpp
     src/provider/http_client.cpp
     src/provider/eastmoney_provider.cpp
-    # Normalizer
     src/normalizer/bar_normalizer.cpp
-    # Validator
     src/validator/data_validator.cpp
-    # Collector
     src/collector/collector.cpp
-    # App pipelines
-    src/app/pipelines/download_pipeline.cpp
-    src/app/pipelines/sentiment_pipeline.cpp
-    src/app/pipelines/train_pipeline.cpp
-    # Features
+)
+
+set(TRADE_FEATURE_SOURCES
     src/features/feature_engine.cpp
     src/features/preprocessor.cpp
     src/features/momentum.cpp
@@ -38,15 +34,21 @@ set(TRADE_CORE_SOURCES
     src/features/calendar.cpp
     src/features/fundamental.cpp
     src/features/feature_monitor.cpp
-    # Stats
+)
+
+set(TRADE_STATS_SOURCES
     src/stats/descriptive.cpp
     src/stats/correlation.cpp
     src/stats/attribution.cpp
-    # ML
+)
+
+set(TRADE_ML_SOURCES
     src/ml/lgbm_model.cpp
     src/ml/model_trainer.cpp
     src/ml/model_evaluator.cpp
-    # Risk
+)
+
+set(TRADE_RISK_SOURCES
     src/risk/covariance.cpp
     src/risk/var.cpp
     src/risk/kelly.cpp
@@ -55,9 +57,13 @@ set(TRADE_CORE_SOURCES
     src/risk/stress_test.cpp
     src/risk/risk_monitor.cpp
     src/risk/risk_attribution.cpp
-    # Regime
+)
+
+set(TRADE_REGIME_SOURCES
     src/regime/regime_detector.cpp
-    # Backtest
+)
+
+set(TRADE_BACKTEST_SOURCES
     src/backtest/backtest_engine.cpp
     src/backtest/broker_sim.cpp
     src/backtest/portfolio_state.cpp
@@ -66,7 +72,9 @@ set(TRADE_CORE_SOURCES
     src/backtest/performance.cpp
     src/backtest/validation.cpp
     src/backtest/reporting.cpp
-    # Sentiment
+)
+
+set(TRADE_SENTIMENT_SOURCES
     src/sentiment/rss_source.cpp
     src/sentiment/xueqiu_source.cpp
     src/sentiment/jin10_source.cpp
@@ -74,11 +82,19 @@ set(TRADE_CORE_SOURCES
     src/sentiment/symbol_linker.cpp
     src/sentiment/rule_sentiment.cpp
     src/sentiment/sentiment_factor.cpp
-    # Decision
+)
+
+set(TRADE_DECISION_SOURCES
     src/decision/signal_combiner.cpp
     src/decision/universe_filter.cpp
     src/decision/portfolio_opt.cpp
     src/decision/order_manager.cpp
     src/decision/pre_trade_check.cpp
     src/decision/decision_report.cpp
+)
+
+set(TRADE_APP_SOURCES
+    src/app/pipelines/download_pipeline.cpp
+    src/app/pipelines/sentiment_pipeline.cpp
+    src/app/pipelines/train_pipeline.cpp
 )

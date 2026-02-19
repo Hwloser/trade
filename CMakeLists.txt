@@ -67,14 +67,13 @@ endif()
 
 # Core library sources
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/trade_core_sources.cmake)
-add_library(trade_core ${TRADE_CORE_SOURCES})
 
-target_include_directories(trade_core PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
+if(HAVE_ONNXRUNTIME)
+    list(APPEND TRADE_SENTIMENT_SOURCES src/sentiment/onnx_sentiment.cpp)
+endif()
 
-target_link_libraries(trade_core PUBLIC
+add_library(trade_deps INTERFACE)
+target_link_libraries(trade_deps INTERFACE
     Arrow::arrow_shared
     Parquet::parquet_shared
     SQLite::SQLite3
@@ -90,13 +89,52 @@ target_link_libraries(trade_core PUBLIC
 )
 
 if(HAVE_LIGHTGBM)
-    target_link_libraries(trade_core PUBLIC LightGBM::lightgbm)
+    target_link_libraries(trade_deps INTERFACE LightGBM::lightgbm)
 endif()
 
 if(HAVE_ONNXRUNTIME)
-    target_sources(trade_core PRIVATE src/sentiment/onnx_sentiment.cpp)
-    target_link_libraries(trade_core PUBLIC onnxruntime::onnxruntime)
+    target_link_libraries(trade_deps INTERFACE onnxruntime::onnxruntime)
 endif()
+
+function(trade_add_object_module MODULE_NAME)
+    add_library(${MODULE_NAME} OBJECT ${ARGN})
+    target_include_directories(${MODULE_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(${MODULE_NAME} PRIVATE trade_deps)
+endfunction()
+
+trade_add_object_module(trade_obj_base ${TRADE_BASE_SOURCES})
+trade_add_object_module(trade_obj_data ${TRADE_DATA_SOURCES})
+trade_add_object_module(trade_obj_feature ${TRADE_FEATURE_SOURCES})
+trade_add_object_module(trade_obj_stats ${TRADE_STATS_SOURCES})
+trade_add_object_module(trade_obj_ml ${TRADE_ML_SOURCES})
+trade_add_object_module(trade_obj_risk ${TRADE_RISK_SOURCES})
+trade_add_object_module(trade_obj_regime ${TRADE_REGIME_SOURCES})
+trade_add_object_module(trade_obj_backtest ${TRADE_BACKTEST_SOURCES})
+trade_add_object_module(trade_obj_sentiment ${TRADE_SENTIMENT_SOURCES})
+trade_add_object_module(trade_obj_decision ${TRADE_DECISION_SOURCES})
+trade_add_object_module(trade_obj_app ${TRADE_APP_SOURCES})
+
+add_library(trade_core STATIC
+    $<TARGET_OBJECTS:trade_obj_base>
+    $<TARGET_OBJECTS:trade_obj_data>
+    $<TARGET_OBJECTS:trade_obj_feature>
+    $<TARGET_OBJECTS:trade_obj_stats>
+    $<TARGET_OBJECTS:trade_obj_ml>
+    $<TARGET_OBJECTS:trade_obj_risk>
+    $<TARGET_OBJECTS:trade_obj_regime>
+    $<TARGET_OBJECTS:trade_obj_backtest>
+    $<TARGET_OBJECTS:trade_obj_sentiment>
+    $<TARGET_OBJECTS:trade_obj_decision>
+    $<TARGET_OBJECTS:trade_obj_app>
+)
+
+target_include_directories(trade_core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(trade_core PUBLIC trade_deps)
 
 # Output layout
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
