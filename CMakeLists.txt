@@ -101,8 +101,9 @@ endif()
 # Output layout
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# CLI tool (moved to repo root)
-add_executable(trade_cli trade_cli.cpp)
+# CLI tool
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/trade_cli_sources.cmake)
+add_executable(trade_cli ${TRADE_CLI_SOURCES})
 target_link_libraries(trade_cli PRIVATE trade_core)
 target_compile_definitions(trade_cli PRIVATE
     TRADE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
