@@ -14,7 +14,7 @@ public:
 
     // Market data paths
     std::string raw_daily(const Symbol& symbol, int year) const;
-    std::string curated_daily(const Symbol& symbol, int year) const;
+    std::string silver_daily(const Symbol& symbol, int year) const;
 
     // Sentiment data paths (Bronze/Silver/Gold)
     std::string sentiment_bronze(int year, int month, const std::string& source, Date date) const;

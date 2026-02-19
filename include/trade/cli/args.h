@@ -16,8 +16,14 @@ struct CliArgs {
     std::string source;
     std::string output;
     std::string file;
+    std::string action;
+    std::string account_id;
+    std::string broker;
+    std::string account_name;
+    std::string auth_payload;
     bool verbose = false;
     bool refresh = false;
+    bool all = false;
     int limit = 0;
 };
 

@@ -55,17 +55,17 @@ void merge_and_write_raw_bars(const std::string& path,
     ParquetWriter::write_bars(path, merged, ParquetWriter::MergeMode::kReplace, partition_max_date);
 }
 
-void merge_and_write_curated_bars(const std::string& path,
-                                  std::vector<Bar> incoming,
-                                  Board default_board,
-                                  std::optional<Date> partition_max_date = std::nullopt) {
+void merge_and_write_silver_bars(const std::string& path,
+                                 std::vector<Bar> incoming,
+                                 Board default_board,
+                                 std::optional<Date> partition_max_date = std::nullopt) {
     std::vector<Bar> merged;
 
     if (std::filesystem::exists(path)) {
         try {
             merged = ParquetReader::read_bars(path);
         } catch (const std::exception& e) {
-            spdlog::warn("Failed to read existing curated partition {}: {}", path, e.what());
+            spdlog::warn("Failed to read existing silver partition {}: {}", path, e.what());
         }
     }
 
@@ -86,7 +86,7 @@ void record_market_quality(MetadataStore& metadata,
                            std::optional<Date> event_date) {
     MetadataStore::QualityCheckRecord qc;
     qc.run_id = run_id;
-    qc.dataset_id = "curated.cn_a.daily";
+    qc.dataset_id = "silver.cn_a.daily";
     qc.check_name = "quality_score";
     qc.metric_value = report.quality_score();
     qc.threshold_value = 0.95;
@@ -139,15 +139,15 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         return QualityReport{};
     }
 
-    // 2. Build curated bars from raw bars
+    // 2. Build silver bars from raw bars
     auto bars = BarNormalizer::normalize(raw_bars);
 
-    // 3. Compute price limits for curated layer
+    // 3. Compute price limits for silver layer
     Board board = (!bars.empty() && bars[0].board != Board::kMain)
         ? bars[0].board : Board::kMain;
     BarNormalizer::compute_limits(bars, board);
 
-    // 4. Merge northbound data by date (optional) into curated layer
+    // 4. Merge northbound data by date (optional) into silver layer
     if (provider_->supports_northbound() && !bars.empty()) {
         std::set<Date> dates;
         for (const auto& bar : bars) dates.insert(bar.date);
@@ -170,7 +170,7 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 5. Merge margin data by date (optional) into curated layer
+    // 5. Merge margin data by date (optional) into silver layer
     if (provider_->supports_margin() && !bars.empty()) {
         std::set<Date> dates;
         for (const auto& bar : bars) dates.insert(bar.date);
@@ -193,7 +193,7 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 6. Validate curated window
+    // 6. Validate silver window
     auto report = DataValidator::validate(bars);
     if (!report.is_clean()) {
         for (const auto& w : report.warnings) {
@@ -201,33 +201,35 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 7. Partition by year and write raw/curated separately
-    std::map<int, std::vector<Bar>> raw_by_year;
-    for (const auto& bar : raw_bars) {
-        raw_by_year[date_year(bar.date)].push_back(bar);
-    }
-
-    std::map<int, std::vector<Bar>> curated_by_year;
+    // 7. Partition by year and write silver (+ optional raw)
+    std::map<int, std::vector<Bar>> silver_by_year;
     for (const auto& bar : bars) {
-        curated_by_year[date_year(bar.date)].push_back(bar);
+        silver_by_year[date_year(bar.date)].push_back(bar);
     }
 
-    for (auto& [year, year_raw] : raw_by_year) {
-        auto raw_path = paths_.raw_daily(symbol, year);
-        Date max_date = start;
-        for (const auto& b : year_raw) {
-            if (b.date > max_date) max_date = b.date;
+    if (config_.ingestion.write_raw_layer) {
+        std::map<int, std::vector<Bar>> raw_by_year;
+        for (const auto& bar : raw_bars) {
+            raw_by_year[date_year(bar.date)].push_back(bar);
         }
-        merge_and_write_raw_bars(raw_path, std::move(year_raw), max_date);
+
+        for (auto& [year, year_raw] : raw_by_year) {
+            auto raw_path = paths_.raw_daily(symbol, year);
+            Date max_date = start;
+            for (const auto& b : year_raw) {
+                if (b.date > max_date) max_date = b.date;
+            }
+            merge_and_write_raw_bars(raw_path, std::move(year_raw), max_date);
+        }
     }
 
-    for (auto& [year, year_curated] : curated_by_year) {
-        auto curated_path = paths_.curated_daily(symbol, year);
+    for (auto& [year, year_silver] : silver_by_year) {
+        auto silver_path = paths_.silver_daily(symbol, year);
         Date max_date = start;
-        for (const auto& b : year_curated) {
+        for (const auto& b : year_silver) {
             if (b.date > max_date) max_date = b.date;
         }
-        merge_and_write_curated_bars(curated_path, std::move(year_curated), board, max_date);
+        merge_and_write_silver_bars(silver_path, std::move(year_silver), board, max_date);
     }
 
     // 8. Upsert instrument record

@@ -1,7 +1,7 @@
 data:
   data_root: "data"
   raw_dir: "raw"
-  curated_dir: "curated"
+  silver_dir: "silver"
   models_dir: "models"
   market_daily_subpath: "cn_a/daily"
 
@@ -10,3 +10,4 @@ ingestion:
   incremental_lookback_days: 5
   min_start_date: "2020-01-01"
   daily_bar_dataset: "cn_a_daily_bar"
+  write_raw_layer: false

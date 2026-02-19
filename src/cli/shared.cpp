@@ -32,14 +32,25 @@ std::vector<Bar> load_bars(const std::string& symbol,
     int start_year = date_year(min_date);
     int end_year = date_year(now);
     for (int year = start_year; year <= end_year; ++year) {
-        auto path = paths.curated_daily(symbol, year);
-        if (!std::filesystem::exists(path) && !cloud_mode) {
-            continue;
-        }
+        auto path = paths.silver_daily(symbol, year);
+        std::string legacy_curated_path =
+            (std::filesystem::path(config.data.data_root) / "curated" /
+             config.data.market_daily_subpath / std::to_string(year) /
+             (symbol + ".parquet"))
+                .string();
+        const bool path_exists =
+            std::filesystem::exists(path) || std::filesystem::exists(legacy_curated_path);
+        if (!path_exists && !cloud_mode) continue;
+
         try {
             auto bars = ParquetReader::read_bars(path);
             all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-        } catch (...) {}
+        } catch (...) {
+            try {
+                auto bars = ParquetReader::read_bars(legacy_curated_path);
+                all_bars.insert(all_bars.end(), bars.begin(), bars.end());
+            } catch (...) {}
+        }
     }
     return all_bars;
 }
@@ -140,6 +151,9 @@ std::vector<SqlViewDef> discover_sql_views(const Config& config) {
     std::vector<SqlViewDef> views;
     views.reserve(datasets.size());
     for (const auto& ds : datasets) {
+        if (ds.layer == "curated" || ds.dataset_id.rfind("curated.", 0) == 0) {
+            continue;
+        }
         auto prefix = std::filesystem::path(config.data.data_root) / ds.path_prefix;
         if (!has_local_parquet(prefix)) continue;
 
@@ -162,9 +176,12 @@ std::vector<SqlViewDef> discover_sql_views(const Config& config) {
         });
     };
 
-    add_fallback("curated.cn_a.daily",
+    add_fallback("silver.cn_a.daily",
                  std::filesystem::path(config.data.data_root) /
-                 config.data.curated_dir / config.data.market_daily_subpath);
+                 config.data.silver_dir / config.data.market_daily_subpath);
+    add_fallback("silver.cn_a.daily",
+                 std::filesystem::path(config.data.data_root) /
+                 "curated" / config.data.market_daily_subpath);
     add_fallback("raw.cn_a.daily",
                  std::filesystem::path(config.data.data_root) /
                  config.data.raw_dir / config.data.market_daily_subpath);
@@ -186,8 +203,10 @@ std::string build_sql_init(const std::vector<SqlViewDef>& views) {
             return v.dataset_id == dataset_id;
         });
     };
-    if (has_dataset("curated.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM curated_cn_a_daily;";
+    if (has_dataset("silver.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM silver_cn_a_daily;";
+    } else if (has_dataset("raw.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM raw_cn_a_daily;";
     }
     if (has_dataset("raw.cn_a.daily")) {
         init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM raw_cn_a_daily;";
@@ -217,6 +236,10 @@ std::string build_metadata_views_sql(const Config& config) {
     std::vector<std::vector<std::string>> file_rows;
     std::vector<std::vector<std::string>> schema_rows;
     std::vector<std::vector<std::string>> quality_rows;
+    std::vector<std::vector<std::string>> account_rows;
+    std::vector<std::vector<std::string>> account_cash_rows;
+    std::vector<std::vector<std::string>> account_position_rows;
+    std::vector<std::vector<std::string>> account_trade_rows;
     for (const auto& ds : datasets) {
         auto files = metadata.list_dataset_files(ds.dataset_id);
         for (const auto& f : files) {
@@ -236,6 +259,54 @@ std::string build_metadata_views_sql(const Config& config) {
                 std::to_string(active_schema->schema_version),
                 sql_string(active_schema->schema_hash),
                 sql_string(active_schema->schema_json),
+            });
+        }
+    }
+
+    auto accounts = metadata.list_broker_accounts(false);
+    for (const auto& a : accounts) {
+        account_rows.push_back({
+            sql_string(a.account_id),
+            sql_string(a.broker),
+            sql_string(a.account_name),
+            std::to_string(a.is_active ? 1 : 0),
+        });
+        if (auto latest_cash = metadata.latest_account_cash(a.account_id)) {
+            account_cash_rows.push_back({
+                sql_string(latest_cash->account_id),
+                sql_string(format_date(latest_cash->as_of_date)),
+                std::to_string(latest_cash->total_asset),
+                std::to_string(latest_cash->cash),
+                std::to_string(latest_cash->available_cash),
+                std::to_string(latest_cash->frozen_cash),
+                std::to_string(latest_cash->market_value),
+            });
+        }
+        for (const auto& p : metadata.latest_account_positions(a.account_id)) {
+            account_position_rows.push_back({
+                sql_string(p.account_id),
+                sql_string(format_date(p.as_of_date)),
+                sql_string(p.symbol),
+                std::to_string(p.quantity),
+                std::to_string(p.available_quantity),
+                std::to_string(p.cost_price),
+                std::to_string(p.last_price),
+                std::to_string(p.market_value),
+                std::to_string(p.unrealized_pnl),
+                std::to_string(p.unrealized_pnl_ratio),
+            });
+        }
+        for (const auto& t : metadata.list_account_trades(a.account_id, 200)) {
+            account_trade_rows.push_back({
+                sql_string(t.account_id),
+                sql_string(t.trade_id),
+                sql_string(format_date(t.trade_date)),
+                sql_string(t.symbol),
+                sql_string(t.side == Side::kSell ? "sell" : "buy"),
+                std::to_string(t.price),
+                std::to_string(t.quantity),
+                std::to_string(t.amount),
+                std::to_string(t.fee),
             });
         }
     }
@@ -274,6 +345,25 @@ std::string build_metadata_views_sql(const Config& config) {
         {"dataset_id", "check_name", "status", "severity", "metric_value", "threshold_value",
          "message", "event_date", "run_id"},
         quality_rows);
+    sql += build_values_view_sql(
+        "meta_accounts",
+        {"account_id", "broker", "account_name", "is_active"},
+        account_rows);
+    sql += build_values_view_sql(
+        "meta_account_cash",
+        {"account_id", "as_of_date", "total_asset", "cash", "available_cash", "frozen_cash",
+         "market_value"},
+        account_cash_rows);
+    sql += build_values_view_sql(
+        "meta_account_positions",
+        {"account_id", "as_of_date", "symbol", "quantity", "available_quantity", "cost_price",
+         "last_price", "market_value", "unrealized_pnl", "unrealized_pnl_ratio"},
+        account_position_rows);
+    sql += build_values_view_sql(
+        "meta_account_trades",
+        {"account_id", "trade_id", "trade_date", "symbol", "side", "price", "quantity",
+         "amount", "fee"},
+        account_trade_rows);
     return sql;
 }
 

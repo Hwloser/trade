@@ -262,28 +262,28 @@ TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
     auto d1 = make_date(2024, 1, 3);
     auto d2 = make_date(2024, 1, 5);
 
-    store_->upsert_schema("curated.cn_a.daily", 1, "schema_v1", "hash_v1", true);
-    auto s1 = store_->get_active_schema("curated.cn_a.daily");
+    store_->upsert_schema("silver.cn_a.daily", 1, "schema_v1", "hash_v1", true);
+    auto s1 = store_->get_active_schema("silver.cn_a.daily");
     ASSERT_TRUE(s1.has_value());
     EXPECT_EQ(s1->schema_version, 1);
     EXPECT_EQ(s1->schema_hash, "hash_v1");
 
-    int v1 = store_->upsert_dataset_file("curated.cn_a.daily",
-                                         "curated",
+    int v1 = store_->upsert_dataset_file("silver.cn_a.daily",
+                                         "silver",
                                          "cn_a",
                                          "daily",
-                                         "curated/cn_a/daily",
-                                         "curated/cn_a/daily/2024/600000.SH.parquet",
+                                         "silver/cn_a/daily",
+                                         "silver/cn_a/daily/2024/600000.SH.parquet",
                                          100,
                                          d1,
                                          1,
                                          "run-1");
-    int v2 = store_->upsert_dataset_file("curated.cn_a.daily",
-                                         "curated",
+    int v2 = store_->upsert_dataset_file("silver.cn_a.daily",
+                                         "silver",
                                          "cn_a",
                                          "daily",
-                                         "curated/cn_a/daily",
-                                         "curated/cn_a/daily/2024/600000.SH.parquet",
+                                         "silver/cn_a/daily",
+                                         "silver/cn_a/daily/2024/600000.SH.parquet",
                                          120,
                                          d2,
                                          1,
@@ -291,7 +291,7 @@ TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
     EXPECT_EQ(v1, 1);
     EXPECT_EQ(v2, 2);
 
-    auto files = store_->list_dataset_files("curated.cn_a.daily");
+    auto files = store_->list_dataset_files("silver.cn_a.daily");
     ASSERT_EQ(files.size(), 1u);
     EXPECT_EQ(files[0].row_count, 120);
     EXPECT_EQ(files[0].current_version, 2);
@@ -299,8 +299,8 @@ TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
     EXPECT_EQ(*files[0].max_event_date, d2);
 
     auto vers = store_->list_dataset_file_versions(
-        "curated.cn_a.daily",
-        "curated/cn_a/daily/2024/600000.SH.parquet");
+        "silver.cn_a.daily",
+        "silver/cn_a/daily/2024/600000.SH.parquet");
     ASSERT_EQ(vers.size(), 2u);
     EXPECT_EQ(vers[0].version, 2);
     EXPECT_EQ(vers[0].run_id, "run-2");
@@ -310,7 +310,7 @@ TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
 TEST_F(MetadataStoreTest, QualityCheckpointAndTrainingSnapshot) {
     MetadataStore::QualityCheckRecord qc;
     qc.run_id = "run-qc-1";
-    qc.dataset_id = "curated.cn_a.daily";
+    qc.dataset_id = "silver.cn_a.daily";
     qc.check_name = "quality_score";
     qc.status = "pass";
     qc.severity = "info";
@@ -320,7 +320,7 @@ TEST_F(MetadataStoreTest, QualityCheckpointAndTrainingSnapshot) {
     qc.event_date = make_date(2024, 2, 1);
     store_->record_quality_check(qc);
 
-    auto checks = store_->list_quality_checks("curated.cn_a.daily", 10);
+    auto checks = store_->list_quality_checks("silver.cn_a.daily", 10);
     ASSERT_EQ(checks.size(), 1u);
     EXPECT_EQ(checks[0].run_id, "run-qc-1");
     EXPECT_EQ(checks[0].check_name, "quality_score");
@@ -338,7 +338,7 @@ TEST_F(MetadataStoreTest, QualityCheckpointAndTrainingSnapshot) {
 
     MetadataStore::TrainingSnapshotRecord snap;
     snap.snapshot_id = "snap-1";
-    snap.dataset_id = "curated.cn_a.daily";
+    snap.dataset_id = "silver.cn_a.daily";
     snap.query_spec = "symbol=600000.SH";
     snap.snapshot_path = "data/models/lgbm_factor_v1.model";
     snap.start_date = make_date(2024, 1, 1);
@@ -348,8 +348,86 @@ TEST_F(MetadataStoreTest, QualityCheckpointAndTrainingSnapshot) {
     snap.model_name = "lgbm";
     store_->record_training_snapshot(snap);
 
-    auto snaps = store_->list_training_snapshots("curated.cn_a.daily", 10);
+    auto snaps = store_->list_training_snapshots("silver.cn_a.daily", 10);
     ASSERT_EQ(snaps.size(), 1u);
     EXPECT_EQ(snaps[0].snapshot_id, "snap-1");
     EXPECT_EQ(snaps[0].row_count, 1234);
+}
+
+TEST_F(MetadataStoreTest, BrokerAccountSnapshotRoundTrip) {
+    BrokerAccount account;
+    account.account_id = "acc_demo_001";
+    account.broker = "ths";
+    account.account_name = "Main";
+    account.auth_payload = R"({"token":"demo"})";
+    account.is_active = true;
+    store_->upsert_broker_account(account);
+
+    auto fetched_account = store_->get_broker_account("acc_demo_001");
+    ASSERT_TRUE(fetched_account.has_value());
+    EXPECT_EQ(fetched_account->broker, "ths");
+    EXPECT_EQ(fetched_account->account_name, "Main");
+
+    auto all_accounts = store_->list_broker_accounts(true);
+    ASSERT_EQ(all_accounts.size(), 1u);
+    EXPECT_EQ(all_accounts[0].account_id, "acc_demo_001");
+
+    AccountCashSnapshot cash;
+    cash.account_id = "acc_demo_001";
+    cash.as_of_date = make_date(2024, 2, 5);
+    cash.total_asset = 1000000.0;
+    cash.cash = 250000.0;
+    cash.available_cash = 240000.0;
+    cash.frozen_cash = 10000.0;
+    cash.market_value = 750000.0;
+    store_->upsert_account_cash(cash, "unit_test");
+
+    auto latest_cash = store_->latest_account_cash("acc_demo_001");
+    ASSERT_TRUE(latest_cash.has_value());
+    EXPECT_EQ(latest_cash->as_of_date, make_date(2024, 2, 5));
+    EXPECT_NEAR(latest_cash->total_asset, 1000000.0, 1e-6);
+
+    AccountPositionSnapshot pos1;
+    pos1.account_id = "acc_demo_001";
+    pos1.as_of_date = make_date(2024, 2, 5);
+    pos1.symbol = "600000.SH";
+    pos1.quantity = 10000;
+    pos1.available_quantity = 9000;
+    pos1.cost_price = 10.1;
+    pos1.last_price = 10.5;
+    pos1.market_value = 105000.0;
+    pos1.unrealized_pnl = 4000.0;
+    pos1.unrealized_pnl_ratio = 0.0396;
+    store_->upsert_account_position(pos1, "unit_test");
+
+    AccountPositionSnapshot pos2 = pos1;
+    pos2.symbol = "000001.SZ";
+    pos2.quantity = 5000;
+    pos2.available_quantity = 5000;
+    pos2.cost_price = 12.0;
+    pos2.last_price = 11.8;
+    pos2.market_value = 59000.0;
+    pos2.unrealized_pnl = -1000.0;
+    pos2.unrealized_pnl_ratio = -0.0167;
+    store_->upsert_account_position(pos2, "unit_test");
+
+    auto latest_pos = store_->latest_account_positions("acc_demo_001");
+    ASSERT_EQ(latest_pos.size(), 2u);
+
+    AccountTradeRecord trade;
+    trade.account_id = "acc_demo_001";
+    trade.trade_id = "T202402050001";
+    trade.trade_date = make_date(2024, 2, 5);
+    trade.symbol = "600000.SH";
+    trade.side = Side::kBuy;
+    trade.price = 10.2;
+    trade.quantity = 1000;
+    trade.amount = 10200.0;
+    trade.fee = 5.0;
+    store_->upsert_account_trade(trade, "unit_test");
+
+    auto trades = store_->list_account_trades("acc_demo_001", 10);
+    ASSERT_EQ(trades.size(), 1u);
+    EXPECT_EQ(trades[0].trade_id, "T202402050001");
+    EXPECT_EQ(trades[0].side, Side::kBuy);
 }

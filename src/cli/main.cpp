@@ -33,6 +33,7 @@ constexpr CommandEntry kCommandRegistry[] = {
     {"risk", trade::cli::cmd_risk, false, nullptr},
     {"backtest", trade::cli::cmd_backtest, false, nullptr},
     {"sentiment", trade::cli::cmd_sentiment, false, nullptr},
+    {"account", trade::cli::cmd_account, false, nullptr},
     {"report", trade::cli::cmd_report, false, nullptr},
 };
 

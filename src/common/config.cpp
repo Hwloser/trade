@@ -89,7 +89,9 @@ Config Config::load(const std::string& path) {
         if (auto n = root["data"]) {
             if (n["data_root"]) cfg.data.data_root = n["data_root"].as<std::string>();
             if (n["raw_dir"]) cfg.data.raw_dir = n["raw_dir"].as<std::string>();
-            if (n["curated_dir"]) cfg.data.curated_dir = n["curated_dir"].as<std::string>();
+            if (n["silver_dir"]) cfg.data.silver_dir = n["silver_dir"].as<std::string>();
+            // Backward compatibility: old key curated_dir now maps to silver_dir.
+            if (n["curated_dir"]) cfg.data.silver_dir = n["curated_dir"].as<std::string>();
             if (n["models_dir"]) cfg.data.models_dir = n["models_dir"].as<std::string>();
             if (n["market_daily_subpath"]) {
                 cfg.data.market_daily_subpath = n["market_daily_subpath"].as<std::string>();
@@ -106,6 +108,9 @@ Config Config::load(const std::string& path) {
             if (n["min_start_date"]) cfg.ingestion.min_start_date = n["min_start_date"].as<std::string>();
             if (n["daily_bar_dataset"]) {
                 cfg.ingestion.daily_bar_dataset = n["daily_bar_dataset"].as<std::string>();
+            }
+            if (n["write_raw_layer"]) {
+                cfg.ingestion.write_raw_layer = n["write_raw_layer"].as<bool>();
             }
         }
 

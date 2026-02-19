@@ -12,8 +12,8 @@ std::string StoragePath::raw_daily(const Symbol& symbol, int year) const {
             (symbol + ".parquet")).string();
 }
 
-std::string StoragePath::curated_daily(const Symbol& symbol, int year) const {
-    return (root_ / "curated" / "cn_a" / "daily" / std::to_string(year) /
+std::string StoragePath::silver_daily(const Symbol& symbol, int year) const {
+    return (root_ / "silver" / "cn_a" / "daily" / std::to_string(year) /
             (symbol + ".parquet")).string();
 }
 
@@ -25,13 +25,13 @@ std::string StoragePath::sentiment_bronze(int year, int month,
 }
 
 std::string StoragePath::sentiment_silver(int year, int month, Date date) const {
-    return (root_ / "curated" / "sentiment" / "silver" /
+    return (root_ / "silver" / "sentiment" / "nlp" /
             std::to_string(year) / fmt::format("{:02d}", month) /
             fmt::format("nlp_{}.parquet", format_date(date))).string();
 }
 
 std::string StoragePath::sentiment_gold(int year, int month, Date date) const {
-    return (root_ / "curated" / "sentiment" / "gold" /
+    return (root_ / "gold" / "sentiment" / "factor" /
             std::to_string(year) / fmt::format("{:02d}", month) /
             fmt::format("factors_{}.parquet", format_date(date))).string();
 }

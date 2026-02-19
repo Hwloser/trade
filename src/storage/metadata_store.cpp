@@ -1,6 +1,7 @@
 #include "trade/storage/metadata_store.h"
 #include "trade/common/time_utils.h"
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
@@ -28,6 +29,22 @@ void bind_date_or_null(sqlite3_stmt* stmt, int col, std::optional<Date> d) {
 int clamp_limit(int limit) {
     if (limit <= 0) return 100;
     return std::min(limit, 10000);
+}
+
+std::string normalize_side(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return v;
+}
+
+const char* side_to_text(Side side) {
+    return side == Side::kSell ? "sell" : "buy";
+}
+
+Side side_from_text(const char* txt) {
+    if (!txt) return Side::kBuy;
+    const std::string s = normalize_side(txt);
+    return s == "sell" ? Side::kSell : Side::kBuy;
 }
 
 } // namespace
@@ -228,6 +245,69 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
         )
     )");
 
+    // Broker account registry + snapshots.
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS broker_accounts (
+            account_id TEXT PRIMARY KEY,
+            broker TEXT NOT NULL,
+            account_name TEXT NOT NULL DEFAULT '',
+            auth_payload TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    )");
+
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS account_cash_snapshots (
+            account_id TEXT NOT NULL,
+            as_of_date TEXT NOT NULL,
+            total_asset REAL NOT NULL DEFAULT 0.0,
+            cash REAL NOT NULL DEFAULT 0.0,
+            available_cash REAL NOT NULL DEFAULT 0.0,
+            frozen_cash REAL NOT NULL DEFAULT 0.0,
+            market_value REAL NOT NULL DEFAULT 0.0,
+            source TEXT NOT NULL DEFAULT 'manual',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (account_id, as_of_date)
+        )
+    )");
+
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS account_position_snapshots (
+            account_id TEXT NOT NULL,
+            as_of_date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            available_quantity INTEGER NOT NULL DEFAULT 0,
+            cost_price REAL NOT NULL DEFAULT 0.0,
+            last_price REAL NOT NULL DEFAULT 0.0,
+            market_value REAL NOT NULL DEFAULT 0.0,
+            unrealized_pnl REAL NOT NULL DEFAULT 0.0,
+            unrealized_pnl_ratio REAL NOT NULL DEFAULT 0.0,
+            source TEXT NOT NULL DEFAULT 'manual',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (account_id, as_of_date, symbol)
+        )
+    )");
+
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS account_trades (
+            account_id TEXT NOT NULL,
+            trade_id TEXT NOT NULL,
+            trade_date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            price REAL NOT NULL DEFAULT 0.0,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0.0,
+            fee REAL NOT NULL DEFAULT 0.0,
+            source TEXT NOT NULL DEFAULT 'manual',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (account_id, trade_id)
+        )
+    )");
+
     // Existing DB migration: add current_version if missing.
     sqlite3_exec(impl_->db,
                  "ALTER TABLE dataset_files ADD COLUMN current_version INTEGER NOT NULL DEFAULT 1",
@@ -241,6 +321,10 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_stream_checkpoints_lookup ON stream_checkpoints(source, stream, shard)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_training_snapshots_dataset ON training_snapshots(dataset_id, created_at)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_file_versions_lookup ON dataset_file_versions(dataset_id, file_path, version)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_broker_accounts_active ON broker_accounts(is_active, broker)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_account_cash_lookup ON account_cash_snapshots(account_id, as_of_date)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_account_position_lookup ON account_position_snapshots(account_id, as_of_date, symbol)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_account_trades_lookup ON account_trades(account_id, trade_date)");
 
     // Backfill schema registry for legacy records.
     impl_->exec(R"(
@@ -1067,6 +1151,380 @@ MetadataStore::list_training_snapshots(const std::string& dataset_id, int limit)
         r.schema_version = sqlite3_column_int(stmt, 7);
         r.model_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
         out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::upsert_broker_account(const BrokerAccount& account) {
+    const char* sql = R"(
+        INSERT INTO broker_accounts
+        (account_id, broker, account_name, auth_payload, is_active, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(account_id)
+        DO UPDATE SET
+            broker = excluded.broker,
+            account_name = excluded.account_name,
+            auth_payload = excluded.auth_payload,
+            is_active = excluded.is_active,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_broker_account: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    sqlite3_bind_text(stmt, 1, account.account_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, account.broker.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, account.account_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, account.auth_payload.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, account.is_active ? 1 : 0);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert broker account {}: {}",
+                      account.account_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::optional<BrokerAccount> MetadataStore::get_broker_account(const std::string& account_id) {
+    const char* sql = R"(
+        SELECT account_id, broker, account_name, auth_payload, is_active
+        FROM broker_accounts
+        WHERE account_id = ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<BrokerAccount> out;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        BrokerAccount a;
+        a.account_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        a.broker = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        a.account_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        a.auth_payload = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        a.is_active = sqlite3_column_int(stmt, 4) != 0;
+        out = std::move(a);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<BrokerAccount> MetadataStore::list_broker_accounts(bool active_only) {
+    std::vector<BrokerAccount> out;
+    const char* sql = R"(
+        SELECT account_id, broker, account_name, auth_payload, is_active
+        FROM broker_accounts
+        WHERE (? = 0 OR is_active = 1)
+        ORDER BY broker, account_id
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_broker_accounts: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_int(stmt, 1, active_only ? 1 : 0);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        BrokerAccount a;
+        a.account_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        a.broker = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        a.account_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        a.auth_payload = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        a.is_active = sqlite3_column_int(stmt, 4) != 0;
+        out.push_back(std::move(a));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::upsert_account_cash(const AccountCashSnapshot& cash,
+                                        const std::string& source) {
+    const char* sql = R"(
+        INSERT INTO account_cash_snapshots
+        (account_id, as_of_date, total_asset, cash, available_cash, frozen_cash, market_value, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(account_id, as_of_date)
+        DO UPDATE SET
+            total_asset = excluded.total_asset,
+            cash = excluded.cash,
+            available_cash = excluded.available_cash,
+            frozen_cash = excluded.frozen_cash,
+            market_value = excluded.market_value,
+            source = excluded.source,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_account_cash: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    const std::string as_of = format_date(cash.as_of_date);
+    sqlite3_bind_text(stmt, 1, cash.account_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, as_of.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 3, cash.total_asset);
+    sqlite3_bind_double(stmt, 4, cash.cash);
+    sqlite3_bind_double(stmt, 5, cash.available_cash);
+    sqlite3_bind_double(stmt, 6, cash.frozen_cash);
+    sqlite3_bind_double(stmt, 7, cash.market_value);
+    sqlite3_bind_text(stmt, 8, source.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert account cash {}: {}",
+                      cash.account_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::optional<AccountCashSnapshot> MetadataStore::latest_account_cash(const std::string& account_id) {
+    const char* sql = R"(
+        SELECT account_id, as_of_date, total_asset, cash, available_cash, frozen_cash, market_value
+        FROM account_cash_snapshots
+        WHERE account_id = ?
+        ORDER BY as_of_date DESC
+        LIMIT 1
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<AccountCashSnapshot> out;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        AccountCashSnapshot c;
+        c.account_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        c.as_of_date = parse_date(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+        c.total_asset = sqlite3_column_double(stmt, 2);
+        c.cash = sqlite3_column_double(stmt, 3);
+        c.available_cash = sqlite3_column_double(stmt, 4);
+        c.frozen_cash = sqlite3_column_double(stmt, 5);
+        c.market_value = sqlite3_column_double(stmt, 6);
+        out = std::move(c);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<AccountCashSnapshot> MetadataStore::list_account_cash(const std::string& account_id,
+                                                                  int limit) {
+    std::vector<AccountCashSnapshot> out;
+    const char* sql = R"(
+        SELECT account_id, as_of_date, total_asset, cash, available_cash, frozen_cash, market_value
+        FROM account_cash_snapshots
+        WHERE account_id = ?
+        ORDER BY as_of_date DESC
+        LIMIT ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_account_cash: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, clamp_limit(limit));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        AccountCashSnapshot c;
+        c.account_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        c.as_of_date = parse_date(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+        c.total_asset = sqlite3_column_double(stmt, 2);
+        c.cash = sqlite3_column_double(stmt, 3);
+        c.available_cash = sqlite3_column_double(stmt, 4);
+        c.frozen_cash = sqlite3_column_double(stmt, 5);
+        c.market_value = sqlite3_column_double(stmt, 6);
+        out.push_back(std::move(c));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::upsert_account_position(const AccountPositionSnapshot& position,
+                                            const std::string& source) {
+    const char* sql = R"(
+        INSERT INTO account_position_snapshots
+        (account_id, as_of_date, symbol, quantity, available_quantity, cost_price, last_price,
+         market_value, unrealized_pnl, unrealized_pnl_ratio, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(account_id, as_of_date, symbol)
+        DO UPDATE SET
+            quantity = excluded.quantity,
+            available_quantity = excluded.available_quantity,
+            cost_price = excluded.cost_price,
+            last_price = excluded.last_price,
+            market_value = excluded.market_value,
+            unrealized_pnl = excluded.unrealized_pnl,
+            unrealized_pnl_ratio = excluded.unrealized_pnl_ratio,
+            source = excluded.source,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_account_position: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    const std::string as_of = format_date(position.as_of_date);
+    sqlite3_bind_text(stmt, 1, position.account_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, as_of.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, position.symbol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, position.quantity);
+    sqlite3_bind_int64(stmt, 5, position.available_quantity);
+    sqlite3_bind_double(stmt, 6, position.cost_price);
+    sqlite3_bind_double(stmt, 7, position.last_price);
+    sqlite3_bind_double(stmt, 8, position.market_value);
+    sqlite3_bind_double(stmt, 9, position.unrealized_pnl);
+    sqlite3_bind_double(stmt, 10, position.unrealized_pnl_ratio);
+    sqlite3_bind_text(stmt, 11, source.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert account position {} {}: {}",
+                      position.account_id, position.symbol, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::vector<AccountPositionSnapshot>
+MetadataStore::latest_account_positions(const std::string& account_id) {
+    const char* sql = R"(
+        SELECT MAX(as_of_date) FROM account_position_snapshots WHERE account_id = ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<Date> as_of;
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_text(stmt, 0)) {
+        as_of = parse_date(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)));
+    }
+    sqlite3_finalize(stmt);
+    if (!as_of) return {};
+    return list_account_positions(account_id, as_of);
+}
+
+std::vector<AccountPositionSnapshot> MetadataStore::list_account_positions(
+    const std::string& account_id,
+    std::optional<Date> as_of_date) {
+    std::vector<AccountPositionSnapshot> out;
+
+    const char* sql_all = R"(
+        SELECT account_id, as_of_date, symbol, quantity, available_quantity,
+               cost_price, last_price, market_value, unrealized_pnl, unrealized_pnl_ratio
+        FROM account_position_snapshots
+        WHERE account_id = ?
+        ORDER BY as_of_date DESC, symbol
+    )";
+    const char* sql_day = R"(
+        SELECT account_id, as_of_date, symbol, quantity, available_quantity,
+               cost_price, last_price, market_value, unrealized_pnl, unrealized_pnl_ratio
+        FROM account_position_snapshots
+        WHERE account_id = ? AND as_of_date = ?
+        ORDER BY symbol
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, as_of_date ? sql_day : sql_all, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_account_positions: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (as_of_date) {
+        const std::string as_of = format_date(*as_of_date);
+        sqlite3_bind_text(stmt, 2, as_of.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        AccountPositionSnapshot p;
+        p.account_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        p.as_of_date = parse_date(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
+        p.symbol = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        p.quantity = sqlite3_column_int64(stmt, 3);
+        p.available_quantity = sqlite3_column_int64(stmt, 4);
+        p.cost_price = sqlite3_column_double(stmt, 5);
+        p.last_price = sqlite3_column_double(stmt, 6);
+        p.market_value = sqlite3_column_double(stmt, 7);
+        p.unrealized_pnl = sqlite3_column_double(stmt, 8);
+        p.unrealized_pnl_ratio = sqlite3_column_double(stmt, 9);
+        out.push_back(std::move(p));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::upsert_account_trade(const AccountTradeRecord& trade,
+                                         const std::string& source) {
+    const char* sql = R"(
+        INSERT INTO account_trades
+        (account_id, trade_id, trade_date, symbol, side, price, quantity, amount, fee, source, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(account_id, trade_id)
+        DO UPDATE SET
+            trade_date = excluded.trade_date,
+            symbol = excluded.symbol,
+            side = excluded.side,
+            price = excluded.price,
+            quantity = excluded.quantity,
+            amount = excluded.amount,
+            fee = excluded.fee,
+            source = excluded.source,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_account_trade: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    const std::string trade_date = format_date(trade.trade_date);
+    sqlite3_bind_text(stmt, 1, trade.account_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, trade.trade_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, trade_date.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, trade.symbol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, side_to_text(trade.side), -1, SQLITE_STATIC);
+    sqlite3_bind_double(stmt, 6, trade.price);
+    sqlite3_bind_int64(stmt, 7, trade.quantity);
+    sqlite3_bind_double(stmt, 8, trade.amount);
+    sqlite3_bind_double(stmt, 9, trade.fee);
+    sqlite3_bind_text(stmt, 10, source.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert account trade {} {}: {}",
+                      trade.account_id, trade.trade_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::vector<AccountTradeRecord> MetadataStore::list_account_trades(const std::string& account_id,
+                                                                   int limit) {
+    std::vector<AccountTradeRecord> out;
+    const char* sql = R"(
+        SELECT account_id, trade_id, trade_date, symbol, side, price, quantity, amount, fee
+        FROM account_trades
+        WHERE account_id = ?
+        ORDER BY trade_date DESC, trade_id DESC
+        LIMIT ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_account_trades: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, clamp_limit(limit));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        AccountTradeRecord t;
+        t.account_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        t.trade_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        t.trade_date = parse_date(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)));
+        t.symbol = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        t.side = side_from_text(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)));
+        t.price = sqlite3_column_double(stmt, 5);
+        t.quantity = sqlite3_column_int64(stmt, 6);
+        t.amount = sqlite3_column_double(stmt, 7);
+        t.fee = sqlite3_column_double(stmt, 8);
+        out.push_back(std::move(t));
     }
     sqlite3_finalize(stmt);
     return out;

@@ -9,7 +9,7 @@ namespace trade {
 struct DataConfig {
     std::string data_root = "data";
     std::string raw_dir = "raw";
-    std::string curated_dir = "curated";
+    std::string silver_dir = "silver";
     std::string models_dir = "models";
     std::string market_daily_subpath = "cn_a/daily";
 };
@@ -19,6 +19,7 @@ struct IngestionConfig {
     int incremental_lookback_days = 5;         // overlap window for correction
     std::string min_start_date = "2020-01-01"; // lower bound for historical pulls
     std::string daily_bar_dataset = "cn_a_daily_bar";
+    bool write_raw_layer = false;              // keep raw market copy in addition to silver
 };
 
 struct EastMoneyConfig {

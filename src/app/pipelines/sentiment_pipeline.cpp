@@ -36,14 +36,25 @@ std::vector<Bar> load_bars_for_sentiment(const std::string& symbol,
     int start_year = date_year(min_date);
     int end_year = date_year(now);
     for (int year = start_year; year <= end_year; ++year) {
-        auto path = paths.curated_daily(symbol, year);
-        if (!std::filesystem::exists(path) && !cloud_mode) {
-            continue;
-        }
+        auto path = paths.silver_daily(symbol, year);
+        std::string legacy_curated_path =
+            (std::filesystem::path(config.data.data_root) / "curated" /
+             config.data.market_daily_subpath / std::to_string(year) /
+             (symbol + ".parquet"))
+                .string();
+        const bool path_exists =
+            std::filesystem::exists(path) || std::filesystem::exists(legacy_curated_path);
+        if (!path_exists && !cloud_mode) continue;
+
         try {
             auto bars = ParquetReader::read_bars(path);
             all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-        } catch (...) {}
+        } catch (...) {
+            try {
+                auto bars = ParquetReader::read_bars(legacy_curated_path);
+                all_bars.insert(all_bars.end(), bars.begin(), bars.end());
+            } catch (...) {}
+        }
     }
     return all_bars;
 }
@@ -266,7 +277,7 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
 
         MetadataStore::QualityCheckRecord nlp_cov_qc;
         nlp_cov_qc.run_id = run_id;
-        nlp_cov_qc.dataset_id = "curated.sentiment.silver";
+        nlp_cov_qc.dataset_id = "silver.sentiment.nlp";
         nlp_cov_qc.check_name = "nlp_symbol_coverage";
         nlp_cov_qc.metric_value = events.empty() ? 0.0
             : static_cast<double>(nlp_results.size()) / static_cast<double>(events.size());
@@ -279,7 +290,7 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
 
         MetadataStore::QualityCheckRecord factor_cov_qc;
         factor_cov_qc.run_id = run_id;
-        factor_cov_qc.dataset_id = "curated.sentiment.gold";
+        factor_cov_qc.dataset_id = "gold.sentiment.factor";
         factor_cov_qc.check_name = "factor_row_coverage";
         factor_cov_qc.metric_value = nlp_results.empty() ? 0.0
             : static_cast<double>(factors.size()) / static_cast<double>(nlp_results.size());

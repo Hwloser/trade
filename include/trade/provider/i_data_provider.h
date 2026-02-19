@@ -1,6 +1,7 @@
 #pragma once
 
 #include "trade/model/bar.h"
+#include "trade/model/account.h"
 #include "trade/model/instrument.h"
 #include <vector>
 #include <string>
@@ -49,6 +50,14 @@ public:
     virtual bool supports_share_capital() const { return false; }
     struct ShareCapital { int64_t total_shares = 0; int64_t float_shares = 0; };
     virtual std::unordered_map<Symbol, ShareCapital> fetch_share_capital() { return {}; }
+
+    // Broker account details (for THS-like account view / sync)
+    virtual bool supports_account_snapshot() const { return false; }
+    virtual std::optional<AccountSnapshot> fetch_account_snapshot(
+        const std::string& /*account_id*/,
+        const std::string& /*auth_payload*/ = "{}") {
+        return std::nullopt;
+    }
 };
 
 // Callback for progress reporting

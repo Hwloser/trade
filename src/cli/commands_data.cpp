@@ -162,7 +162,7 @@ int cmd_view(const CliArgs& args, const trade::Config& config) {
         trade::StoragePath paths(config.data.data_root);
         auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
         int year = trade::date_year(now);
-        path = paths.curated_daily(args.symbol, year);
+        path = paths.silver_daily(args.symbol, year);
     }
 
     if (path.empty()) {
@@ -301,7 +301,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         }
     } else if (!args.symbol.empty()) {
         if (!cloud_mode || symbol_hydrated) {
-            std::string pattern = config.data.data_root + "/" + config.data.curated_dir + "/" +
+            std::string pattern = config.data.data_root + "/" + config.data.silver_dir + "/" +
                                   config.data.market_daily_subpath + "/**/" + args.symbol + ".parquet";
             init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" +
                         sql_escape(pattern) + "', union_by_name=true);";
@@ -314,8 +314,8 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     for (const auto& v : views) {
         std::cout << "  " << v.view_name << "  (" << v.dataset_id << ")\n";
     }
-    if (has_dataset("curated.cn_a.daily")) {
-        std::cout << "  daily  (alias of curated_cn_a_daily)\n";
+    if (has_dataset("silver.cn_a.daily")) {
+        std::cout << "  daily  (alias of silver_cn_a_daily)\n";
     }
     if (has_dataset("raw.cn_a.daily")) {
         std::cout << "  raw    (alias of raw_cn_a_daily)\n";
@@ -327,9 +327,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         std::cout << "  (no local parquet found yet; run download/sentiment first)\n";
     }
     std::cout << "\nExample queries:\n";
-    if (has_dataset("curated.cn_a.daily")) {
-        std::cout << "  SELECT * FROM curated_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
-                  << "  SELECT symbol, count(*) FROM curated_cn_a_daily GROUP BY symbol;\n";
+    if (has_dataset("silver.cn_a.daily")) {
+        std::cout << "  SELECT * FROM silver_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
+                  << "  SELECT symbol, count(*) FROM silver_cn_a_daily GROUP BY symbol;\n";
     } else if (!views.empty()) {
         std::cout << "  SELECT * FROM " << views.front().view_name << " LIMIT 20;\n";
     } else {
@@ -340,7 +340,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     }
     std::cout << "  SELECT * FROM meta_dataset_catalog;\n"
               << "  SELECT * FROM meta_dataset_files ORDER BY dataset_id, file_path LIMIT 50;\n"
-              << "  SELECT * FROM meta_quality_checks_recent WHERE status <> 'pass';\n";
+              << "  SELECT * FROM meta_quality_checks_recent WHERE status <> 'pass';\n"
+              << "  SELECT * FROM meta_accounts;\n"
+              << "  SELECT * FROM meta_account_positions;\n";
     std::cout << std::endl;
 
     if (cloud_mode) {

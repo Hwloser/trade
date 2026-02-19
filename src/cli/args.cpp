@@ -24,6 +24,7 @@ Commands:
   risk        Assess risk for a position
   backtest    Run backtest
   sentiment   Analyze sentiment from RSS feeds
+  account     Manage brokerage account snapshots in metadata.db
   report      Generate decision report
   info        (Paused) Use sql for querying metadata
 
@@ -40,6 +41,12 @@ Options:
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
+  --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
+  --account-id <id>     Brokerage account id
+  --broker <name>       Broker id/name (e.g., ths)
+  --name <name>         Account display name
+  --auth <payload>      Account auth payload (string/json)
+  --all                 Include inactive entries (for account list)
   --verbose             Enable verbose logging
   --help                Show this help
 )" << std::endl;
@@ -63,9 +70,15 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--source" && i + 1 < argc) args.source = argv[++i];
         else if (arg == "--output" && i + 1 < argc) args.output = argv[++i];
         else if (arg == "--file" && i + 1 < argc) args.file = argv[++i];
+        else if (arg == "--action" && i + 1 < argc) args.action = argv[++i];
+        else if (arg == "--account-id" && i + 1 < argc) args.account_id = argv[++i];
+        else if (arg == "--broker" && i + 1 < argc) args.broker = argv[++i];
+        else if (arg == "--name" && i + 1 < argc) args.account_name = argv[++i];
+        else if (arg == "--auth" && i + 1 < argc) args.auth_payload = argv[++i];
         else if (arg == "--limit" && i + 1 < argc) args.limit = std::stoi(argv[++i]);
         else if (arg == "--verbose") args.verbose = true;
         else if (arg == "--refresh") args.refresh = true;
+        else if (arg == "--all") args.all = true;
         else if (arg == "--help") {
             print_usage();
             std::exit(0);

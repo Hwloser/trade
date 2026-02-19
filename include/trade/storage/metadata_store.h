@@ -1,6 +1,7 @@
 #pragma once
 
 #include "trade/common/types.h"
+#include "trade/model/account.h"
 #include "trade/model/instrument.h"
 #include <memory>
 #include <optional>
@@ -170,6 +171,29 @@ public:
     void record_training_snapshot(const TrainingSnapshotRecord& snapshot);
     std::vector<TrainingSnapshotRecord> list_training_snapshots(const std::string& dataset_id,
                                                                 int limit = 100);
+
+    // Broker account metadata and snapshots
+    void upsert_broker_account(const BrokerAccount& account);
+    std::optional<BrokerAccount> get_broker_account(const std::string& account_id);
+    std::vector<BrokerAccount> list_broker_accounts(bool active_only = true);
+
+    void upsert_account_cash(const AccountCashSnapshot& cash,
+                             const std::string& source = "manual");
+    std::optional<AccountCashSnapshot> latest_account_cash(const std::string& account_id);
+    std::vector<AccountCashSnapshot> list_account_cash(const std::string& account_id,
+                                                       int limit = 30);
+
+    void upsert_account_position(const AccountPositionSnapshot& position,
+                                 const std::string& source = "manual");
+    std::vector<AccountPositionSnapshot> latest_account_positions(const std::string& account_id);
+    std::vector<AccountPositionSnapshot> list_account_positions(
+        const std::string& account_id,
+        std::optional<Date> as_of_date = std::nullopt);
+
+    void upsert_account_trade(const AccountTradeRecord& trade,
+                              const std::string& source = "manual");
+    std::vector<AccountTradeRecord> list_account_trades(const std::string& account_id,
+                                                        int limit = 100);
 
 private:
     struct Impl;

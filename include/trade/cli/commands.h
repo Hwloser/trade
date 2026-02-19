@@ -18,6 +18,7 @@ int cmd_risk(const CliArgs& args, const Config& config);
 int cmd_backtest(const CliArgs& args, const Config& config);
 
 int cmd_sentiment(const CliArgs& args, const Config& config);
+int cmd_account(const CliArgs& args, const Config& config);
 
 int cmd_report(const CliArgs& args, const Config& config);
 
