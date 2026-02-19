@@ -115,6 +115,9 @@ Config Config::load(const std::string& path) {
             if (n["write_silver_layer"]) {
                 cfg.ingestion.write_silver_layer = n["write_silver_layer"].as<bool>();
             }
+            if (n["request_dedup_hours"]) {
+                cfg.ingestion.request_dedup_hours = n["request_dedup_hours"].as<int>();
+            }
             // Backward compatibility: old curated naming maps to silver layer.
             if (n["write_curated_layer"]) {
                 cfg.ingestion.write_silver_layer = n["write_curated_layer"].as<bool>();

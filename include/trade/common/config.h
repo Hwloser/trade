@@ -21,6 +21,7 @@ struct IngestionConfig {
     std::string daily_bar_dataset = "cn_a_daily_bar";
     bool write_raw_layer = true;               // persist provider output to raw layer
     bool write_silver_layer = false;           // optional normalized/enriched copy
+    int request_dedup_hours = 24;              // skip identical successful requests within window
 };
 
 struct EastMoneyConfig {

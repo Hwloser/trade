@@ -127,6 +127,22 @@ public:
                               int64_t rows_out,
                               const std::string& error = "");
 
+    // Request dedup cache: skip identical expensive pulls in short windows.
+    bool has_recent_successful_request(const std::string& source,
+                                       const std::string& dataset,
+                                       const Symbol& symbol,
+                                       Date start_date,
+                                       Date end_date,
+                                       int within_hours);
+    void record_request_fingerprint(const std::string& source,
+                                    const std::string& dataset,
+                                    const Symbol& symbol,
+                                    Date start_date,
+                                    Date end_date,
+                                    const std::string& status,
+                                    const std::string& run_id,
+                                    int64_t rows_out);
+
     // Holiday calendar
     void load_holidays(const std::vector<Date>& holidays);
     std::vector<Date> get_holidays(int year);

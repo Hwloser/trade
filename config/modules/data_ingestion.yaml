@@ -12,3 +12,4 @@ ingestion:
   daily_bar_dataset: "cn_a_daily_bar"
   write_raw_layer: true
   write_silver_layer: false
+  request_dedup_hours: 24

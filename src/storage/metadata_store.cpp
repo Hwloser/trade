@@ -140,6 +140,21 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
     )");
 
     impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS request_fingerprints (
+            source TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '',
+            run_id TEXT NOT NULL DEFAULT '',
+            rows_out INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source, dataset, symbol, start_date, end_date)
+        )
+    )");
+
+    impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS holidays (
             date TEXT PRIMARY KEY,
             year INTEGER
@@ -328,6 +343,7 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
 
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_downloads_symbol_end ON downloads(symbol, end_date)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_watermarks_lookup ON watermarks(source, dataset, symbol)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_request_fingerprints_lookup ON request_fingerprints(source, dataset, symbol, updated_at)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_files_dataset ON dataset_files(dataset_id)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_schema_registry_active ON schema_registry(dataset_id, is_active)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_quality_checks_dataset_time ON quality_checks(dataset_id, created_at)");
@@ -633,6 +649,89 @@ void MetadataStore::finish_ingestion_run(const std::string& run_id,
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         spdlog::error("Failed to finish ingestion run {}: {}", run_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+bool MetadataStore::has_recent_successful_request(const std::string& source,
+                                                  const std::string& dataset,
+                                                  const Symbol& symbol,
+                                                  Date start_date,
+                                                  Date end_date,
+                                                  int within_hours) {
+    if (within_hours <= 0) return false;
+
+    const char* sql = R"(
+        SELECT 1
+        FROM request_fingerprints
+        WHERE source = ?
+          AND dataset = ?
+          AND symbol = ?
+          AND start_date = ?
+          AND end_date = ?
+          AND status = 'success'
+          AND ((julianday('now') - julianday(updated_at)) * 24.0) <= ?
+        LIMIT 1
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare has_recent_successful_request: {}", sqlite3_errmsg(impl_->db));
+        return false;
+    }
+
+    const std::string start_s = format_date(start_date);
+    const std::string end_s = format_date(end_date);
+    sqlite3_bind_text(stmt, 1, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, symbol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, start_s.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, end_s.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 6, static_cast<double>(within_hours));
+
+    const bool hit = (sqlite3_step(stmt) == SQLITE_ROW);
+    sqlite3_finalize(stmt);
+    return hit;
+}
+
+void MetadataStore::record_request_fingerprint(const std::string& source,
+                                               const std::string& dataset,
+                                               const Symbol& symbol,
+                                               Date start_date,
+                                               Date end_date,
+                                               const std::string& status,
+                                               const std::string& run_id,
+                                               int64_t rows_out) {
+    const char* sql = R"(
+        INSERT INTO request_fingerprints
+        (source, dataset, symbol, start_date, end_date, status, run_id, rows_out, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(source, dataset, symbol, start_date, end_date)
+        DO UPDATE SET
+            status = excluded.status,
+            run_id = excluded.run_id,
+            rows_out = excluded.rows_out,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare record_request_fingerprint: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+
+    const std::string start_s = format_date(start_date);
+    const std::string end_s = format_date(end_date);
+    sqlite3_bind_text(stmt, 1, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, symbol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, start_s.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, end_s.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, run_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 8, rows_out);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to record request fingerprint {}/{}/{} [{}-{}]: {}",
+                      source, dataset, symbol, start_s, end_s, sqlite3_errmsg(impl_->db));
     }
     sqlite3_finalize(stmt);
 }

@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <sqlite3.h>
 
 using namespace trade;
 
@@ -229,6 +230,52 @@ TEST_F(MetadataStoreFileTest, PersistAcrossInstances) {
     }
 }
 
+TEST_F(MetadataStoreFileTest, RequestFingerprintExpiresOutsideWindow) {
+    const auto start = make_date(2024, 1, 15);
+    const auto end = make_date(2024, 1, 15);
+    {
+        MetadataStore store(temp_db_path_);
+        store.record_request_fingerprint("eastmoney",
+                                         "cn_a_daily_bar",
+                                         "600000.SH",
+                                         start,
+                                         end,
+                                         "success",
+                                         "run-1",
+                                         1);
+        EXPECT_TRUE(store.has_recent_successful_request("eastmoney",
+                                                        "cn_a_daily_bar",
+                                                        "600000.SH",
+                                                        start,
+                                                        end,
+                                                        24));
+    }
+
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(temp_db_path_.c_str(), &db), SQLITE_OK);
+    char* err = nullptr;
+    const char* sql = R"(
+        UPDATE request_fingerprints
+           SET updated_at = '2000-01-01 00:00:00'
+         WHERE source = 'eastmoney'
+           AND dataset = 'cn_a_daily_bar'
+           AND symbol = '600000.SH'
+           AND start_date = '2024-01-15'
+           AND end_date = '2024-01-15'
+    )";
+    ASSERT_EQ(sqlite3_exec(db, sql, nullptr, nullptr, &err), SQLITE_OK) << (err ? err : "");
+    if (err) sqlite3_free(err);
+    sqlite3_close(db);
+
+    MetadataStore store(temp_db_path_);
+    EXPECT_FALSE(store.has_recent_successful_request("eastmoney",
+                                                     "cn_a_daily_bar",
+                                                     "600000.SH",
+                                                     start,
+                                                     end,
+                                                     24));
+}
+
 // =============================================================================
 // Incremental watermark + ingestion run tests
 // =============================================================================
@@ -256,6 +303,61 @@ TEST_F(MetadataStoreTest, IngestionRunLifecycle) {
 
     // No read API yet; lifecycle should complete without throw/crash.
     SUCCEED();
+}
+
+TEST_F(MetadataStoreTest, RequestFingerprintDedupHitAndStatusFilter) {
+    const auto start = make_date(2024, 1, 15);
+    const auto end = make_date(2024, 1, 15);
+
+    EXPECT_FALSE(store_->has_recent_successful_request("eastmoney",
+                                                       "cn_a_daily_bar",
+                                                       "600000.SH",
+                                                       start,
+                                                       end,
+                                                       24));
+
+    store_->record_request_fingerprint("eastmoney",
+                                       "cn_a_daily_bar",
+                                       "600000.SH",
+                                       start,
+                                       end,
+                                       "failed",
+                                       "run-failed",
+                                       0);
+    EXPECT_FALSE(store_->has_recent_successful_request("eastmoney",
+                                                       "cn_a_daily_bar",
+                                                       "600000.SH",
+                                                       start,
+                                                       end,
+                                                       24));
+
+    store_->record_request_fingerprint("eastmoney",
+                                       "cn_a_daily_bar",
+                                       "600000.SH",
+                                       start,
+                                       end,
+                                       "success",
+                                       "run-success",
+                                       10);
+    EXPECT_TRUE(store_->has_recent_successful_request("eastmoney",
+                                                      "cn_a_daily_bar",
+                                                      "600000.SH",
+                                                      start,
+                                                      end,
+                                                      24));
+
+    EXPECT_FALSE(store_->has_recent_successful_request("eastmoney",
+                                                       "cn_a_daily_bar",
+                                                       "600000.SH",
+                                                       start,
+                                                       end + std::chrono::days{1},
+                                                       24));
+    EXPECT_FALSE(store_->has_recent_successful_request("eastmoney",
+                                                       "cn_a_daily_bar",
+                                                       "600000.SH",
+                                                       start,
+                                                       end,
+                                                       0));
 }
 
 TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
