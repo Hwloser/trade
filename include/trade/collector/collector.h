@@ -24,9 +24,16 @@ public:
     // Download and store daily bars for a single symbol
     QualityReport collect_symbol(const Symbol& symbol, Date start, Date end);
 
+    // Build silver layer from existing raw layer for a symbol.
+    QualityReport build_silver_symbol(const Symbol& symbol, Date start, Date end);
+
     // Download and store daily bars for all symbols
     void collect_all(Date start, Date end,
                      ProgressCallback progress = nullptr);
+
+    // Build silver layer from existing raw layer for all known symbols.
+    void build_silver_all(Date start, Date end,
+                          ProgressCallback progress = nullptr);
 
     // Incremental update: only download new data since last download
     void update_all(ProgressCallback progress = nullptr);

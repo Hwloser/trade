@@ -3,6 +3,8 @@
 #include "trade/app/pipelines/download_pipeline.h"
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
+#include "trade/collector/collector.h"
+#include "trade/provider/provider_factory.h"
 #include "trade/storage/baidu_netdisk_client.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
@@ -214,6 +216,74 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
 }
 
 // ============================================================================
+// collect
+// ============================================================================
+int cmd_collect(const CliArgs& args, const trade::Config& config) {
+    const std::string action = args.action.empty() ? "raw" : args.action;
+    if (action == "raw" || action == "full") {
+        trade::Config stage_cfg = config;
+        if (action == "raw") {
+            stage_cfg.ingestion.write_silver_layer = false;
+            stage_cfg.ingestion.write_raw_layer = true;
+        } else {
+            stage_cfg.ingestion.write_raw_layer = true;
+            stage_cfg.ingestion.write_silver_layer = true;
+        }
+
+        app::DownloadRequest request;
+        request.symbol = args.symbol;
+        request.provider = args.provider;
+        request.refresh = args.refresh;
+        if (!args.start_date.empty()) request.start = parse_date(args.start_date);
+        if (!args.end_date.empty()) request.end = parse_date(args.end_date);
+        return app::run_download(request, stage_cfg);
+    }
+
+    if (action == "silver") {
+        auto provider = ProviderFactory::create(args.provider, config);
+        if (!provider->ping()) {
+            spdlog::error("Cannot connect to {} provider", args.provider);
+            return 1;
+        }
+
+        trade::Config stage_cfg = config;
+        stage_cfg.ingestion.write_raw_layer = false;
+        stage_cfg.ingestion.write_silver_layer = true;
+        Collector collector(std::move(provider), stage_cfg);
+
+        auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+        Date start = args.start_date.empty()
+            ? parse_date(stage_cfg.ingestion.min_start_date)
+            : parse_date(args.start_date);
+        Date end = args.end_date.empty() ? today : parse_date(args.end_date);
+        if (start > end) {
+            spdlog::error("Invalid date range: start > end");
+            return 1;
+        }
+
+        if (!args.symbol.empty()) {
+            auto report = collector.build_silver_symbol(args.symbol, start, end);
+            std::cout << "Built silver for " << args.symbol
+                      << " (rows=" << report.total_bars
+                      << ", quality=" << std::fixed << std::setprecision(1)
+                      << (report.quality_score() * 100) << "%)"
+                      << std::endl;
+        } else {
+            collector.build_silver_all(start, end,
+                [](const Symbol& sym, int cur, int total) {
+                    std::cout << "\r[silver " << cur << "/" << total << "] " << sym
+                              << "                " << std::flush;
+                });
+            std::cout << "\nSilver build complete." << std::endl;
+        }
+        return 0;
+    }
+
+    spdlog::error("Unsupported collect action '{}'. Use raw|silver|full", action);
+    return 1;
+}
+
+// ============================================================================
 // cleanup
 // ============================================================================
 int cmd_cleanup(const CliArgs& args, const trade::Config& config) {
@@ -224,12 +294,6 @@ int cmd_cleanup(const CliArgs& args, const trade::Config& config) {
     trade::StoragePath paths(config.data.data_root);
     trade::MetadataStore metadata(paths.metadata_db());
     auto datasets = metadata.list_datasets();
-
-    std::unordered_map<std::string, trade::MetadataStore::DatasetRecord> ds_by_id;
-    ds_by_id.reserve(datasets.size());
-    for (const auto& ds : datasets) {
-        ds_by_id[ds.dataset_id] = ds;
-    }
 
     int files_total = 0;
     int files_missing_local = 0;
