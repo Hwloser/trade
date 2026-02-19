@@ -58,6 +58,11 @@ std::vector<Symbol> parse_symbol_list(const std::string& raw) {
     return out;
 }
 
+std::string build_stream_checkpoint_payload(Date resume_from) {
+    return std::string{"{\"mode\":\"stream\",\"resume_from\":\""} +
+        format_date(resume_from) + "\"}";
+}
+
 } // namespace
 
 int run_download(const DownloadRequest& request, const Config& config) {
@@ -129,13 +134,30 @@ int run_download(const DownloadRequest& request, const Config& config) {
         Date start = request.start.value_or(default_start);
         std::optional<Date> current_wm =
             metadata.last_watermark_date(request.provider, dataset, symbol);
+        std::optional<MetadataStore::StreamCheckpointRecord> current_cp;
+        bool has_stream_checkpoint = false;
+        if (request.use_checkpoint) {
+            current_cp = metadata.get_stream_checkpoint(request.provider, dataset, symbol);
+            has_stream_checkpoint = current_cp.has_value() &&
+                current_cp->last_event_date.has_value() &&
+                current_cp->cursor_payload.find("\"mode\":\"stream\"") != std::string::npos;
+        }
 
         if (!request.refresh) {
             const int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
             Date bootstrap_start = *request.start;
             if (bootstrap_start < min_start) bootstrap_start = min_start;
 
-            if (current_wm) {
+            if (request.use_checkpoint && has_stream_checkpoint) {
+                start = next_trading_day(*current_cp->last_event_date);
+                if (start < bootstrap_start) start = bootstrap_start;
+                if (start < min_start) start = min_start;
+                spdlog::info("Incremental {} from checkpoint {} (stream={}, shard={})",
+                             symbol,
+                             format_date(*current_cp->last_event_date),
+                             current_cp->stream,
+                             current_cp->shard);
+            } else if (current_wm) {
                 start = *current_wm - std::chrono::days{lookback_days};
                 if (start < bootstrap_start) start = bootstrap_start;
                 if (start < min_start) start = min_start;
@@ -172,10 +194,13 @@ int run_download(const DownloadRequest& request, const Config& config) {
             }
         }
         const int dedup_hours = std::max(0, config.ingestion.request_dedup_hours);
+        const bool stream_resume_mode = request.use_checkpoint;
         const bool explicit_window_request = request.start.has_value() || request.end.has_value();
         const bool watermark_covers_end = current_wm.has_value() && (*current_wm >= end);
-        const bool dedup_eligible = explicit_window_request || watermark_covers_end;
-        if (!request.refresh && dedup_hours > 0 &&
+        const bool checkpoint_covers_end = has_stream_checkpoint &&
+            (*current_cp->last_event_date >= end);
+        const bool dedup_eligible = explicit_window_request || watermark_covers_end || checkpoint_covers_end;
+        if (!request.refresh && !stream_resume_mode && dedup_hours > 0 &&
             dedup_eligible &&
             (has_local_raw_partition || cloud_mode) &&
             metadata.has_recent_successful_request(request.provider,
@@ -210,6 +235,16 @@ int run_download(const DownloadRequest& request, const Config& config) {
                                                 "success",
                                                 run_id,
                                                 static_cast<int64_t>(report.total_bars));
+            if (request.use_checkpoint) {
+                auto committed_wm = metadata.last_watermark_date(request.provider, dataset, symbol);
+                if (committed_wm.has_value()) {
+                    metadata.upsert_stream_checkpoint(request.provider,
+                                                      dataset,
+                                                      symbol,
+                                                      build_stream_checkpoint_payload(*committed_wm),
+                                                      *committed_wm);
+                }
+            }
 
             std::cout << "Downloaded " << report.total_bars << " bars for " << symbol
                       << " (quality: " << std::fixed << std::setprecision(1)

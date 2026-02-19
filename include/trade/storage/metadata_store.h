@@ -105,7 +105,8 @@ public:
     std::optional<Date> last_download_date(const Symbol& symbol);
     std::vector<Symbol> symbols_needing_update(Date cutoff);
 
-    // Incremental watermarks (source + dataset + symbol)
+    // Event-time watermark (source + dataset + symbol).
+    // Meaning: max event date durably committed to storage.
     void upsert_watermark(const std::string& source,
                           const std::string& dataset,
                           const Symbol& symbol,
@@ -188,7 +189,7 @@ public:
     std::vector<QualityCheckRecord> list_quality_checks(const std::string& dataset_id,
                                                         int limit = 100);
 
-    // Streaming checkpoint (for real-time/high-frequency extension)
+    // Streaming checkpoint (for recovery/resume cursor; Flink-like checkpoint role).
     void upsert_stream_checkpoint(const std::string& source,
                                   const std::string& stream,
                                   const std::string& shard,

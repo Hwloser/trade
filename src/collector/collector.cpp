@@ -262,11 +262,6 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
                                config_.ingestion.daily_bar_dataset,
                                symbol,
                                batch_end);
-    metadata_.upsert_stream_checkpoint(provider_->name(),
-                                       config_.ingestion.daily_bar_dataset,
-                                       symbol,
-                                       "{}",
-                                       batch_end);
     if (raw_changed) {
         record_market_quality(metadata_, run_id, "raw.cn_a.daily", symbol, report, batch_end);
     } else {

@@ -298,11 +298,6 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
             if (d > max_date) max_date = d;
         }
         metadata.upsert_watermark(src, "sentiment_text", src, max_date);
-        metadata.upsert_stream_checkpoint(src,
-                                          "sentiment_text",
-                                          src,
-                                          R"({"mode":"incremental"})",
-                                          max_date);
 
         MetadataStore::QualityCheckRecord event_qc;
         event_qc.run_id = run_id;

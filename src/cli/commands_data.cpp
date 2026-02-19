@@ -281,6 +281,7 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         request.provider = args.provider;
         request.refresh = false;
         request.start = parse_date(args.start_date);
+        request.use_checkpoint = true;
 
         const int interval_sec = std::max(1, config.ingestion.stream_poll_interval_sec);
         g_stream_stop.store(false);
