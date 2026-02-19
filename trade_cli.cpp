@@ -305,6 +305,8 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
             .refresh_token = config.storage.baidu_refresh_token,
             .app_key = config.storage.baidu_app_key,
             .app_secret = config.storage.baidu_app_secret,
+            .app_id = config.storage.baidu_app_id,
+            .sign_key = config.storage.baidu_sign_key,
             .root_path = config.storage.baidu_root,
             .timeout_ms = config.storage.baidu_timeout_ms,
             .retry_count = config.storage.baidu_retry_count,

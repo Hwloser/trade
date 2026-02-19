@@ -67,6 +67,8 @@ bool download_to_local_if_missing(const std::string& path) {
         .refresh_token = rt.storage.baidu_refresh_token,
         .app_key = rt.storage.baidu_app_key,
         .app_secret = rt.storage.baidu_app_secret,
+        .app_id = rt.storage.baidu_app_id,
+        .sign_key = rt.storage.baidu_sign_key,
         .root_path = rt.storage.baidu_root,
         .timeout_ms = rt.storage.baidu_timeout_ms,
         .retry_count = rt.storage.baidu_retry_count,

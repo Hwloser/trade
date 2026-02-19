@@ -271,11 +271,14 @@ bool BaiduNetdiskClient::download_bytes(const std::string& remote_rel_path,
 bool BaiduNetdiskClient::upload_bytes_once(const std::string& remote_full_path,
                                            const std::vector<uint8_t>& payload,
                                            std::string* response_out) {
-    const std::string url =
+    std::string url =
         "https://d.pcs.baidu.com/rest/2.0/pcs/file?method=upload"
         "&ondup=overwrite"
         "&path=" + url_encode(remote_full_path) +
         "&access_token=" + url_encode(cfg_.access_token);
+    if (!cfg_.app_id.empty()) {
+        url += "&app_id=" + url_encode(cfg_.app_id);
+    }
 
     HttpResponse resp = http_post_multipart_bytes(url, payload, cfg_.timeout_ms);
     if (response_out) *response_out = resp.body;
@@ -308,10 +311,13 @@ bool BaiduNetdiskClient::upload_bytes_once(const std::string& remote_full_path,
 bool BaiduNetdiskClient::download_bytes_once(const std::string& remote_full_path,
                                              std::vector<uint8_t>* payload_out,
                                              std::string* response_out) {
-    const std::string url =
+    std::string url =
         "https://d.pcs.baidu.com/rest/2.0/pcs/file?method=download"
         "&path=" + url_encode(remote_full_path) +
         "&access_token=" + url_encode(cfg_.access_token);
+    if (!cfg_.app_id.empty()) {
+        url += "&app_id=" + url_encode(cfg_.app_id);
+    }
 
     HttpResponse resp = http_get(url, cfg_.timeout_ms);
     if (response_out) *response_out = resp.body;

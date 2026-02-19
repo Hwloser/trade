@@ -13,6 +13,8 @@ public:
         std::string refresh_token;
         std::string app_key;
         std::string app_secret;
+        std::string app_id;
+        std::string sign_key;
         std::string root_path = "/apps/trade";
         int timeout_ms = 30000;
         int retry_count = 2;
