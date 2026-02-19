@@ -5,8 +5,12 @@
 #include "trade/storage/parquet_writer.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <optional>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -14,28 +18,36 @@ namespace {
 
 using CommandHandler = int (*)(const trade::cli::CliArgs&, const trade::Config&);
 
+enum class CommandAccessLevel {
+    kUser = 0,
+    kAdmin = 1,
+};
+
 struct CommandEntry {
     const char* name;
     CommandHandler handler;
     bool paused;
     const char* paused_message;
+    CommandAccessLevel min_access;
 };
 
 constexpr CommandEntry kCommandRegistry[] = {
-    {"collect", trade::cli::cmd_collect, false, nullptr},
-    {"silver", trade::cli::cmd_silver, false, nullptr},
-    {"cleanup", trade::cli::cmd_cleanup, false, nullptr},
-    {"verify", trade::cli::cmd_verify, false, nullptr},
-    {"view", nullptr, true, "Command 'view' is paused. Use 'sql' for querying data."},
-    {"sql", trade::cli::cmd_sql, false, nullptr},
-    {"info", nullptr, true, "Command 'info' is paused. Use 'sql' for querying data."},
-    {"features", trade::cli::cmd_features, false, nullptr},
-    {"train", trade::cli::cmd_train, false, nullptr},
-    {"predict", trade::cli::cmd_predict, false, nullptr},
-    {"risk", trade::cli::cmd_risk, false, nullptr},
-    {"backtest", trade::cli::cmd_backtest, false, nullptr},
-    {"account", trade::cli::cmd_account, false, nullptr},
-    {"report", trade::cli::cmd_report, false, nullptr},
+    {"collect", trade::cli::cmd_collect, false, nullptr, CommandAccessLevel::kUser},
+    {"silver", trade::cli::cmd_silver, false, nullptr, CommandAccessLevel::kUser},
+    {"cleanup", trade::cli::cmd_cleanup, false, nullptr, CommandAccessLevel::kUser},
+    {"verify", trade::cli::cmd_verify, false, nullptr, CommandAccessLevel::kUser},
+    {"view", nullptr, true, "Command 'view' is paused. Use 'sql' for querying data.",
+     CommandAccessLevel::kUser},
+    {"sql", trade::cli::cmd_sql, false, nullptr, CommandAccessLevel::kUser},
+    {"info", nullptr, true, "Command 'info' is paused. Use 'sql' for querying data.",
+     CommandAccessLevel::kUser},
+    {"features", trade::cli::cmd_features, false, nullptr, CommandAccessLevel::kUser},
+    {"train", trade::cli::cmd_train, false, nullptr, CommandAccessLevel::kUser},
+    {"predict", trade::cli::cmd_predict, false, nullptr, CommandAccessLevel::kUser},
+    {"risk", trade::cli::cmd_risk, false, nullptr, CommandAccessLevel::kUser},
+    {"backtest", trade::cli::cmd_backtest, false, nullptr, CommandAccessLevel::kUser},
+    {"account", trade::cli::cmd_account, false, nullptr, CommandAccessLevel::kAdmin},
+    {"report", trade::cli::cmd_report, false, nullptr, CommandAccessLevel::kUser},
 };
 
 const CommandEntry* find_command(const std::string& name) {
@@ -43,6 +55,51 @@ const CommandEntry* find_command(const std::string& name) {
                                  [&](const CommandEntry& entry) { return name == entry.name; });
     if (it == std::end(kCommandRegistry)) return nullptr;
     return it;
+}
+
+const char* access_name(CommandAccessLevel level) {
+    return level == CommandAccessLevel::kAdmin ? "admin" : "user";
+}
+
+std::optional<CommandAccessLevel> parse_access_level(std::string level) {
+    std::transform(level.begin(), level.end(), level.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (level == "user" || level == "basic" || level == "default") {
+        return CommandAccessLevel::kUser;
+    }
+    if (level == "admin") {
+        return CommandAccessLevel::kAdmin;
+    }
+    return std::nullopt;
+}
+
+CommandAccessLevel resolve_request_access(const trade::cli::CliArgs& args,
+                                          const trade::Config& config) {
+    std::string role = args.role;
+    if (role.empty()) {
+        if (const char* env_role = std::getenv("TRADE_CLI_ROLE")) {
+            role = env_role;
+        }
+    }
+    if (role.empty()) {
+        role = config.security.default_role;
+    }
+    if (role.empty()) {
+        role = "user";
+    }
+    auto parsed = parse_access_level(role);
+    if (!parsed) {
+        throw std::invalid_argument("Invalid role '" + role + "'. Use user|admin");
+    }
+    return *parsed;
+}
+
+std::string resolve_admin_token(const trade::cli::CliArgs& args) {
+    if (!args.admin_token.empty()) return args.admin_token;
+    if (const char* env_token = std::getenv("TRADE_ADMIN_TOKEN")) {
+        return env_token;
+    }
+    return "";
 }
 
 } // namespace
@@ -97,6 +154,29 @@ int main(int argc, char* argv[]) {
             if (!command->handler) {
                 spdlog::error("Command '{}' has no handler bound", args.command);
                 return 1;
+            }
+
+            CommandAccessLevel request_access = resolve_request_access(args, config);
+            if (static_cast<int>(request_access) < static_cast<int>(command->min_access)) {
+                spdlog::error(
+                    "Command '{}' requires {} role. Current role: {}. "
+                    "Use --role admin for elevated commands.",
+                    args.command,
+                    access_name(command->min_access),
+                    access_name(request_access));
+                return 1;
+            }
+
+            if (command->min_access == CommandAccessLevel::kAdmin &&
+                !config.security.admin_token.empty()) {
+                const std::string token = resolve_admin_token(args);
+                if (token != config.security.admin_token) {
+                    spdlog::error(
+                        "Admin token verification failed for command '{}'. "
+                        "Provide --admin-token or set TRADE_ADMIN_TOKEN.",
+                        args.command);
+                    return 1;
+                }
             }
             return command->handler(args, config);
         }

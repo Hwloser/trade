@@ -18,6 +18,8 @@ struct CliArgs {
     std::string scale = "zscore";
     std::string file;
     std::string action;
+    std::string role;
+    std::string admin_token;
     std::string account_id;
     std::string broker;
     std::string account_name;

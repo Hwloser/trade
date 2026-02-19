@@ -1,0 +1,5 @@
+security:
+  default_role: "user"
+  # Optional: if set, admin commands require this token
+  # (prefer setting via env TRADE_ADMIN_TOKEN)
+  admin_token: ""

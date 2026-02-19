@@ -4,6 +4,7 @@ includes:
   - modules/data_ingestion.yaml
   - modules/provider_eastmoney.yaml
   - modules/storage_baidu.yaml
+  - modules/security.yaml
   - modules/sentiment.yaml
 
 # Optional local overrides can be added below, for example:

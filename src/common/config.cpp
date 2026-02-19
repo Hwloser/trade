@@ -170,6 +170,11 @@ Config Config::load(const std::string& path) {
             }
         }
 
+        if (auto n = root["security"]) {
+            if (n["default_role"]) cfg.security.default_role = n["default_role"].as<std::string>();
+            if (n["admin_token"]) cfg.security.admin_token = n["admin_token"].as<std::string>();
+        }
+
         // Environment variable fallback for secrets
         if (cfg.storage.baidu_access_token.empty()) {
             if (const char* v = std::getenv("BAIDU_ACCESS_TOKEN")) {
@@ -199,6 +204,16 @@ Config Config::load(const std::string& path) {
         if (cfg.storage.baidu_sign_key.empty()) {
             if (const char* v = std::getenv("BAIDU_SIGN_KEY")) {
                 cfg.storage.baidu_sign_key = v;
+            }
+        }
+        if (cfg.security.default_role.empty()) {
+            if (const char* v = std::getenv("TRADE_CLI_ROLE")) {
+                cfg.security.default_role = v;
+            }
+        }
+        if (cfg.security.admin_token.empty()) {
+            if (const char* v = std::getenv("TRADE_ADMIN_TOKEN")) {
+                cfg.security.admin_token = v;
             }
         }
 

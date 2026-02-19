@@ -68,6 +68,11 @@ struct StorageConfig {
     int baidu_retry_count = 2;
 };
 
+struct SecurityConfig {
+    std::string default_role = "user"; // user | admin
+    std::string admin_token = "";      // optional extra gate for admin commands
+};
+
 struct TradingCostConfig {
     double stamp_tax_rate = 0.0005;        // 印花税 0.05% (卖出)
     double commission_rate = 0.00025;       // 佣金 0.025% (双向)
@@ -139,6 +144,7 @@ struct Config {
     IngestionConfig ingestion;
     EastMoneyConfig eastmoney;
     StorageConfig storage;
+    SecurityConfig security;
     TradingCostConfig cost;
     RiskConfig risk;
     BacktestConfig backtest;

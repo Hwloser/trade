@@ -43,6 +43,8 @@ Options:
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
+  --role <level>        CLI role: user|admin (default from config/security)
+  --admin-token <tok>   Admin token (or env TRADE_ADMIN_TOKEN)
   --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
                         collect: raw|sentiment|all (default: raw)
                         cleanup: audit|apply
@@ -74,6 +76,8 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--strategy" && i + 1 < argc) args.strategy = argv[++i];
         else if (arg == "--source" && i + 1 < argc) args.source = argv[++i];
         else if (arg == "--output" && i + 1 < argc) args.output = argv[++i];
+        else if (arg == "--role" && i + 1 < argc) args.role = argv[++i];
+        else if (arg == "--admin-token" && i + 1 < argc) args.admin_token = argv[++i];
         else if (arg == "--file" && i + 1 < argc) args.file = argv[++i];
         else if (arg == "--action" && i + 1 < argc) args.action = argv[++i];
         else if (arg == "--account-id" && i + 1 < argc) args.account_id = argv[++i];
