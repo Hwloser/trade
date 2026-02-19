@@ -3,6 +3,13 @@ data:
   raw_dir: "raw"
   curated_dir: "curated"
   models_dir: "models"
+  market_daily_subpath: "cn_a/daily"
+
+ingestion:
+  default_history_days: 30
+  incremental_lookback_days: 5
+  min_start_date: "2020-01-01"
+  daily_bar_dataset: "cn_a_daily_bar"
 
 eastmoney:
   timeout_ms: 30000
@@ -14,9 +21,17 @@ eastmoney:
 storage:
   enabled: false
   backend: "local"
-  rclone_bin: "rclone"
-  baidu_remote: ""
-  baidu_path: "/trade"
+  write_mode: "local_only"         # local_only | hybrid | cloud_only
+  hot_days: 30
+  keep_local_cold_copy: false
+  mirror_hot_to_cloud: false
+  baidu_root: "/apps/trade"
+  baidu_access_token: ""
+  baidu_refresh_token: ""
+  baidu_app_key: ""
+  baidu_app_secret: ""
+  baidu_timeout_ms: 30000
+  baidu_retry_count: 2
 
 cost:
   stamp_tax_rate: 0.0005
@@ -51,4 +66,12 @@ sentiment:
   onnx_model_path: ""
   tokenizer_path: ""
   use_onnx: false
+  default_source: "rss"
+  default_history_days: 30
+  incremental_lookback_days: 1
   rss_fetch_interval_min: 15
+  rss_feeds:
+    - name: "CLS"
+      url: "https://rsshub.app/cls/telegraph"
+    - name: "Sina"
+      url: "https://rsshub.app/sina/finance"

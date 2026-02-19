@@ -1,4 +1,5 @@
 #include "trade/common/config.h"
+#include <cstdlib>
 #include <fstream>
 #include <spdlog/spdlog.h>
 
@@ -14,6 +15,22 @@ Config Config::load(const std::string& path) {
             if (n["raw_dir"]) cfg.data.raw_dir = n["raw_dir"].as<std::string>();
             if (n["curated_dir"]) cfg.data.curated_dir = n["curated_dir"].as<std::string>();
             if (n["models_dir"]) cfg.data.models_dir = n["models_dir"].as<std::string>();
+            if (n["market_daily_subpath"]) {
+                cfg.data.market_daily_subpath = n["market_daily_subpath"].as<std::string>();
+            }
+        }
+
+        if (auto n = root["ingestion"]) {
+            if (n["default_history_days"]) {
+                cfg.ingestion.default_history_days = n["default_history_days"].as<int>();
+            }
+            if (n["incremental_lookback_days"]) {
+                cfg.ingestion.incremental_lookback_days = n["incremental_lookback_days"].as<int>();
+            }
+            if (n["min_start_date"]) cfg.ingestion.min_start_date = n["min_start_date"].as<std::string>();
+            if (n["daily_bar_dataset"]) {
+                cfg.ingestion.daily_bar_dataset = n["daily_bar_dataset"].as<std::string>();
+            }
         }
 
         if (auto n = root["eastmoney"]) {
@@ -28,9 +45,51 @@ Config Config::load(const std::string& path) {
         if (auto n = root["storage"]) {
             if (n["enabled"]) cfg.storage.enabled = n["enabled"].as<bool>();
             if (n["backend"]) cfg.storage.backend = n["backend"].as<std::string>();
-            if (n["rclone_bin"]) cfg.storage.rclone_bin = n["rclone_bin"].as<std::string>();
-            if (n["baidu_remote"]) cfg.storage.baidu_remote = n["baidu_remote"].as<std::string>();
-            if (n["baidu_path"]) cfg.storage.baidu_path = n["baidu_path"].as<std::string>();
+            if (n["write_mode"]) cfg.storage.write_mode = n["write_mode"].as<std::string>();
+            if (n["hot_days"]) cfg.storage.hot_days = n["hot_days"].as<int>();
+            if (n["keep_local_cold_copy"]) {
+                cfg.storage.keep_local_cold_copy = n["keep_local_cold_copy"].as<bool>();
+            }
+            if (n["mirror_hot_to_cloud"]) {
+                cfg.storage.mirror_hot_to_cloud = n["mirror_hot_to_cloud"].as<bool>();
+            }
+            if (n["baidu_root"]) cfg.storage.baidu_root = n["baidu_root"].as<std::string>();
+            if (n["baidu_access_token"]) {
+                cfg.storage.baidu_access_token = n["baidu_access_token"].as<std::string>();
+            }
+            if (n["baidu_refresh_token"]) {
+                cfg.storage.baidu_refresh_token = n["baidu_refresh_token"].as<std::string>();
+            }
+            if (n["baidu_app_key"]) cfg.storage.baidu_app_key = n["baidu_app_key"].as<std::string>();
+            if (n["baidu_app_secret"]) {
+                cfg.storage.baidu_app_secret = n["baidu_app_secret"].as<std::string>();
+            }
+            if (n["baidu_timeout_ms"]) cfg.storage.baidu_timeout_ms = n["baidu_timeout_ms"].as<int>();
+            if (n["baidu_retry_count"]) {
+                cfg.storage.baidu_retry_count = n["baidu_retry_count"].as<int>();
+            }
+        }
+
+        // Environment variable fallback for secrets
+        if (cfg.storage.baidu_access_token.empty()) {
+            if (const char* v = std::getenv("BAIDU_ACCESS_TOKEN")) {
+                cfg.storage.baidu_access_token = v;
+            }
+        }
+        if (cfg.storage.baidu_refresh_token.empty()) {
+            if (const char* v = std::getenv("BAIDU_REFRESH_TOKEN")) {
+                cfg.storage.baidu_refresh_token = v;
+            }
+        }
+        if (cfg.storage.baidu_app_key.empty()) {
+            if (const char* v = std::getenv("BAIDU_APP_KEY")) {
+                cfg.storage.baidu_app_key = v;
+            }
+        }
+        if (cfg.storage.baidu_app_secret.empty()) {
+            if (const char* v = std::getenv("BAIDU_APP_SECRET")) {
+                cfg.storage.baidu_app_secret = v;
+            }
         }
 
         if (auto n = root["cost"]) {
@@ -58,6 +117,27 @@ Config Config::load(const std::string& path) {
             if (n["onnx_model_path"]) cfg.sentiment.onnx_model_path = n["onnx_model_path"].as<std::string>();
             if (n["tokenizer_path"]) cfg.sentiment.tokenizer_path = n["tokenizer_path"].as<std::string>();
             if (n["use_onnx"]) cfg.sentiment.use_onnx = n["use_onnx"].as<bool>();
+            if (n["rss_fetch_interval_min"]) {
+                cfg.sentiment.rss_fetch_interval_min = n["rss_fetch_interval_min"].as<int>();
+            }
+            if (n["default_source"]) cfg.sentiment.default_source = n["default_source"].as<std::string>();
+            if (n["default_history_days"]) {
+                cfg.sentiment.default_history_days = n["default_history_days"].as<int>();
+            }
+            if (n["incremental_lookback_days"]) {
+                cfg.sentiment.incremental_lookback_days = n["incremental_lookback_days"].as<int>();
+            }
+            if (n["rss_feeds"] && n["rss_feeds"].IsSequence()) {
+                cfg.sentiment.rss_feeds.clear();
+                for (const auto& feed : n["rss_feeds"]) {
+                    SentimentFeedConfig f;
+                    if (feed["name"]) f.name = feed["name"].as<std::string>();
+                    if (feed["url"]) f.url = feed["url"].as<std::string>();
+                    if (!f.name.empty() && !f.url.empty()) {
+                        cfg.sentiment.rss_feeds.push_back(std::move(f));
+                    }
+                }
+            }
         }
 
         spdlog::info("Config loaded from {}", path);

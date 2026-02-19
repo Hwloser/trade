@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 
 namespace trade {
@@ -10,6 +11,14 @@ struct DataConfig {
     std::string raw_dir = "raw";
     std::string curated_dir = "curated";
     std::string models_dir = "models";
+    std::string market_daily_subpath = "cn_a/daily";
+};
+
+struct IngestionConfig {
+    int default_history_days = 30;             // default backfill window
+    int incremental_lookback_days = 5;         // overlap window for correction
+    std::string min_start_date = "2020-01-01"; // lower bound for historical pulls
+    std::string daily_bar_dataset = "cn_a_daily_bar";
 };
 
 struct EastMoneyConfig {
@@ -23,10 +32,27 @@ struct EastMoneyConfig {
 
 struct StorageConfig {
     bool enabled = false;
-    std::string backend = "local";      // local, baidu
-    std::string rclone_bin = "rclone";
-    std::string baidu_remote = "";      // rclone remote name, e.g. baidu_trade
-    std::string baidu_path = "/trade";  // remote base path
+    std::string backend = "local";  // local, baidu_netdisk
+
+    // Write policy:
+    // - local_only: write to local disk only
+    // - hybrid: keep hot partitions local, write cold partitions to cloud
+    // - cloud_only: write directly to cloud, no local persistence
+    std::string write_mode = "local_only";
+
+    // Hot/cold partitioning
+    int hot_days = 30;
+    bool keep_local_cold_copy = false;
+    bool mirror_hot_to_cloud = false;
+
+    // Baidu Netdisk OpenAPI credentials
+    std::string baidu_root = "/apps/trade";
+    std::string baidu_access_token = "";
+    std::string baidu_refresh_token = "";
+    std::string baidu_app_key = "";
+    std::string baidu_app_secret = "";
+    int baidu_timeout_ms = 30000;
+    int baidu_retry_count = 2;
 };
 
 struct TradingCostConfig {
@@ -62,16 +88,26 @@ struct BacktestConfig {
     double alpha_cost_multiple = 1.5;      // alpha > 1.5*cost才交易
 };
 
+struct SentimentFeedConfig {
+    std::string name;
+    std::string url;
+};
+
 struct SentimentConfig {
     std::string dict_path = "config/sentiment_dict.txt";
     std::string onnx_model_path = "";
     std::string tokenizer_path = "";
     bool use_onnx = false;                 // false = rule engine only
     int rss_fetch_interval_min = 15;
+    std::string default_source = "rss";
+    int default_history_days = 30;
+    int incremental_lookback_days = 1;
+    std::vector<SentimentFeedConfig> rss_feeds;
 };
 
 struct Config {
     DataConfig data;
+    IngestionConfig ingestion;
     EastMoneyConfig eastmoney;
     StorageConfig storage;
     TradingCostConfig cost;

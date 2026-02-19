@@ -29,7 +29,6 @@
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
 #include "trade/storage/storage_path.h"
-#include "trade/storage/remote_sync.h"
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 
@@ -69,7 +68,6 @@ Commands:
   risk        Assess risk for a position
   backtest    Run backtest
   sentiment   Analyze sentiment from RSS feeds
-  offload     Sync local data to remote storage (Baidu via rclone)
   report      Generate decision report
   info        Show data info
 
@@ -86,8 +84,6 @@ Options:
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
-  --target <name>       Storage target (default: baidu, for offload)
-  --dry-run             Print/verify without actual sync (for offload)
   --verbose             Enable verbose logging
   --help                Show this help
 )" << std::endl;
@@ -105,10 +101,8 @@ struct CliArgs {
     std::string source;
     std::string output;
     std::string file;  // for view command
-    std::string target = "baidu";
     bool verbose = false;
     bool refresh = false;  // force full re-download
-    bool dry_run = false;
     int limit = 0;  // max rows for view command
 };
 
@@ -129,12 +123,10 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--strategy" && i + 1 < argc) args.strategy = argv[++i];
         else if (arg == "--source" && i + 1 < argc) args.source = argv[++i];
         else if (arg == "--output" && i + 1 < argc) args.output = argv[++i];
-        else if (arg == "--target" && i + 1 < argc) args.target = argv[++i];
         else if (arg == "--file" && i + 1 < argc) args.file = argv[++i];
         else if (arg == "--limit" && i + 1 < argc) args.limit = std::stoi(argv[++i]);
         else if (arg == "--verbose") args.verbose = true;
         else if (arg == "--refresh") args.refresh = true;
-        else if (arg == "--dry-run") args.dry_run = true;
         else if (arg == "--help") { print_usage(); std::exit(0); }
     }
     return args;
@@ -156,8 +148,10 @@ std::vector<trade::Bar> load_bars(const std::string& symbol,
     trade::StoragePath paths(config.data.data_root);
     std::vector<trade::Bar> all_bars;
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    auto min_date = trade::parse_date(config.ingestion.min_start_date);
+    int start_year = trade::date_year(min_date);
     int end_year = trade::date_year(now);
-    for (int year = 2015; year <= end_year; ++year) {
+    for (int year = start_year; year <= end_year; ++year) {
         auto path = paths.curated_daily(symbol, year);
         try {
             auto bars = trade::ParquetReader::read_bars(path);
@@ -180,11 +174,15 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
 
     trade::StoragePath paths(config.data.data_root);
     trade::MetadataStore metadata(paths.metadata_db());
+    const std::string& dataset = config.ingestion.daily_bar_dataset;
 
-    // Default start: last 30 days
+    // Default start from config (last N days)
     auto now_tp = std::chrono::system_clock::now();
     auto now_day = std::chrono::floor<std::chrono::days>(now_tp);
-    auto default_start = now_day - std::chrono::days{30};
+    int history_days = std::max(1, config.ingestion.default_history_days);
+    auto default_start = now_day - std::chrono::days{history_days};
+    auto min_start = trade::parse_date(config.ingestion.min_start_date);
+    if (default_start < min_start) default_start = min_start;
     std::string default_start_str = trade::format_date(default_start);
 
     if (!args.symbol.empty()) {
@@ -197,22 +195,23 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now_tp.time_since_epoch()).count());
         std::string mode = args.refresh ? "full" : "incremental";
-        metadata.begin_ingestion_run(run_id, args.provider, "cn_a_daily_bar", args.symbol, mode);
+        metadata.begin_ingestion_run(run_id, args.provider, dataset, args.symbol, mode);
 
         try {
             // Incremental download: prefer watermark, fallback to last download
             if (!args.refresh && args.start_date.empty()) {
-                constexpr int kLookbackDays = 5;
-                auto wm = metadata.last_watermark_date(args.provider, "cn_a_daily_bar", args.symbol);
+                int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
+                auto wm = metadata.last_watermark_date(args.provider, dataset, args.symbol);
                 if (wm) {
-                    start = *wm - std::chrono::days{kLookbackDays};
-                    if (start < default_start) start = default_start;
+                    start = *wm - std::chrono::days{lookback_days};
+                    if (start < min_start) start = min_start;
                     spdlog::info("Incremental from watermark {} (lookback {}d => {})",
-                                 trade::format_date(*wm), kLookbackDays, trade::format_date(start));
+                                 trade::format_date(*wm), lookback_days, trade::format_date(start));
                 } else {
                     auto last = metadata.last_download_date(args.symbol);
                     if (last) {
                         start = trade::next_trading_day(*last);
+                        if (start < min_start) start = min_start;
                         spdlog::info("Incremental from last download {} (start: {})",
                                      trade::format_date(*last), trade::format_date(start));
                     } else {
@@ -249,7 +248,7 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                 now_tp.time_since_epoch()).count());
         std::string mode = args.refresh ? "full" : "incremental";
-        metadata.begin_ingestion_run(run_id, args.provider, "cn_a_daily_bar", "*", mode);
+        metadata.begin_ingestion_run(run_id, args.provider, dataset, "*", mode);
 
         try {
             if (args.refresh) {
@@ -406,8 +405,10 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     }
 
     trade::StoragePath paths(config.data.data_root);
-    std::string curated_dir = config.data.data_root + "/curated/cn_a/daily";
-    std::string raw_dir = config.data.data_root + "/raw/cn_a/daily";
+    std::string curated_dir = config.data.data_root + "/" + config.data.curated_dir +
+                              "/" + config.data.market_daily_subpath;
+    std::string raw_dir = config.data.data_root + "/" + config.data.raw_dir +
+                          "/" + config.data.market_daily_subpath;
 
     // Build init SQL: create views for convenient querying
     std::string init_sql;
@@ -454,7 +455,7 @@ int cmd_features(const CliArgs& args, const trade::Config& config) {
     if (bars.empty()) {
         spdlog::error("No data for {}", args.symbol); return 1;
     }
-    auto [start, end] = resolve_dates(args, "2020-01-01");
+    auto [start, end] = resolve_dates(args, config.ingestion.min_start_date);
     std::vector<trade::Bar> filtered;
     for (const auto& b : bars)
         if (b.date >= start && b.date <= end) filtered.push_back(b);
@@ -732,7 +733,7 @@ int cmd_backtest(const CliArgs& args, const trade::Config& config) {
 // sentiment
 // ============================================================================
 int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
-    std::string src = args.source.empty() ? "rss" : args.source;
+    std::string src = args.source.empty() ? config.sentiment.default_source : args.source;
     spdlog::info("Sentiment (source: {})", src);
 
     if (src != "rss") {
@@ -743,11 +744,14 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
     trade::StoragePath paths(config.data.data_root);
     trade::MetadataStore metadata(paths.metadata_db());
 
-    auto [start, end] = resolve_dates(args, "2024-01-01");
+    auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    auto sentiment_default_start =
+        now - std::chrono::days{std::max(1, config.sentiment.default_history_days)};
+    auto [start, end] = resolve_dates(args, trade::format_date(sentiment_default_start));
     if (args.start_date.empty()) {
         auto wm = metadata.last_watermark_date(src, "sentiment_text", src);
         if (wm) {
-            auto next = *wm + std::chrono::days{1};
+            auto next = *wm - std::chrono::days{std::max(0, config.sentiment.incremental_lookback_days)};
             if (next > start) start = next;
         }
     }
@@ -759,8 +763,13 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
 
     try {
         trade::RssSource rss;
-        rss.add_feed("https://rsshub.app/cls/telegraph", "CLS");
-        rss.add_feed("https://rsshub.app/sina/finance", "Sina");
+        if (config.sentiment.rss_feeds.empty()) {
+            spdlog::error("sentiment.rss_feeds is empty in config");
+            return 1;
+        }
+        for (const auto& feed : config.sentiment.rss_feeds) {
+            rss.add_feed(feed.url, feed.name);
+        }
 
         auto events = rss.fetch_range(start, end);
         if (events.empty()) {
@@ -788,7 +797,7 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
             int m = static_cast<unsigned>(ymd.month());
             auto path = paths.sentiment_bronze(y, m, src, d);
             trade::ParquetStore::write_text_events(path, day_events,
-                trade::ParquetStore::MergeMode::kMergeByKey);
+                trade::ParquetStore::MergeMode::kMergeByKey, d);
         }
 
         trade::RuleSentiment model;
@@ -865,7 +874,7 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
             int m = static_cast<unsigned>(ymd.month());
             auto path = paths.sentiment_silver(y, m, d);
             trade::ParquetStore::write_nlp_results(path, day_results,
-                trade::ParquetStore::MergeMode::kMergeByKey);
+                trade::ParquetStore::MergeMode::kMergeByKey, d);
         }
 
         // Gold factors
@@ -892,7 +901,7 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
             int m = static_cast<unsigned>(ymd.month());
             auto path = paths.sentiment_gold(y, m, d);
             trade::ParquetStore::write_sentiment_factors(path, day_factors,
-                trade::ParquetStore::MergeMode::kMergeByKey);
+                trade::ParquetStore::MergeMode::kMergeByKey, d);
         }
 
         trade::Date max_date = start;
@@ -924,52 +933,6 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
     }
 }
 
-
-// ============================================================================
-// offload
-// ============================================================================
-int cmd_offload(const CliArgs& args, const trade::Config& config) {
-    std::string target = args.target.empty() ? "baidu" : args.target;
-    if (target != "baidu") {
-        spdlog::error("Unsupported target: {} (currently only 'baidu')", target);
-        return 1;
-    }
-
-    if (!config.storage.enabled) {
-        spdlog::error("storage.enabled is false in config/config.yaml");
-        return 1;
-    }
-
-    if (config.storage.backend != "baidu") {
-        spdlog::error("storage.backend must be 'baidu' to use offload target baidu (current: {})",
-                      config.storage.backend);
-        return 1;
-    }
-
-    if (!trade::RemoteSync::rclone_exists(config.storage.rclone_bin)) {
-        spdlog::error("rclone not found: {}", config.storage.rclone_bin);
-        spdlog::error("Install rclone and configure Baidu remote first.");
-        return 1;
-    }
-
-    std::cout << "Offloading data root: " << config.data.data_root << "\n"
-              << "Target: " << config.storage.baidu_remote << ":" << config.storage.baidu_path << "\n"
-              << (args.dry_run ? "Mode: dry-run\n" : "Mode: sync\n")
-              << std::endl;
-
-    bool ok = trade::RemoteSync::sync_to_baidu(config.data.data_root,
-                                               config.storage.rclone_bin,
-                                               config.storage.baidu_remote,
-                                               config.storage.baidu_path,
-                                               args.dry_run);
-    if (!ok) {
-        spdlog::error("Offload failed");
-        return 1;
-    }
-
-    std::cout << "Offload complete." << std::endl;
-    return 0;
-}
 
 // ============================================================================
 // report
@@ -1071,6 +1034,7 @@ int main(int argc, char* argv[]) {
         config.data.data_root = std::string(TRADE_SOURCE_DIR) + "/" + config.data.data_root;
 #endif
     }
+    trade::ParquetStore::configure_runtime(config.data, config.storage);
 
     try {
         if (args.command == "download")  return cmd_download(args, config);
@@ -1083,7 +1047,6 @@ int main(int argc, char* argv[]) {
         if (args.command == "risk")      return cmd_risk(args, config);
         if (args.command == "backtest")  return cmd_backtest(args, config);
         if (args.command == "sentiment") return cmd_sentiment(args, config);
-        if (args.command == "offload")   return cmd_offload(args, config);
         if (args.command == "report")    return cmd_report(args, config);
         spdlog::error("Unknown command: {}", args.command);
         print_usage();

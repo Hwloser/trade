@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <set>
 #include <spdlog/spdlog.h>
 #include <unordered_map>
@@ -36,7 +37,8 @@ std::vector<Bar> merge_by_date(std::vector<Bar> existing, std::vector<Bar> incom
 }
 
 void merge_and_write_raw_bars(const std::string& path,
-                              std::vector<Bar> incoming) {
+                              std::vector<Bar> incoming,
+                              std::optional<Date> partition_max_date = std::nullopt) {
     std::vector<Bar> merged;
     if (std::filesystem::exists(path)) {
         try {
@@ -49,13 +51,13 @@ void merge_and_write_raw_bars(const std::string& path,
     merged = merge_by_date(std::move(merged), std::move(incoming));
 
     // Raw layer keeps provider fields close to source semantics.
-    StoragePath::ensure_dir(path);
-    ParquetWriter::write_bars(path, merged);
+    ParquetWriter::write_bars(path, merged, ParquetWriter::MergeMode::kReplace, partition_max_date);
 }
 
 void merge_and_write_curated_bars(const std::string& path,
                                   std::vector<Bar> incoming,
-                                  Board default_board) {
+                                  Board default_board,
+                                  std::optional<Date> partition_max_date = std::nullopt) {
     std::vector<Bar> merged;
 
     if (std::filesystem::exists(path)) {
@@ -73,8 +75,7 @@ void merge_and_write_curated_bars(const std::string& path,
         BarNormalizer::compute_limits(merged, board);
     }
 
-    StoragePath::ensure_dir(path);
-    ParquetWriter::write_bars(path, merged);
+    ParquetWriter::write_bars(path, merged, ParquetWriter::MergeMode::kReplace, partition_max_date);
 }
 
 } // namespace
@@ -84,7 +85,9 @@ Collector::Collector(std::unique_ptr<IDataProvider> provider,
     : provider_(std::move(provider)),
       paths_(config.data.data_root),
       metadata_(paths_.metadata_db()),
-      config_(config) {}
+      config_(config) {
+    ParquetStore::configure_runtime(config_.data, config_.storage);
+}
 
 QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date end) {
     spdlog::info("Collecting {} [{}, {}]", symbol, format_date(start), format_date(end));
@@ -171,12 +174,20 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
 
     for (auto& [year, year_raw] : raw_by_year) {
         auto raw_path = paths_.raw_daily(symbol, year);
-        merge_and_write_raw_bars(raw_path, std::move(year_raw));
+        Date max_date = start;
+        for (const auto& b : year_raw) {
+            if (b.date > max_date) max_date = b.date;
+        }
+        merge_and_write_raw_bars(raw_path, std::move(year_raw), max_date);
     }
 
     for (auto& [year, year_curated] : curated_by_year) {
         auto curated_path = paths_.curated_daily(symbol, year);
-        merge_and_write_curated_bars(curated_path, std::move(year_curated), board);
+        Date max_date = start;
+        for (const auto& b : year_curated) {
+            if (b.date > max_date) max_date = b.date;
+        }
+        merge_and_write_curated_bars(curated_path, std::move(year_curated), board, max_date);
     }
 
     // 8. Upsert instrument record
@@ -190,7 +201,10 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
                               bars.front().date,
                               bars.back().date,
                               static_cast<int64_t>(bars.size()));
-    metadata_.upsert_watermark(provider_->name(), "cn_a_daily_bar", symbol, bars.back().date);
+    metadata_.upsert_watermark(provider_->name(),
+                               config_.ingestion.daily_bar_dataset,
+                               symbol,
+                               bars.back().date);
 
     spdlog::info("Collected {} bars for {} (quality: {:.1f}%)",
                  bars.size(), symbol, report.quality_score() * 100);
@@ -254,15 +268,17 @@ void Collector::update_all(ProgressCallback progress) {
         }
 
         Date start;
-        constexpr int kLookbackDays = 5;
-        auto wm = metadata_.last_watermark_date(provider_->name(), "cn_a_daily_bar", symbols[i]);
+        const int lookback_days = std::max(0, config_.ingestion.incremental_lookback_days);
+        auto wm = metadata_.last_watermark_date(provider_->name(),
+                                                config_.ingestion.daily_bar_dataset,
+                                                symbols[i]);
         if (wm) {
-            start = *wm - std::chrono::days{kLookbackDays};
-            Date floor = parse_date("2020-01-01");
+            start = *wm - std::chrono::days{lookback_days};
+            Date floor = parse_date(config_.ingestion.min_start_date);
             if (start < floor) start = floor;
         } else {
             auto last = metadata_.last_download_date(symbols[i]);
-            start = last ? next_trading_day(*last) : parse_date("2020-01-01");
+            start = last ? next_trading_day(*last) : parse_date(config_.ingestion.min_start_date);
         }
         collect_symbol(symbols[i], start, today);
     }

@@ -13,7 +13,7 @@ set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_PYTHON_BINDINGS "Build nanobind Python bindings" OFF)
 
-# Find required dependencies (Homebrew on macOS)
+# Dependencies
 find_package(Arrow REQUIRED)
 find_package(Parquet REQUIRED)
 find_package(SQLite3 REQUIRED)
@@ -27,10 +27,9 @@ find_package(pugixml CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(re2 CONFIG REQUIRED)
 
-# LightGBM - optional (not in vcpkg for macOS ARM, install via brew or source)
+# LightGBM - optional
 find_package(LightGBM CONFIG QUIET)
 if(NOT LightGBM_FOUND)
-    # Try pkg-config or manual path
     find_library(LIGHTGBM_LIB NAMES lightgbm _lightgbm lib_lightgbm
                  PATHS /opt/homebrew/lib /usr/local/lib)
     find_path(LIGHTGBM_INCLUDE NAMES LightGBM/c_api.h
@@ -66,87 +65,9 @@ else()
     message(STATUS "ONNX Runtime not found - using rule-based sentiment only")
 endif()
 
-# Core library
-add_library(trade_core
-    # Common
-    src/common/config.cpp
-    src/common/time_utils.cpp
-    # Model
-    src/model/bar.cpp
-    src/model/instrument.cpp
-    # Storage
-    src/storage/parquet_writer.cpp
-    src/storage/parquet_reader.cpp
-    src/storage/metadata_store.cpp
-    src/storage/storage_path.cpp
-    src/storage/remote_sync.cpp
-    # Provider
-    src/provider/provider_factory.cpp
-    src/provider/http_client.cpp
-    src/provider/eastmoney_provider.cpp
-    # Normalizer
-    src/normalizer/bar_normalizer.cpp
-    # Validator
-    src/validator/data_validator.cpp
-    # Collector
-    src/collector/collector.cpp
-    # Features
-    src/features/feature_engine.cpp
-    src/features/preprocessor.cpp
-    src/features/momentum.cpp
-    src/features/volatility.cpp
-    src/features/liquidity.cpp
-    src/features/fund_flow.cpp
-    src/features/price_limit.cpp
-    src/features/industry.cpp
-    src/features/interaction.cpp
-    src/features/calendar.cpp
-    src/features/fundamental.cpp
-    src/features/feature_monitor.cpp
-    # Stats
-    src/stats/descriptive.cpp
-    src/stats/correlation.cpp
-    src/stats/attribution.cpp
-    # ML
-    src/ml/lgbm_model.cpp
-    src/ml/model_trainer.cpp
-    src/ml/model_evaluator.cpp
-    # Risk
-    src/risk/covariance.cpp
-    src/risk/var.cpp
-    src/risk/kelly.cpp
-    src/risk/position_sizer.cpp
-    src/risk/drawdown.cpp
-    src/risk/stress_test.cpp
-    src/risk/risk_monitor.cpp
-    src/risk/risk_attribution.cpp
-    # Regime
-    src/regime/regime_detector.cpp
-    # Backtest
-    src/backtest/backtest_engine.cpp
-    src/backtest/broker_sim.cpp
-    src/backtest/portfolio_state.cpp
-    src/backtest/strategy.cpp
-    src/backtest/slippage.cpp
-    src/backtest/performance.cpp
-    src/backtest/validation.cpp
-    src/backtest/reporting.cpp
-    # Sentiment
-    src/sentiment/rss_source.cpp
-    src/sentiment/xueqiu_source.cpp
-    src/sentiment/jin10_source.cpp
-    src/sentiment/text_cleaner.cpp
-    src/sentiment/symbol_linker.cpp
-    src/sentiment/rule_sentiment.cpp
-    src/sentiment/sentiment_factor.cpp
-    # Decision
-    src/decision/signal_combiner.cpp
-    src/decision/universe_filter.cpp
-    src/decision/portfolio_opt.cpp
-    src/decision/order_manager.cpp
-    src/decision/pre_trade_check.cpp
-    src/decision/decision_report.cpp
-)
+# Core library sources
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/trade_core_sources.cmake)
+add_library(trade_core ${TRADE_CORE_SOURCES})
 
 target_include_directories(trade_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -177,22 +98,16 @@ if(HAVE_ONNXRUNTIME)
     target_link_libraries(trade_core PUBLIC onnxruntime::onnxruntime)
 endif()
 
-# ── Output layout ──────────────────────────────────────────────────
-# Binaries → build/<preset>/bin/
+# Output layout
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-# CLI tool
-add_executable(trade_cli tools/trade_cli.cpp)
+# CLI tool (moved to repo root)
+add_executable(trade_cli trade_cli.cpp)
 target_link_libraries(trade_cli PRIVATE trade_core)
-
-# Pass the source dir to the binary so it can resolve default paths
 target_compile_definitions(trade_cli PRIVATE
     TRADE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
-# ── Symlinks in build dir ─────────────────────────────────────────
-# Create symlinks so CLI works from build dir:
-#   build/<preset>/config  →  <source>/config
-#   build/<preset>/data    →  <source>/data
+# Symlinks in build dir
 file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/config
      ${CMAKE_BINARY_DIR}/config SYMBOLIC)
 file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/data
@@ -200,74 +115,12 @@ file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/data
 
 # Tests
 if(BUILD_TESTING)
-    enable_testing()
-    find_package(GTest CONFIG REQUIRED)
-    include(GoogleTest)
-
-    # Fix GTest include: convert SYSTEM include to normal include
-    # to ensure Homebrew headers are found before /usr/local/include
-    get_target_property(_gtest_inc GTest::gtest INTERFACE_INCLUDE_DIRECTORIES)
-    if(_gtest_inc)
-        set_target_properties(GTest::gtest PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES ""
-            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "")
-        target_include_directories(GTest::gtest INTERFACE ${_gtest_inc})
-    endif()
-    get_target_property(_gmain_inc GTest::gtest_main INTERFACE_INCLUDE_DIRECTORIES)
-    if(_gmain_inc)
-        set_target_properties(GTest::gtest_main PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES ""
-            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "")
-        target_include_directories(GTest::gtest_main INTERFACE ${_gmain_inc})
-    endif()
-
-    function(add_trade_test TEST_NAME TEST_SOURCE)
-        add_executable(${TEST_NAME} ${TEST_SOURCE})
-        target_link_libraries(${TEST_NAME} PRIVATE trade_core GTest::gtest_main)
-        gtest_discover_tests(${TEST_NAME} DISCOVERY_TIMEOUT 30)
-    endfunction()
-
-    add_trade_test(test_types tests/unit/test_types.cpp)
-    add_trade_test(test_bar tests/unit/test_bar.cpp)
-    add_trade_test(test_parquet tests/unit/test_parquet.cpp)
-    add_trade_test(test_metadata tests/unit/test_metadata.cpp)
-    add_trade_test(test_normalizer tests/unit/test_normalizer.cpp)
-    add_trade_test(test_validator tests/unit/test_validator.cpp)
-    add_trade_test(test_features tests/unit/test_features.cpp)
-    add_trade_test(test_stats tests/unit/test_stats.cpp)
-    if(LightGBM_FOUND)
-        add_trade_test(test_ml tests/unit/test_ml.cpp)
-    endif()
-    add_trade_test(test_risk tests/unit/test_risk.cpp)
-    add_trade_test(test_backtest tests/unit/test_backtest.cpp)
-    add_trade_test(test_sentiment tests/unit/test_sentiment.cpp)
-    add_trade_test(test_decision tests/unit/test_decision.cpp)
-    add_trade_test(test_regime tests/unit/test_regime.cpp)
-
-    add_trade_test(test_pipeline tests/integration/test_pipeline.cpp)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests.cmake)
+    trade_configure_tests()
 endif()
 
 # Python bindings
 if(BUILD_PYTHON_BINDINGS)
-    find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
-    include(FetchContent)
-    FetchContent_Declare(
-        nanobind
-        GIT_REPOSITORY https://github.com/wjakob/nanobind.git
-        GIT_TAG v2.4.0
-    )
-    FetchContent_MakeAvailable(nanobind)
-
-    nanobind_add_module(trade_py
-        python/bindings/module.cpp
-        python/bindings/bind_model.cpp
-        python/bindings/bind_features.cpp
-        python/bindings/bind_ml.cpp
-        python/bindings/bind_risk.cpp
-        python/bindings/bind_regime.cpp
-        python/bindings/bind_backtest.cpp
-        python/bindings/bind_sentiment.cpp
-        python/bindings/bind_decision.cpp
-    )
-    target_link_libraries(trade_py PRIVATE trade_core)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/python_bindings.cmake)
+    trade_configure_python_bindings()
 endif()

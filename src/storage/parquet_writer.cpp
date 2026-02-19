@@ -1,19 +1,151 @@
 #include "trade/storage/parquet_writer.h"
 
 #include "trade/common/time_utils.h"
+#include "trade/storage/baidu_netdisk_client.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/normalizer/bar_normalizer.h"
 
 #include <arrow/builder.h>
+#include <arrow/io/memory.h>
 #include <arrow/io/file.h>
 #include <arrow/table.h>
 #include <filesystem>
+#include <fstream>
 #include <parquet/arrow/writer.h>
 #include <spdlog/spdlog.h>
 #include <unordered_map>
 
 namespace trade {
 namespace {
+
+struct RuntimeStorage {
+    bool configured = false;
+    DataConfig data;
+    StorageConfig storage;
+};
+
+RuntimeStorage& runtime_storage() {
+    static RuntimeStorage cfg;
+    return cfg;
+}
+
+struct WriteDecision {
+    bool write_local = true;
+    bool write_cloud = false;
+};
+
+int days_old(Date d) {
+    auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    auto diff = now - d;
+    return static_cast<int>(std::chrono::duration_cast<std::chrono::days>(diff).count());
+}
+
+WriteDecision decide_write(const std::optional<Date>& partition_max_date) {
+    const auto& rt = runtime_storage();
+    if (!rt.configured || !rt.storage.enabled) {
+        return {};
+    }
+
+    if (rt.storage.backend != "baidu_netdisk" && rt.storage.backend != "baidu") {
+        return {};
+    }
+
+    if (rt.storage.write_mode == "cloud_only") {
+        return {.write_local = false, .write_cloud = true};
+    }
+    if (rt.storage.write_mode == "local_only") {
+        return {.write_local = true, .write_cloud = false};
+    }
+
+    // Hybrid mode
+    bool is_cold = false;
+    if (partition_max_date.has_value()) {
+        is_cold = days_old(*partition_max_date) > rt.storage.hot_days;
+    }
+    if (is_cold) {
+        return {.write_local = rt.storage.keep_local_cold_copy, .write_cloud = true};
+    }
+    return {.write_local = true, .write_cloud = rt.storage.mirror_hot_to_cloud};
+}
+
+bool path_prefix_match(const std::filesystem::path& path,
+                       const std::filesystem::path& prefix) {
+    auto pit = path.begin();
+    auto qit = prefix.begin();
+    for (; qit != prefix.end(); ++pit, ++qit) {
+        if (pit == path.end() || *pit != *qit) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string to_rel_data_path(const std::string& path, const std::string& data_root) {
+    std::filesystem::path p = std::filesystem::path(path).lexically_normal();
+    std::filesystem::path root = std::filesystem::path(data_root).lexically_normal();
+
+    if (path_prefix_match(p, root)) {
+        auto rel = p.lexically_relative(root);
+        return rel.generic_string();
+    }
+
+    std::string s = p.generic_string();
+    std::string root_s = root.generic_string();
+    if (!root_s.empty() && s.rfind(root_s + "/", 0) == 0) {
+        return s.substr(root_s.size() + 1);
+    }
+    return s;
+}
+
+std::vector<uint8_t> table_to_parquet_bytes(const std::shared_ptr<arrow::Table>& table) {
+    auto sink_res = arrow::io::BufferOutputStream::Create();
+    if (!sink_res.ok()) {
+        spdlog::error("Failed to create in-memory parquet sink: {}", sink_res.status().ToString());
+        return {};
+    }
+    auto sink = *sink_res;
+
+    auto writer_props = parquet::WriterProperties::Builder()
+                            .compression(parquet::Compression::SNAPPY)
+                            ->build();
+    auto status = parquet::arrow::WriteTable(*table,
+                                             arrow::default_memory_pool(),
+                                             sink,
+                                             /*chunk_size=*/65536,
+                                             writer_props);
+    if (!status.ok()) {
+        spdlog::error("Failed to encode parquet buffer: {}", status.ToString());
+        return {};
+    }
+
+    auto finish_res = sink->Finish();
+    if (!finish_res.ok()) {
+        spdlog::error("Failed to finish parquet buffer: {}", finish_res.status().ToString());
+        return {};
+    }
+    auto buf = *finish_res;
+    return std::vector<uint8_t>(buf->data(), buf->data() + buf->size());
+}
+
+bool write_local_bytes(const std::string& path, const std::vector<uint8_t>& bytes) {
+    auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) {
+        spdlog::error("Failed to open {} for writing", path);
+        return false;
+    }
+    ofs.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!ofs.good()) {
+        spdlog::error("Failed to write {}", path);
+        return false;
+    }
+    return true;
+}
 
 int64_t to_epoch_ms(Timestamp ts) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -340,15 +472,18 @@ std::shared_ptr<arrow::Table> ParquetStore::bars_to_table(const std::vector<Bar>
 
 void ParquetStore::write_bars(const std::string& path,
                               const std::vector<Bar>& bars,
-                              MergeMode mode) {
+                              MergeMode mode,
+                              std::optional<Date> partition_max_date) {
     if (mode == MergeMode::kReplace) {
-        write_table(path, bars_to_table(bars));
+        write_table(path, bars_to_table(bars), partition_max_date);
         return;
     }
 
     std::unordered_map<Date, Bar> by_date;
-    for (auto& b : ParquetReader::read_bars(path)) {
-        by_date[b.date] = std::move(b);
+    if (std::filesystem::exists(path)) {
+        for (auto& b : ParquetReader::read_bars(path)) {
+            by_date[b.date] = std::move(b);
+        }
     }
     for (const auto& b : bars) {
         by_date[b.date] = b;
@@ -359,12 +494,13 @@ void ParquetStore::write_bars(const std::string& path,
     for (auto& [_, b] : by_date) merged.push_back(std::move(b));
     merged = BarNormalizer::normalize(std::move(merged));
 
-    write_table(path, bars_to_table(merged));
+    write_table(path, bars_to_table(merged), partition_max_date);
 }
 
 void ParquetStore::write_text_events(const std::string& path,
                                      const std::vector<TextEvent>& events,
-                                     MergeMode mode) {
+                                     MergeMode mode,
+                                     std::optional<Date> partition_max_date) {
     std::vector<TextEvent> merged = events;
     if (mode == MergeMode::kMergeByKey) {
         std::unordered_map<std::string, TextEvent> dedup;
@@ -374,12 +510,13 @@ void ParquetStore::write_text_events(const std::string& path,
         merged.reserve(dedup.size());
         for (auto& [_, e] : dedup) merged.push_back(std::move(e));
     }
-    write_table(path, text_events_to_table(merged));
+    write_table(path, text_events_to_table(merged), partition_max_date);
 }
 
 void ParquetStore::write_nlp_results(const std::string& path,
                                      const std::vector<NlpResult>& results,
-                                     MergeMode mode) {
+                                     MergeMode mode,
+                                     std::optional<Date> partition_max_date) {
     std::vector<NlpResult> merged = results;
     if (mode == MergeMode::kMergeByKey) {
         std::unordered_map<std::string, NlpResult> dedup;
@@ -389,12 +526,13 @@ void ParquetStore::write_nlp_results(const std::string& path,
         merged.reserve(dedup.size());
         for (auto& [_, r] : dedup) merged.push_back(std::move(r));
     }
-    write_table(path, nlp_results_to_table(merged));
+    write_table(path, nlp_results_to_table(merged), partition_max_date);
 }
 
 void ParquetStore::write_sentiment_factors(const std::string& path,
                                            const std::vector<SentimentFactors>& factors,
-                                           MergeMode mode) {
+                                           MergeMode mode,
+                                           std::optional<Date> partition_max_date) {
     std::vector<SentimentFactors> merged = factors;
     if (mode == MergeMode::kMergeByKey) {
         std::unordered_map<std::string, SentimentFactors> dedup;
@@ -404,34 +542,64 @@ void ParquetStore::write_sentiment_factors(const std::string& path,
         merged.reserve(dedup.size());
         for (auto& [_, f] : dedup) merged.push_back(std::move(f));
     }
-    write_table(path, sentiment_factors_to_table(merged));
+    write_table(path, sentiment_factors_to_table(merged), partition_max_date);
 }
 
 void ParquetStore::write_table(const std::string& path,
-                               const std::shared_ptr<arrow::Table>& table) {
-    auto parent = std::filesystem::path(path).parent_path();
-    if (!parent.empty()) {
-        std::filesystem::create_directories(parent);
-    }
-
-    auto outfile = arrow::io::FileOutputStream::Open(path);
-    if (!outfile.ok()) {
-        spdlog::error("Failed to open {} for writing: {}", path, outfile.status().ToString());
+                               const std::shared_ptr<arrow::Table>& table,
+                               std::optional<Date> partition_max_date) {
+    auto bytes = table_to_parquet_bytes(table);
+    if (bytes.empty()) {
+        spdlog::error("Failed to serialize parquet: {}", path);
         return;
     }
 
-    auto writer_props = parquet::WriterProperties::Builder()
-                            .compression(parquet::Compression::SNAPPY)
-                            ->build();
+    WriteDecision decision = decide_write(partition_max_date);
+    bool local_ok = true;
+    bool cloud_ok = true;
 
-    auto status = parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
-                                             *outfile, /*chunk_size=*/65536,
-                                             writer_props);
-    if (!status.ok()) {
-        spdlog::error("Failed to write parquet {}: {}", path, status.ToString());
-    } else {
-        spdlog::debug("Wrote {} rows to {}", table->num_rows(), path);
+    if (decision.write_local) {
+        local_ok = write_local_bytes(path, bytes);
+        if (local_ok) {
+            spdlog::debug("Wrote {} rows to {}", table->num_rows(), path);
+        }
     }
+
+    if (decision.write_cloud) {
+        const auto& rt = runtime_storage();
+        BaiduNetdiskClient client({
+            .access_token = rt.storage.baidu_access_token,
+            .refresh_token = rt.storage.baidu_refresh_token,
+            .app_key = rt.storage.baidu_app_key,
+            .app_secret = rt.storage.baidu_app_secret,
+            .root_path = rt.storage.baidu_root,
+            .timeout_ms = rt.storage.baidu_timeout_ms,
+            .retry_count = rt.storage.baidu_retry_count,
+        });
+        const std::string rel_path = to_rel_data_path(path, rt.data.data_root);
+        cloud_ok = client.upload_bytes(rel_path, bytes);
+
+        if (cloud_ok && !decision.write_local && std::filesystem::exists(path)) {
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            if (ec) {
+                spdlog::warn("Failed to remove local cold file {}: {}", path, ec.message());
+            }
+        }
+    }
+
+    if (!local_ok || !cloud_ok) {
+        spdlog::error("Write failure for {} (local_ok={}, cloud_ok={})",
+                      path, local_ok, cloud_ok);
+    }
+}
+
+void ParquetStore::configure_runtime(const DataConfig& data_cfg,
+                                     const StorageConfig& storage_cfg) {
+    auto& rt = runtime_storage();
+    rt.configured = true;
+    rt.data = data_cfg;
+    rt.storage = storage_cfg;
 }
 
 } // namespace trade
