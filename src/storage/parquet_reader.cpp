@@ -135,24 +135,35 @@ Bar row_to_bar(const std::shared_ptr<arrow::Table>& table, int64_t row) {
         auto column = table->GetColumnByName(col);
         if (!column) return 0.0;
         auto arr = std::static_pointer_cast<arrow::DoubleArray>(column->chunk(0));
+        if (arr->IsNull(row)) return 0.0;
+        return arr->Value(row);
+    };
+    auto get_optional_double = [&](const std::string& col) -> std::optional<double> {
+        auto column = table->GetColumnByName(col);
+        if (!column) return std::nullopt;
+        auto arr = std::static_pointer_cast<arrow::DoubleArray>(column->chunk(0));
+        if (arr->IsNull(row)) return std::nullopt;
         return arr->Value(row);
     };
     auto get_int64 = [&](const std::string& col) -> int64_t {
         auto column = table->GetColumnByName(col);
         if (!column) return 0;
         auto arr = std::static_pointer_cast<arrow::Int64Array>(column->chunk(0));
+        if (arr->IsNull(row)) return 0;
         return arr->Value(row);
     };
     auto get_bool = [&](const std::string& col) -> bool {
         auto column = table->GetColumnByName(col);
         if (!column) return false;
         auto arr = std::static_pointer_cast<arrow::BooleanArray>(column->chunk(0));
+        if (arr->IsNull(row)) return false;
         return arr->Value(row);
     };
     auto get_uint8 = [&](const std::string& col) -> uint8_t {
         auto column = table->GetColumnByName(col);
         if (!column) return 0;
         auto arr = std::static_pointer_cast<arrow::UInt8Array>(column->chunk(0));
+        if (arr->IsNull(row)) return 0;
         return arr->Value(row);
     };
 
@@ -181,12 +192,9 @@ Bar row_to_bar(const std::shared_ptr<arrow::Table>& table, int64_t row) {
     }
     bar.board = static_cast<Board>(get_uint8("board"));
 
-    double north = get_double("north_net_buy");
-    if (north != 0.0) bar.north_net_buy = north;
-    double margin = get_double("margin_balance");
-    if (margin != 0.0) bar.margin_balance = margin;
-    double short_v = get_double("short_sell_volume");
-    if (short_v != 0.0) bar.short_sell_volume = short_v;
+    bar.north_net_buy = get_optional_double("north_net_buy");
+    bar.margin_balance = get_optional_double("margin_balance");
+    bar.short_sell_volume = get_optional_double("short_sell_volume");
 
     return bar;
 }

@@ -516,17 +516,45 @@ std::shared_ptr<arrow::Table> ParquetStore::bars_to_table(const std::vector<Bar>
         (void)volume_b.Append(bar.volume);
         (void)amount_b.Append(bar.amount);
         (void)turnover_b.Append(bar.turnover_rate);
-        (void)prev_close_b.Append(bar.prev_close);
-        (void)vwap_b.Append(bar.vwap);
-        (void)limit_up_b.Append(bar.limit_up);
-        (void)limit_down_b.Append(bar.limit_down);
+        if (bar.prev_close > 0.0) {
+            (void)prev_close_b.Append(bar.prev_close);
+        } else {
+            (void)prev_close_b.AppendNull();
+        }
+        if (bar.vwap > 0.0) {
+            (void)vwap_b.Append(bar.vwap);
+        } else {
+            (void)vwap_b.AppendNull();
+        }
+        if (bar.limit_up > 0.0) {
+            (void)limit_up_b.Append(bar.limit_up);
+        } else {
+            (void)limit_up_b.AppendNull();
+        }
+        if (bar.limit_down > 0.0) {
+            (void)limit_down_b.Append(bar.limit_down);
+        } else {
+            (void)limit_down_b.AppendNull();
+        }
         (void)hit_up_b.Append(bar.hit_limit_up);
         (void)hit_down_b.Append(bar.hit_limit_down);
         (void)status_b.Append(static_cast<uint8_t>(bar.bar_status));
         (void)board_b.Append(static_cast<uint8_t>(bar.board));
-        (void)north_b.Append(bar.north_net_buy.value_or(0.0));
-        (void)margin_b.Append(bar.margin_balance.value_or(0.0));
-        (void)short_b.Append(bar.short_sell_volume.value_or(0.0));
+        if (bar.north_net_buy.has_value()) {
+            (void)north_b.Append(*bar.north_net_buy);
+        } else {
+            (void)north_b.AppendNull();
+        }
+        if (bar.margin_balance.has_value()) {
+            (void)margin_b.Append(*bar.margin_balance);
+        } else {
+            (void)margin_b.AppendNull();
+        }
+        if (bar.short_sell_volume.has_value()) {
+            (void)short_b.Append(*bar.short_sell_volume);
+        } else {
+            (void)short_b.AppendNull();
+        }
     }
 
     std::vector<std::shared_ptr<arrow::Array>> arrays(20);

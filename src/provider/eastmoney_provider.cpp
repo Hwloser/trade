@@ -4,6 +4,21 @@
 #include <sstream>
 
 namespace trade {
+namespace {
+
+Board infer_board_from_symbol(const Symbol& symbol) {
+    if (symbol.size() < 6) return Board::kMain;
+    const std::string code = symbol.substr(0, 6);
+    if (symbol.size() >= 9 && symbol.substr(7) == "BJ") return Board::kBSE;
+    if (code.rfind("688", 0) == 0) return Board::kSTAR;
+    if (code.rfind("3", 0) == 0) return Board::kChiNext;
+    if (code.rfind("8", 0) == 0 || code.rfind("4", 0) == 0 || code.rfind("9", 0) == 0) {
+        return Board::kBSE;
+    }
+    return Board::kMain;
+}
+
+} // namespace
 
 EastMoneyProvider::EastMoneyProvider() : EastMoneyProvider(EastMoneyConfig{}) {}
 
@@ -127,6 +142,13 @@ std::vector<Bar> EastMoneyProvider::parse_kline(
         bar.low = std::stod(fields[4]);
         bar.volume = std::stoll(fields[5]);
         bar.amount = std::stod(fields[6]);
+        // f9 is absolute change; previous close can be recovered directly.
+        double chg = std::stod(fields[9]);
+        bar.prev_close = bar.close - chg;
+        if (bar.volume > 0) {
+            bar.vwap = bar.amount / static_cast<double>(bar.volume);
+        }
+        bar.board = infer_board_from_symbol(symbol);
         // fields[7] = amplitude (%), fields[8] = chg_pct (%), fields[9] = chg
         bar.turnover_rate = std::stod(fields[10]) / 100.0;  // convert % to ratio
 
