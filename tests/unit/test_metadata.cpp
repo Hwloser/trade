@@ -257,3 +257,99 @@ TEST_F(MetadataStoreTest, IngestionRunLifecycle) {
     // No read API yet; lifecycle should complete without throw/crash.
     SUCCEED();
 }
+
+TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
+    auto d1 = make_date(2024, 1, 3);
+    auto d2 = make_date(2024, 1, 5);
+
+    store_->upsert_schema("curated.cn_a.daily", 1, "schema_v1", "hash_v1", true);
+    auto s1 = store_->get_active_schema("curated.cn_a.daily");
+    ASSERT_TRUE(s1.has_value());
+    EXPECT_EQ(s1->schema_version, 1);
+    EXPECT_EQ(s1->schema_hash, "hash_v1");
+
+    int v1 = store_->upsert_dataset_file("curated.cn_a.daily",
+                                         "curated",
+                                         "cn_a",
+                                         "daily",
+                                         "curated/cn_a/daily",
+                                         "curated/cn_a/daily/2024/600000.SH.parquet",
+                                         100,
+                                         d1,
+                                         1,
+                                         "run-1");
+    int v2 = store_->upsert_dataset_file("curated.cn_a.daily",
+                                         "curated",
+                                         "cn_a",
+                                         "daily",
+                                         "curated/cn_a/daily",
+                                         "curated/cn_a/daily/2024/600000.SH.parquet",
+                                         120,
+                                         d2,
+                                         1,
+                                         "run-2");
+    EXPECT_EQ(v1, 1);
+    EXPECT_EQ(v2, 2);
+
+    auto files = store_->list_dataset_files("curated.cn_a.daily");
+    ASSERT_EQ(files.size(), 1u);
+    EXPECT_EQ(files[0].row_count, 120);
+    EXPECT_EQ(files[0].current_version, 2);
+    ASSERT_TRUE(files[0].max_event_date.has_value());
+    EXPECT_EQ(*files[0].max_event_date, d2);
+
+    auto vers = store_->list_dataset_file_versions(
+        "curated.cn_a.daily",
+        "curated/cn_a/daily/2024/600000.SH.parquet");
+    ASSERT_EQ(vers.size(), 2u);
+    EXPECT_EQ(vers[0].version, 2);
+    EXPECT_EQ(vers[0].run_id, "run-2");
+    EXPECT_EQ(vers[1].version, 1);
+}
+
+TEST_F(MetadataStoreTest, QualityCheckpointAndTrainingSnapshot) {
+    MetadataStore::QualityCheckRecord qc;
+    qc.run_id = "run-qc-1";
+    qc.dataset_id = "curated.cn_a.daily";
+    qc.check_name = "quality_score";
+    qc.status = "pass";
+    qc.severity = "info";
+    qc.metric_value = 0.99;
+    qc.threshold_value = 0.95;
+    qc.message = "ok";
+    qc.event_date = make_date(2024, 2, 1);
+    store_->record_quality_check(qc);
+
+    auto checks = store_->list_quality_checks("curated.cn_a.daily", 10);
+    ASSERT_EQ(checks.size(), 1u);
+    EXPECT_EQ(checks[0].run_id, "run-qc-1");
+    EXPECT_EQ(checks[0].check_name, "quality_score");
+
+    store_->upsert_stream_checkpoint("eastmoney",
+                                     "cn_a_daily_bar",
+                                     "600000.SH",
+                                     R"({"cursor":"abc"})",
+                                     make_date(2024, 2, 2));
+    auto cp = store_->get_stream_checkpoint("eastmoney", "cn_a_daily_bar", "600000.SH");
+    ASSERT_TRUE(cp.has_value());
+    EXPECT_EQ(cp->cursor_payload, R"({"cursor":"abc"})");
+    ASSERT_TRUE(cp->last_event_date.has_value());
+    EXPECT_EQ(*cp->last_event_date, make_date(2024, 2, 2));
+
+    MetadataStore::TrainingSnapshotRecord snap;
+    snap.snapshot_id = "snap-1";
+    snap.dataset_id = "curated.cn_a.daily";
+    snap.query_spec = "symbol=600000.SH";
+    snap.snapshot_path = "data/models/lgbm_factor_v1.model";
+    snap.start_date = make_date(2024, 1, 1);
+    snap.end_date = make_date(2024, 2, 1);
+    snap.row_count = 1234;
+    snap.schema_version = 1;
+    snap.model_name = "lgbm";
+    store_->record_training_snapshot(snap);
+
+    auto snaps = store_->list_training_snapshots("curated.cn_a.daily", 10);
+    ASSERT_EQ(snaps.size(), 1u);
+    EXPECT_EQ(snaps[0].snapshot_id, "snap-1");
+    EXPECT_EQ(snaps[0].row_count, 1234);
+}

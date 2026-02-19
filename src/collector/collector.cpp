@@ -2,6 +2,7 @@
 #include "trade/common/time_utils.h"
 #include "trade/storage/parquet_reader.h"
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <map>
 #include <optional>
@@ -78,6 +79,42 @@ void merge_and_write_curated_bars(const std::string& path,
     ParquetWriter::write_bars(path, merged, ParquetWriter::MergeMode::kReplace, partition_max_date);
 }
 
+void record_market_quality(MetadataStore& metadata,
+                           const std::string& run_id,
+                           const Symbol& symbol,
+                           const QualityReport& report,
+                           std::optional<Date> event_date) {
+    MetadataStore::QualityCheckRecord qc;
+    qc.run_id = run_id;
+    qc.dataset_id = "curated.cn_a.daily";
+    qc.check_name = "quality_score";
+    qc.metric_value = report.quality_score();
+    qc.threshold_value = 0.95;
+    qc.status = qc.metric_value >= qc.threshold_value ? "pass" : "warn";
+    qc.severity = qc.metric_value >= qc.threshold_value ? "info" : "warning";
+    qc.message = symbol + " quality=" + std::to_string(qc.metric_value);
+    qc.event_date = event_date;
+    metadata.record_quality_check(qc);
+
+    MetadataStore::QualityCheckRecord dup = qc;
+    dup.check_name = "duplicate_dates";
+    dup.metric_value = static_cast<double>(report.duplicate_dates);
+    dup.threshold_value = 0.0;
+    dup.status = report.duplicate_dates == 0 ? "pass" : "warn";
+    dup.severity = report.duplicate_dates == 0 ? "info" : "warning";
+    dup.message = symbol + " duplicates=" + std::to_string(report.duplicate_dates);
+    metadata.record_quality_check(dup);
+
+    MetadataStore::QualityCheckRecord pa = qc;
+    pa.check_name = "price_anomalies";
+    pa.metric_value = static_cast<double>(report.price_anomalies);
+    pa.threshold_value = 0.0;
+    pa.status = report.price_anomalies == 0 ? "pass" : "warn";
+    pa.severity = report.price_anomalies == 0 ? "info" : "warning";
+    pa.message = symbol + " anomalies=" + std::to_string(report.price_anomalies);
+    metadata.record_quality_check(pa);
+}
+
 } // namespace
 
 Collector::Collector(std::unique_ptr<IDataProvider> provider,
@@ -91,6 +128,9 @@ Collector::Collector(std::unique_ptr<IDataProvider> provider,
 
 QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date end) {
     spdlog::info("Collecting {} [{}, {}]", symbol, format_date(start), format_date(end));
+    const std::string run_id = provider_->name() + "_collect_" + symbol + "_" +
+        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
 
     // 1. Fetch from provider
     auto raw_bars = provider_->fetch_daily(symbol, start, end);
@@ -205,6 +245,12 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
                                config_.ingestion.daily_bar_dataset,
                                symbol,
                                bars.back().date);
+    metadata_.upsert_stream_checkpoint(provider_->name(),
+                                       config_.ingestion.daily_bar_dataset,
+                                       symbol,
+                                       "{}",
+                                       bars.back().date);
+    record_market_quality(metadata_, run_id, symbol, report, bars.back().date);
 
     spdlog::info("Collected {} bars for {} (quality: {:.1f}%)",
                  bars.size(), symbol, report.quality_score() * 100);

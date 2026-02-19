@@ -27,6 +27,57 @@ public:
         std::string file_path;
         int64_t row_count = 0;
         std::optional<Date> max_event_date;
+        int current_version = 1;
+    };
+
+    struct SchemaRecord {
+        std::string dataset_id;
+        int schema_version = 1;
+        std::string schema_json;
+        std::string schema_hash;
+        bool is_active = true;
+    };
+
+    struct QualityCheckRecord {
+        std::string run_id;
+        std::string dataset_id;
+        std::string check_name;
+        std::string status;      // pass|warn|fail
+        std::string severity;    // info|warning|critical
+        double metric_value = 0.0;
+        double threshold_value = 0.0;
+        std::string message;
+        std::optional<Date> event_date;
+    };
+
+    struct StreamCheckpointRecord {
+        std::string source;
+        std::string stream;
+        std::string shard;
+        std::string cursor_payload;
+        std::optional<Date> last_event_date;
+    };
+
+    struct TrainingSnapshotRecord {
+        std::string snapshot_id;
+        std::string dataset_id;
+        std::string query_spec;
+        std::string snapshot_path;
+        std::optional<Date> start_date;
+        std::optional<Date> end_date;
+        int64_t row_count = 0;
+        int schema_version = 1;
+        std::string model_name;
+    };
+
+    struct DatasetFileVersionRecord {
+        std::string dataset_id;
+        std::string file_path;
+        int version = 1;
+        int64_t row_count = 0;
+        std::optional<Date> max_event_date;
+        std::string run_id;
+        std::string content_hash;
     };
 
     explicit MetadataStore(const std::string& db_path);
@@ -72,17 +123,53 @@ public:
     std::vector<Date> get_holidays(int year);
 
     // Dataset catalog (for discovery/query/training reproducibility)
-    void upsert_dataset_file(const std::string& dataset_id,
-                             const std::string& layer,
-                             const std::string& domain,
-                             const std::string& data_type,
-                             const std::string& path_prefix,
-                             const std::string& file_path,
-                             int64_t row_count,
-                             std::optional<Date> max_event_date = std::nullopt,
-                             int schema_version = 1);
+    int upsert_dataset_file(const std::string& dataset_id,
+                            const std::string& layer,
+                            const std::string& domain,
+                            const std::string& data_type,
+                            const std::string& path_prefix,
+                            const std::string& file_path,
+                            int64_t row_count,
+                            std::optional<Date> max_event_date = std::nullopt,
+                            int schema_version = 1,
+                            const std::string& run_id = "",
+                            std::optional<int> forced_file_version = std::nullopt,
+                            const std::string& content_hash = "");
     std::vector<DatasetRecord> list_datasets();
     std::vector<DatasetFileRecord> list_dataset_files(const std::string& dataset_id);
+    std::vector<DatasetFileVersionRecord> list_dataset_file_versions(
+        const std::string& dataset_id,
+        const std::string& file_path);
+
+    // Schema registry
+    void upsert_schema(const std::string& dataset_id,
+                       int schema_version,
+                       const std::string& schema_json,
+                       const std::string& schema_hash,
+                       bool set_active = true);
+    std::optional<SchemaRecord> get_active_schema(const std::string& dataset_id);
+    std::optional<int> find_schema_version_by_hash(const std::string& dataset_id,
+                                                   const std::string& schema_hash);
+
+    // Data quality events
+    void record_quality_check(const QualityCheckRecord& check);
+    std::vector<QualityCheckRecord> list_quality_checks(const std::string& dataset_id,
+                                                        int limit = 100);
+
+    // Streaming checkpoint (for real-time/high-frequency extension)
+    void upsert_stream_checkpoint(const std::string& source,
+                                  const std::string& stream,
+                                  const std::string& shard,
+                                  const std::string& cursor_payload,
+                                  std::optional<Date> last_event_date = std::nullopt);
+    std::optional<StreamCheckpointRecord> get_stream_checkpoint(const std::string& source,
+                                                                const std::string& stream,
+                                                                const std::string& shard);
+
+    // Model training snapshots for reproducibility
+    void record_training_snapshot(const TrainingSnapshotRecord& snapshot);
+    std::vector<TrainingSnapshotRecord> list_training_snapshots(const std::string& dataset_id,
+                                                                int limit = 100);
 
 private:
     struct Impl;

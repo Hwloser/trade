@@ -15,6 +15,8 @@
 #include <fstream>
 #include <parquet/arrow/writer.h>
 #include <spdlog/spdlog.h>
+#include <sstream>
+#include <string_view>
 #include <unordered_map>
 
 namespace trade {
@@ -149,7 +151,25 @@ bool write_local_bytes(const std::string& path, const std::vector<uint8_t>& byte
     return true;
 }
 
+std::string to_hex_hash(size_t v) {
+    std::ostringstream oss;
+    oss << std::hex << v;
+    return oss.str();
+}
+
+std::string hash_text(const std::string& text) {
+    return to_hex_hash(std::hash<std::string_view>{}(std::string_view(text)));
+}
+
+std::string hash_bytes(const std::vector<uint8_t>& bytes) {
+    const auto* ptr = reinterpret_cast<const char*>(bytes.data());
+    std::string_view sv(ptr, bytes.size());
+    return to_hex_hash(std::hash<std::string_view>{}(sv));
+}
+
 void update_catalog_if_possible(const std::string& abs_path,
+                                const std::shared_ptr<arrow::Table>& table,
+                                const std::string& file_content_hash,
                                 int64_t row_count,
                                 const std::optional<Date>& max_event_date) {
     const auto& rt = runtime_storage();
@@ -174,6 +194,26 @@ void update_catalog_if_possible(const std::string& abs_path,
     try {
         StoragePath paths(rt.data.data_root);
         MetadataStore metadata(paths.metadata_db());
+        const std::string schema_json = table && table->schema()
+            ? table->schema()->ToString()
+            : "";
+        const std::string schema_hash = hash_text(schema_json);
+
+        int schema_version = 1;
+        auto existing = metadata.find_schema_version_by_hash(dataset_id, schema_hash);
+        if (existing) {
+            schema_version = *existing;
+        } else {
+            auto active = metadata.get_active_schema(dataset_id);
+            if (active) schema_version = active->schema_version + 1;
+        }
+
+        metadata.upsert_schema(dataset_id,
+                               schema_version,
+                               schema_json,
+                               schema_hash,
+                               true);
+
         metadata.upsert_dataset_file(dataset_id,
                                      layer,
                                      domain,
@@ -182,7 +222,10 @@ void update_catalog_if_possible(const std::string& abs_path,
                                      rel,
                                      row_count,
                                      max_event_date,
-                                     1);
+                                     schema_version,
+                                     "",
+                                     std::nullopt,
+                                     file_content_hash);
     } catch (const std::exception& e) {
         spdlog::warn("Failed to update dataset catalog for {}: {}", rel, e.what());
     }
@@ -594,6 +637,7 @@ void ParquetStore::write_table(const std::string& path,
         spdlog::error("Failed to serialize parquet: {}", path);
         return;
     }
+    const std::string content_hash = hash_bytes(bytes);
 
     WriteDecision decision = decide_write(partition_max_date);
     bool local_ok = true;
@@ -637,7 +681,11 @@ void ParquetStore::write_table(const std::string& path,
         return;
     }
 
-    update_catalog_if_possible(path, table->num_rows(), partition_max_date);
+    update_catalog_if_possible(path,
+                               table,
+                               content_hash,
+                               table->num_rows(),
+                               partition_max_date);
 }
 
 void ParquetStore::configure_runtime(const DataConfig& data_cfg,

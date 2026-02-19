@@ -1,11 +1,36 @@
 #include "trade/storage/metadata_store.h"
 #include "trade/common/time_utils.h"
+#include <algorithm>
 #include <filesystem>
 #include <spdlog/spdlog.h>
 #include <sqlite3.h>
 #include <stdexcept>
 
 namespace trade {
+
+namespace {
+
+std::optional<Date> read_date_column(sqlite3_stmt* stmt, int col) {
+    auto txt = sqlite3_column_text(stmt, col);
+    if (!txt) return std::nullopt;
+    return parse_date(reinterpret_cast<const char*>(txt));
+}
+
+void bind_date_or_null(sqlite3_stmt* stmt, int col, std::optional<Date> d) {
+    if (d) {
+        std::string v = format_date(*d);
+        sqlite3_bind_text(stmt, col, v.c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, col);
+    }
+}
+
+int clamp_limit(int limit) {
+    if (limit <= 0) return 100;
+    return std::min(limit, 10000);
+}
+
+} // namespace
 
 struct MetadataStore::Impl {
     sqlite3* db = nullptr;
@@ -123,14 +148,112 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
             file_path TEXT NOT NULL,
             row_count INTEGER NOT NULL DEFAULT 0,
             max_event_date TEXT,
+            current_version INTEGER NOT NULL DEFAULT 1,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (dataset_id, file_path)
         )
     )");
 
+    // Schema registry for dataset-level schema versioning.
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS schema_registry (
+            dataset_id TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            schema_json TEXT NOT NULL DEFAULT '',
+            schema_hash TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (dataset_id, schema_version)
+        )
+    )");
+
+    // Per-write file versions (MVCC-style history for replay/audit).
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS dataset_file_versions (
+            dataset_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            max_event_date TEXT,
+            run_id TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (dataset_id, file_path, version)
+        )
+    )");
+
+    // Data-quality events (checks, thresholds, pass/fail).
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS quality_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            dataset_id TEXT NOT NULL,
+            check_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            metric_value REAL NOT NULL DEFAULT 0.0,
+            threshold_value REAL NOT NULL DEFAULT 0.0,
+            message TEXT NOT NULL DEFAULT '',
+            event_date TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    )");
+
+    // Stream/hf checkpoints to support realtime incremental pulls.
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS stream_checkpoints (
+            source TEXT NOT NULL,
+            stream TEXT NOT NULL,
+            shard TEXT NOT NULL,
+            cursor_payload TEXT NOT NULL DEFAULT '{}',
+            last_event_date TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source, stream, shard)
+        )
+    )");
+
+    // Training snapshot metadata for reproducibility.
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS training_snapshots (
+            snapshot_id TEXT PRIMARY KEY,
+            dataset_id TEXT NOT NULL,
+            query_spec TEXT NOT NULL DEFAULT '',
+            snapshot_path TEXT NOT NULL DEFAULT '',
+            start_date TEXT,
+            end_date TEXT,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            model_name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    )");
+
+    // Existing DB migration: add current_version if missing.
+    sqlite3_exec(impl_->db,
+                 "ALTER TABLE dataset_files ADD COLUMN current_version INTEGER NOT NULL DEFAULT 1",
+                 nullptr, nullptr, nullptr);
+
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_downloads_symbol_end ON downloads(symbol, end_date)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_watermarks_lookup ON watermarks(source, dataset, symbol)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_files_dataset ON dataset_files(dataset_id)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_schema_registry_active ON schema_registry(dataset_id, is_active)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_quality_checks_dataset_time ON quality_checks(dataset_id, created_at)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_stream_checkpoints_lookup ON stream_checkpoints(source, stream, shard)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_training_snapshots_dataset ON training_snapshots(dataset_id, created_at)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_file_versions_lookup ON dataset_file_versions(dataset_id, file_path, version)");
+
+    // Backfill schema registry for legacy records.
+    impl_->exec(R"(
+        INSERT OR IGNORE INTO schema_registry
+        (dataset_id, schema_version, schema_json, schema_hash, is_active, created_at)
+        SELECT dataset_id,
+               schema_version,
+               '',
+               'legacy_v' || schema_version,
+               1,
+               CURRENT_TIMESTAMP
+          FROM dataset_catalog
+    )");
 
     spdlog::debug("MetadataStore initialized at {}", db_path);
 }
@@ -440,15 +563,36 @@ std::vector<Date> MetadataStore::get_holidays(int year) {
     return result;
 }
 
-void MetadataStore::upsert_dataset_file(const std::string& dataset_id,
-                                        const std::string& layer,
-                                        const std::string& domain,
-                                        const std::string& data_type,
-                                        const std::string& path_prefix,
-                                        const std::string& file_path,
-                                        int64_t row_count,
-                                        std::optional<Date> max_event_date,
-                                        int schema_version) {
+int MetadataStore::upsert_dataset_file(const std::string& dataset_id,
+                                       const std::string& layer,
+                                       const std::string& domain,
+                                       const std::string& data_type,
+                                       const std::string& path_prefix,
+                                       const std::string& file_path,
+                                       int64_t row_count,
+                                       std::optional<Date> max_event_date,
+                                       int schema_version,
+                                       const std::string& run_id,
+                                       std::optional<int> forced_file_version,
+                                       const std::string& content_hash) {
+    int file_version = forced_file_version.value_or(1);
+    if (!forced_file_version) {
+        const char* sql_next = R"(
+            SELECT COALESCE(MAX(version), 0) + 1
+            FROM dataset_file_versions
+            WHERE dataset_id = ? AND file_path = ?
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, sql_next, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                file_version = sqlite3_column_int(stmt, 0);
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
     const char* sql_catalog = R"(
         INSERT INTO dataset_catalog
         (dataset_id, layer, domain, data_type, path_prefix, schema_version, latest_event_date, updated_at)
@@ -471,7 +615,7 @@ void MetadataStore::upsert_dataset_file(const std::string& dataset_id,
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(impl_->db, sql_catalog, -1, &stmt, nullptr) != SQLITE_OK) {
         spdlog::error("Failed to prepare upsert dataset_catalog: {}", sqlite3_errmsg(impl_->db));
-        return;
+        return file_version;
     }
     sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, layer.c_str(), -1, SQLITE_TRANSIENT);
@@ -479,12 +623,7 @@ void MetadataStore::upsert_dataset_file(const std::string& dataset_id,
     sqlite3_bind_text(stmt, 4, data_type.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 6, schema_version);
-    if (max_event_date) {
-        std::string d = format_date(*max_event_date);
-        sqlite3_bind_text(stmt, 7, d.c_str(), -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(stmt, 7);
-    }
+    bind_date_or_null(stmt, 7, max_event_date);
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         spdlog::error("Failed to upsert dataset catalog {}: {}",
                       dataset_id, sqlite3_errmsg(impl_->db));
@@ -493,8 +632,8 @@ void MetadataStore::upsert_dataset_file(const std::string& dataset_id,
 
     const char* sql_file = R"(
         INSERT INTO dataset_files
-        (dataset_id, file_path, row_count, max_event_date, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        (dataset_id, file_path, row_count, max_event_date, current_version, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(dataset_id, file_path)
         DO UPDATE SET
             row_count = excluded.row_count,
@@ -502,27 +641,56 @@ void MetadataStore::upsert_dataset_file(const std::string& dataset_id,
                 WHEN excluded.max_event_date IS NULL THEN dataset_files.max_event_date
                 ELSE excluded.max_event_date
             END,
+            current_version = excluded.current_version,
             updated_at = CURRENT_TIMESTAMP
     )";
     stmt = nullptr;
     if (sqlite3_prepare_v2(impl_->db, sql_file, -1, &stmt, nullptr) != SQLITE_OK) {
         spdlog::error("Failed to prepare upsert dataset_files: {}", sqlite3_errmsg(impl_->db));
-        return;
+        return file_version;
     }
     sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, row_count);
-    if (max_event_date) {
-        std::string d = format_date(*max_event_date);
-        sqlite3_bind_text(stmt, 4, d.c_str(), -1, SQLITE_TRANSIENT);
-    } else {
-        sqlite3_bind_null(stmt, 4);
-    }
+    bind_date_or_null(stmt, 4, max_event_date);
+    sqlite3_bind_int(stmt, 5, file_version);
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         spdlog::error("Failed to upsert dataset file {} {}: {}",
                       dataset_id, file_path, sqlite3_errmsg(impl_->db));
     }
     sqlite3_finalize(stmt);
+
+    const char* sql_version = R"(
+        INSERT INTO dataset_file_versions
+        (dataset_id, file_path, version, row_count, max_event_date, run_id, content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(dataset_id, file_path, version)
+        DO UPDATE SET
+            row_count = excluded.row_count,
+            max_event_date = excluded.max_event_date,
+            run_id = excluded.run_id,
+            content_hash = excluded.content_hash,
+            created_at = CURRENT_TIMESTAMP
+    )";
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql_version, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert dataset_file_versions: {}", sqlite3_errmsg(impl_->db));
+        return file_version;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, file_version);
+    sqlite3_bind_int64(stmt, 4, row_count);
+    bind_date_or_null(stmt, 5, max_event_date);
+    sqlite3_bind_text(stmt, 6, run_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, content_hash.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert dataset file version {} {} v{}: {}",
+                      dataset_id, file_path, file_version, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+
+    return file_version;
 }
 
 std::vector<MetadataStore::DatasetRecord> MetadataStore::list_datasets() {
@@ -560,7 +728,7 @@ std::vector<MetadataStore::DatasetFileRecord> MetadataStore::list_dataset_files(
     const std::string& dataset_id) {
     std::vector<DatasetFileRecord> out;
     const char* sql = R"(
-        SELECT dataset_id, file_path, row_count, max_event_date
+        SELECT dataset_id, file_path, row_count, max_event_date, current_version
         FROM dataset_files
         WHERE dataset_id = ?
         ORDER BY file_path
@@ -577,10 +745,327 @@ std::vector<MetadataStore::DatasetFileRecord> MetadataStore::list_dataset_files(
         r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         r.file_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         r.row_count = sqlite3_column_int64(stmt, 2);
-        auto date_txt = sqlite3_column_text(stmt, 3);
-        if (date_txt) {
-            r.max_event_date = parse_date(reinterpret_cast<const char*>(date_txt));
-        }
+        r.max_event_date = read_date_column(stmt, 3);
+        r.current_version = sqlite3_column_int(stmt, 4);
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<MetadataStore::DatasetFileVersionRecord>
+MetadataStore::list_dataset_file_versions(const std::string& dataset_id,
+                                          const std::string& file_path) {
+    std::vector<DatasetFileVersionRecord> out;
+    const char* sql = R"(
+        SELECT dataset_id, file_path, version, row_count, max_event_date, run_id, content_hash
+        FROM dataset_file_versions
+        WHERE dataset_id = ? AND file_path = ?
+        ORDER BY version DESC
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_dataset_file_versions: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        DatasetFileVersionRecord r;
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.file_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.version = sqlite3_column_int(stmt, 2);
+        r.row_count = sqlite3_column_int64(stmt, 3);
+        r.max_event_date = read_date_column(stmt, 4);
+        r.run_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        r.content_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::upsert_schema(const std::string& dataset_id,
+                                  int schema_version,
+                                  const std::string& schema_json,
+                                  const std::string& schema_hash,
+                                  bool set_active) {
+    const char* sql = R"(
+        INSERT INTO schema_registry
+        (dataset_id, schema_version, schema_json, schema_hash, is_active, created_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(dataset_id, schema_version)
+        DO UPDATE SET
+            schema_json = excluded.schema_json,
+            schema_hash = excluded.schema_hash,
+            is_active = excluded.is_active
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_schema: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, schema_version);
+    sqlite3_bind_text(stmt, 3, schema_json.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, schema_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, set_active ? 1 : 0);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert schema {} v{}: {}",
+                      dataset_id, schema_version, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+
+    if (!set_active) return;
+    const char* sql_deactivate = R"(
+        UPDATE schema_registry
+        SET is_active = 0
+        WHERE dataset_id = ? AND schema_version <> ?
+    )";
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql_deactivate, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt, 2, schema_version);
+        (void)sqlite3_step(stmt);
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::optional<MetadataStore::SchemaRecord>
+MetadataStore::get_active_schema(const std::string& dataset_id) {
+    const char* sql = R"(
+        SELECT dataset_id, schema_version, schema_json, schema_hash, is_active
+        FROM schema_registry
+        WHERE dataset_id = ? AND is_active = 1
+        ORDER BY schema_version DESC
+        LIMIT 1
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<SchemaRecord> out;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        SchemaRecord r;
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.schema_version = sqlite3_column_int(stmt, 1);
+        r.schema_json = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        r.schema_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        r.is_active = sqlite3_column_int(stmt, 4) != 0;
+        out = std::move(r);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::optional<int> MetadataStore::find_schema_version_by_hash(const std::string& dataset_id,
+                                                              const std::string& schema_hash) {
+    const char* sql = R"(
+        SELECT schema_version
+        FROM schema_registry
+        WHERE dataset_id = ? AND schema_hash = ?
+        ORDER BY schema_version DESC
+        LIMIT 1
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, schema_hash.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<int> out;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        out = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::record_quality_check(const QualityCheckRecord& check) {
+    const char* sql = R"(
+        INSERT INTO quality_checks
+        (run_id, dataset_id, check_name, status, severity, metric_value, threshold_value, message, event_date, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare record_quality_check: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, check.run_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, check.dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, check.check_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, check.status.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, check.severity.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 6, check.metric_value);
+    sqlite3_bind_double(stmt, 7, check.threshold_value);
+    sqlite3_bind_text(stmt, 8, check.message.c_str(), -1, SQLITE_TRANSIENT);
+    bind_date_or_null(stmt, 9, check.event_date);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to record quality check {} {}: {}",
+                      check.dataset_id, check.check_name, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::vector<MetadataStore::QualityCheckRecord>
+MetadataStore::list_quality_checks(const std::string& dataset_id, int limit) {
+    std::vector<QualityCheckRecord> out;
+    const char* sql = R"(
+        SELECT run_id, dataset_id, check_name, status, severity,
+               metric_value, threshold_value, message, event_date
+        FROM quality_checks
+        WHERE (? = '' OR dataset_id = ?)
+        ORDER BY id DESC
+        LIMIT ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_quality_checks: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, clamp_limit(limit));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        QualityCheckRecord r;
+        r.run_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.check_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        r.status = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        r.severity = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        r.metric_value = sqlite3_column_double(stmt, 5);
+        r.threshold_value = sqlite3_column_double(stmt, 6);
+        r.message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        r.event_date = read_date_column(stmt, 8);
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::upsert_stream_checkpoint(const std::string& source,
+                                             const std::string& stream,
+                                             const std::string& shard,
+                                             const std::string& cursor_payload,
+                                             std::optional<Date> last_event_date) {
+    const char* sql = R"(
+        INSERT INTO stream_checkpoints
+        (source, stream, shard, cursor_payload, last_event_date, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(source, stream, shard)
+        DO UPDATE SET
+            cursor_payload = excluded.cursor_payload,
+            last_event_date = excluded.last_event_date,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert_stream_checkpoint: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, stream.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, shard.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, cursor_payload.c_str(), -1, SQLITE_TRANSIENT);
+    bind_date_or_null(stmt, 5, last_event_date);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert stream checkpoint {}/{}/{}: {}",
+                      source, stream, shard, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::optional<MetadataStore::StreamCheckpointRecord>
+MetadataStore::get_stream_checkpoint(const std::string& source,
+                                     const std::string& stream,
+                                     const std::string& shard) {
+    const char* sql = R"(
+        SELECT source, stream, shard, cursor_payload, last_event_date
+        FROM stream_checkpoints
+        WHERE source = ? AND stream = ? AND shard = ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, stream.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, shard.c_str(), -1, SQLITE_TRANSIENT);
+
+    std::optional<StreamCheckpointRecord> out;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        StreamCheckpointRecord r;
+        r.source = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.stream = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.shard = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        r.cursor_payload = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        r.last_event_date = read_date_column(stmt, 4);
+        out = std::move(r);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::record_training_snapshot(const TrainingSnapshotRecord& snapshot) {
+    const char* sql = R"(
+        INSERT OR REPLACE INTO training_snapshots
+        (snapshot_id, dataset_id, query_spec, snapshot_path, start_date, end_date,
+         row_count, schema_version, model_name, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare record_training_snapshot: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, snapshot.snapshot_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, snapshot.dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, snapshot.query_spec.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, snapshot.snapshot_path.c_str(), -1, SQLITE_TRANSIENT);
+    bind_date_or_null(stmt, 5, snapshot.start_date);
+    bind_date_or_null(stmt, 6, snapshot.end_date);
+    sqlite3_bind_int64(stmt, 7, snapshot.row_count);
+    sqlite3_bind_int(stmt, 8, snapshot.schema_version);
+    sqlite3_bind_text(stmt, 9, snapshot.model_name.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to record training snapshot {}: {}",
+                      snapshot.snapshot_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::vector<MetadataStore::TrainingSnapshotRecord>
+MetadataStore::list_training_snapshots(const std::string& dataset_id, int limit) {
+    std::vector<TrainingSnapshotRecord> out;
+    const char* sql = R"(
+        SELECT snapshot_id, dataset_id, query_spec, snapshot_path,
+               start_date, end_date, row_count, schema_version, model_name
+        FROM training_snapshots
+        WHERE dataset_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_training_snapshots: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, clamp_limit(limit));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        TrainingSnapshotRecord r;
+        r.snapshot_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.query_spec = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        r.snapshot_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        r.start_date = read_date_column(stmt, 4);
+        r.end_date = read_date_column(stmt, 5);
+        r.row_count = sqlite3_column_int64(stmt, 6);
+        r.schema_version = sqlite3_column_int(stmt, 7);
+        r.model_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
         out.push_back(std::move(r));
     }
     sqlite3_finalize(stmt);

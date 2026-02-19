@@ -272,9 +272,183 @@ std::string build_sql_init(const std::vector<SqlViewDef>& views) {
     return init_sql;
 }
 
+std::string sql_string(const std::string& s) {
+    return "'" + sql_escape(s) + "'";
+}
+
+std::string sql_date_or_null(const std::optional<trade::Date>& d) {
+    if (!d) return "NULL";
+    return sql_string(trade::format_date(*d));
+}
+
+std::string build_values_view_sql(const std::string& view_name,
+                                  const std::vector<std::string>& columns,
+                                  const std::vector<std::vector<std::string>>& rows) {
+    if (columns.empty()) return "";
+    std::string out = "CREATE OR REPLACE VIEW " + view_name + "(";
+    for (size_t i = 0; i < columns.size(); ++i) {
+        if (i > 0) out += ", ";
+        out += columns[i];
+    }
+    out += ") AS SELECT * FROM (VALUES ";
+
+    if (rows.empty()) {
+        out += "(";
+        for (size_t i = 0; i < columns.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += "NULL";
+        }
+        out += ")";
+    } else {
+        for (size_t i = 0; i < rows.size(); ++i) {
+            if (i > 0) out += ", ";
+            out += "(";
+            const auto& row = rows[i];
+            for (size_t j = 0; j < columns.size(); ++j) {
+                if (j > 0) out += ", ";
+                if (j < row.size()) out += row[j];
+                else out += "NULL";
+            }
+            out += ")";
+        }
+    }
+
+    out += ") AS t(";
+    for (size_t i = 0; i < columns.size(); ++i) {
+        if (i > 0) out += ", ";
+        out += columns[i];
+    }
+    out += ")";
+    if (rows.empty()) out += " WHERE 1=0";
+    out += ";";
+    return out;
+}
+
+std::string build_metadata_views_sql(const trade::Config& config) {
+    trade::StoragePath paths(config.data.data_root);
+    trade::MetadataStore metadata(paths.metadata_db());
+    auto datasets = metadata.list_datasets();
+
+    std::vector<std::vector<std::string>> dataset_rows;
+    dataset_rows.reserve(datasets.size());
+    for (const auto& ds : datasets) {
+        dataset_rows.push_back({
+            sql_string(ds.dataset_id),
+            sql_string(ds.layer),
+            sql_string(ds.domain),
+            sql_string(ds.data_type),
+            sql_string(ds.path_prefix),
+            std::to_string(ds.schema_version),
+            sql_date_or_null(ds.latest_event_date),
+        });
+    }
+
+    std::vector<std::vector<std::string>> file_rows;
+    std::vector<std::vector<std::string>> schema_rows;
+    std::vector<std::vector<std::string>> quality_rows;
+    for (const auto& ds : datasets) {
+        auto files = metadata.list_dataset_files(ds.dataset_id);
+        for (const auto& f : files) {
+            file_rows.push_back({
+                sql_string(f.dataset_id),
+                sql_string(f.file_path),
+                std::to_string(f.row_count),
+                sql_date_or_null(f.max_event_date),
+                std::to_string(f.current_version),
+            });
+        }
+
+        auto active_schema = metadata.get_active_schema(ds.dataset_id);
+        if (active_schema) {
+            schema_rows.push_back({
+                sql_string(active_schema->dataset_id),
+                std::to_string(active_schema->schema_version),
+                sql_string(active_schema->schema_hash),
+                sql_string(active_schema->schema_json),
+            });
+        }
+    }
+
+    auto checks = metadata.list_quality_checks("", 200);
+    for (const auto& c : checks) {
+        quality_rows.push_back({
+            sql_string(c.dataset_id),
+            sql_string(c.check_name),
+            sql_string(c.status),
+            sql_string(c.severity),
+            std::to_string(c.metric_value),
+            std::to_string(c.threshold_value),
+            sql_string(c.message),
+            sql_date_or_null(c.event_date),
+            sql_string(c.run_id),
+        });
+    }
+
+    std::string sql;
+    sql += build_values_view_sql(
+        "meta_dataset_catalog",
+        {"dataset_id", "layer", "domain", "data_type", "path_prefix", "schema_version",
+         "latest_event_date"},
+        dataset_rows);
+    sql += build_values_view_sql(
+        "meta_dataset_files",
+        {"dataset_id", "file_path", "row_count", "max_event_date", "current_version"},
+        file_rows);
+    sql += build_values_view_sql(
+        "meta_schema_registry",
+        {"dataset_id", "schema_version", "schema_hash", "schema_json"},
+        schema_rows);
+    sql += build_values_view_sql(
+        "meta_quality_checks_recent",
+        {"dataset_id", "check_name", "status", "severity", "metric_value", "threshold_value",
+         "message", "event_date", "run_id"},
+        quality_rows);
+    return sql;
+}
+
+struct MetadataHealth {
+    bool ok = false;
+    size_t dataset_count = 0;
+    size_t dataset_with_files = 0;
+    size_t dataset_schema_match = 0;
+    size_t file_version_covered = 0;
+    size_t file_total = 0;
+};
+
+MetadataHealth assess_metadata_health(trade::MetadataStore& metadata) {
+    MetadataHealth h;
+    auto datasets = metadata.list_datasets();
+    h.dataset_count = datasets.size();
+    for (const auto& ds : datasets) {
+        auto files = metadata.list_dataset_files(ds.dataset_id);
+        if (!files.empty()) ++h.dataset_with_files;
+
+        auto schema = metadata.get_active_schema(ds.dataset_id);
+        if (schema && schema->schema_version == ds.schema_version) {
+            ++h.dataset_schema_match;
+        }
+
+        for (const auto& f : files) {
+            ++h.file_total;
+            auto versions = metadata.list_dataset_file_versions(ds.dataset_id, f.file_path);
+            if (!versions.empty()) {
+                if (versions.front().version == f.current_version) {
+                    ++h.file_version_covered;
+                }
+            }
+        }
+    }
+
+    h.ok = h.dataset_count > 0 &&
+           h.dataset_with_files == h.dataset_count &&
+           h.dataset_schema_match == h.dataset_count;
+    return h;
+}
+
 int cmd_verify(const CliArgs& args, const trade::Config& config) {
     bool ok_local = false;
     bool ok_cloud = false;
+    bool ok_meta = false;
     bool ok_sql = false;
 
     trade::StoragePath paths(config.data.data_root);
@@ -329,14 +503,23 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
         std::cout << "[Cloud] skipped (storage backend is local/disabled)\n";
     }
 
-    // 3) SQL check
+    // 3) Metadata check
+    auto mh = assess_metadata_health(metadata);
+    ok_meta = mh.ok;
+    std::cout << "[Meta] datasets=" << mh.dataset_count
+              << " with_files=" << mh.dataset_with_files
+              << " schema_match=" << mh.dataset_schema_match
+              << " file_versions=" << mh.file_version_covered << "/" << mh.file_total
+              << " -> " << (ok_meta ? "OK" : "FAIL") << "\n";
+
+    // 4) SQL check
     if (std::system("which duckdb > /dev/null 2>&1") != 0) {
         std::cout << "[SQL] duckdb not found -> FAIL\n";
         ok_sql = false;
     } else {
         auto views = discover_sql_views(config);
         if (!views.empty()) {
-            std::string init_sql = build_sql_init(views);
+            std::string init_sql = build_sql_init(views) + build_metadata_views_sql(config);
             std::string sql = init_sql + "SELECT count(*) FROM " + views.front().view_name + ";";
             std::string cmd = "duckdb -batch -init /dev/null -cmd \"" + sql + "\" :memory: > /dev/null 2>&1";
             ok_sql = (std::system(cmd.c_str()) == 0);
@@ -348,7 +531,7 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
         }
     }
 
-    bool pass = ok_local && ok_cloud && ok_sql;
+    bool pass = ok_local && ok_cloud && ok_meta && ok_sql;
     std::cout << "Result: " << (pass ? "PASS" : "FAIL") << "\n";
     return pass ? 0 : 1;
 }
@@ -619,24 +802,14 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
 
     // Build init SQL: create views from dataset catalog.
     auto views = discover_sql_views(config);
-    std::string init_sql;
-    for (const auto& v : views) {
-        init_sql += "CREATE OR REPLACE VIEW " + v.view_name +
-                    " AS SELECT * FROM read_parquet('" + sql_escape(v.glob_path) +
-                    "', union_by_name=true);";
-    }
+    std::string init_sql = build_sql_init(views);
+    init_sql += build_metadata_views_sql(config);
 
     auto has_dataset = [&](const std::string& dataset_id) {
         return std::any_of(views.begin(), views.end(), [&](const SqlViewDef& v) {
             return v.dataset_id == dataset_id;
         });
     };
-    if (has_dataset("curated.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM curated_cn_a_daily;";
-    }
-    if (has_dataset("raw.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM raw_cn_a_daily;";
-    }
 
     // If a specific file is given, also create a 'data' view
     bool data_view_ready = false;
@@ -685,6 +858,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     if (data_view_ready) {
         std::cout << "  SELECT * FROM data LIMIT 20;\n";
     }
+    std::cout << "  SELECT * FROM meta_dataset_catalog;\n"
+              << "  SELECT * FROM meta_dataset_files ORDER BY dataset_id, file_path LIMIT 50;\n"
+              << "  SELECT * FROM meta_quality_checks_recent WHERE status <> 'pass';\n";
     std::cout << std::endl;
 
     if (cloud_mode) {
@@ -794,6 +970,35 @@ int cmd_train(const CliArgs& args, const trade::Config& config) {
     std::string mpath = paths.models_dir() + "/lgbm_factor_v1.model";
     model.save(mpath);
     spdlog::info("Saved to {}", mpath);
+
+    // Record training snapshot metadata for reproducibility.
+    try {
+        trade::MetadataStore metadata(paths.metadata_db());
+        int schema_version = 1;
+        auto datasets = metadata.list_datasets();
+        auto it = std::find_if(datasets.begin(), datasets.end(), [](const auto& ds) {
+            return ds.dataset_id == "curated.cn_a.daily";
+        });
+        if (it != datasets.end()) schema_version = it->schema_version;
+
+        trade::MetadataStore::TrainingSnapshotRecord snap;
+        snap.snapshot_id = "lgbm_" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        snap.dataset_id = "curated.cn_a.daily";
+        snap.query_spec = "symbol=" + args.symbol +
+                          ",start=" + trade::format_date(bars.front().date) +
+                          ",end=" + trade::format_date(bars.back().date);
+        snap.snapshot_path = mpath;
+        snap.start_date = bars.front().date;
+        snap.end_date = bars.back().date;
+        snap.row_count = features.num_observations();
+        snap.schema_version = schema_version;
+        snap.model_name = "lgbm_factor_v1";
+        metadata.record_training_snapshot(snap);
+    } catch (const std::exception& e) {
+        spdlog::warn("Failed to record training snapshot metadata: {}", e.what());
+    }
 
     auto imp = model.feature_importance_named(features.names, "gain");
     std::cout << "\nTop features:" << std::endl;
@@ -1027,6 +1232,17 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
 
         auto events = rss.fetch_range(start, end);
         if (events.empty()) {
+            trade::MetadataStore::QualityCheckRecord qc;
+            qc.run_id = run_id;
+            qc.dataset_id = "raw.sentiment.bronze";
+            qc.check_name = "event_count";
+            qc.status = "warn";
+            qc.severity = "warning";
+            qc.metric_value = 0.0;
+            qc.threshold_value = 1.0;
+            qc.message = "No new sentiment events";
+            qc.event_date = end;
+            metadata.record_quality_check(qc);
             metadata.finish_ingestion_run(run_id, true, 0, 0);
             std::cout << "No new sentiment events in range "
                       << trade::format_date(start) << " to " << trade::format_date(end)
@@ -1163,6 +1379,49 @@ int cmd_sentiment(const CliArgs& args, const trade::Config& config) {
             if (d > max_date) max_date = d;
         }
         metadata.upsert_watermark(src, "sentiment_text", src, max_date);
+        metadata.upsert_stream_checkpoint(src,
+                                          "sentiment_text",
+                                          src,
+                                          R"({"mode":"incremental"})",
+                                          max_date);
+
+        trade::MetadataStore::QualityCheckRecord event_qc;
+        event_qc.run_id = run_id;
+        event_qc.dataset_id = "raw.sentiment.bronze";
+        event_qc.check_name = "event_count";
+        event_qc.status = events.empty() ? "warn" : "pass";
+        event_qc.severity = events.empty() ? "warning" : "info";
+        event_qc.metric_value = static_cast<double>(events.size());
+        event_qc.threshold_value = 1.0;
+        event_qc.message = "Fetched sentiment events";
+        event_qc.event_date = max_date;
+        metadata.record_quality_check(event_qc);
+
+        trade::MetadataStore::QualityCheckRecord nlp_cov_qc;
+        nlp_cov_qc.run_id = run_id;
+        nlp_cov_qc.dataset_id = "curated.sentiment.silver";
+        nlp_cov_qc.check_name = "nlp_symbol_coverage";
+        nlp_cov_qc.metric_value = events.empty() ? 0.0
+            : static_cast<double>(nlp_results.size()) / static_cast<double>(events.size());
+        nlp_cov_qc.threshold_value = 0.05;
+        nlp_cov_qc.status = nlp_cov_qc.metric_value >= nlp_cov_qc.threshold_value ? "pass" : "warn";
+        nlp_cov_qc.severity = nlp_cov_qc.status == "pass" ? "info" : "warning";
+        nlp_cov_qc.message = "NLP aggregated rows / events";
+        nlp_cov_qc.event_date = max_date;
+        metadata.record_quality_check(nlp_cov_qc);
+
+        trade::MetadataStore::QualityCheckRecord factor_cov_qc;
+        factor_cov_qc.run_id = run_id;
+        factor_cov_qc.dataset_id = "curated.sentiment.gold";
+        factor_cov_qc.check_name = "factor_row_coverage";
+        factor_cov_qc.metric_value = nlp_results.empty() ? 0.0
+            : static_cast<double>(factors.size()) / static_cast<double>(nlp_results.size());
+        factor_cov_qc.threshold_value = 0.1;
+        factor_cov_qc.status = factor_cov_qc.metric_value >= factor_cov_qc.threshold_value ? "pass" : "warn";
+        factor_cov_qc.severity = factor_cov_qc.status == "pass" ? "info" : "warning";
+        factor_cov_qc.message = "Factor rows / nlp rows";
+        factor_cov_qc.event_date = max_date;
+        metadata.record_quality_check(factor_cov_qc);
 
         int total = pos_cnt + neg_cnt + neu_cnt;
         std::cout << "=== Sentiment Incremental ===\n"
