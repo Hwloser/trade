@@ -85,11 +85,14 @@ int run_download(const DownloadRequest& request, const Config& config) {
     if (default_start < min_start) default_start = min_start;
     std::string default_start_str = format_date(default_start);
     auto symbols = parse_symbol_list(request.symbol);
+    const bool full_refresh = request.refresh;      // --refresh
+    const bool incremental_mode = !full_refresh;    // default mode without --refresh
+    const bool stream_resume_mode = request.use_checkpoint;
 
     // Incremental update contract:
     // 1) Must provide explicit symbol list.
     // 2) Must provide bootstrap start date.
-    if (!request.refresh) {
+    if (incremental_mode) {
         if (symbols.empty()) {
             spdlog::error("Incremental mode requires --symbol list (comma-separated).");
             return 1;
@@ -143,7 +146,7 @@ int run_download(const DownloadRequest& request, const Config& config) {
                 current_cp->cursor_payload.find("\"mode\":\"stream\"") != std::string::npos;
         }
 
-        if (!request.refresh) {
+        if (incremental_mode) {
             const int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
             Date bootstrap_start = *request.start;
             if (bootstrap_start < min_start) bootstrap_start = min_start;
@@ -194,13 +197,12 @@ int run_download(const DownloadRequest& request, const Config& config) {
             }
         }
         const int dedup_hours = std::max(0, config.ingestion.request_dedup_hours);
-        const bool stream_resume_mode = request.use_checkpoint;
         const bool explicit_window_request = request.start.has_value() || request.end.has_value();
         const bool watermark_covers_end = current_wm.has_value() && (*current_wm >= end);
         const bool checkpoint_covers_end = has_stream_checkpoint &&
             (*current_cp->last_event_date >= end);
         const bool dedup_eligible = explicit_window_request || watermark_covers_end || checkpoint_covers_end;
-        if (!request.refresh && !stream_resume_mode && dedup_hours > 0 &&
+        if (incremental_mode && !stream_resume_mode && dedup_hours > 0 &&
             dedup_eligible &&
             (has_local_raw_partition || cloud_mode) &&
             metadata.has_recent_successful_request(request.provider,
@@ -219,7 +221,7 @@ int run_download(const DownloadRequest& request, const Config& config) {
         std::string run_id = request.provider + "_dl_" + symbol + "_" +
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count());
-        std::string mode = request.refresh ? "full" : "incremental";
+        std::string mode = full_refresh ? "full" : (stream_resume_mode ? "stream_incremental" : "incremental");
         metadata.begin_ingestion_run(run_id, request.provider, dataset, symbol, mode);
 
         try {
