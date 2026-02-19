@@ -36,8 +36,6 @@ constexpr CommandEntry kCommandRegistry[] = {
     {"silver", trade::cli::cmd_silver, false, nullptr, CommandAccessLevel::kUser},
     {"cleanup", trade::cli::cmd_cleanup, false, nullptr, CommandAccessLevel::kUser},
     {"verify", trade::cli::cmd_verify, false, nullptr, CommandAccessLevel::kUser},
-    {"view", nullptr, true, "Command 'view' is paused. Use 'sql' for querying data.",
-     CommandAccessLevel::kUser},
     {"sql", trade::cli::cmd_sql, false, nullptr, CommandAccessLevel::kUser},
     {"info", nullptr, true, "Command 'info' is paused. Use 'sql' for querying data.",
      CommandAccessLevel::kUser},

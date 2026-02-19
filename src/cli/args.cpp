@@ -18,7 +18,6 @@ Commands:
   silver      Build/clean silver layer from raw layer
   cleanup     Audit/clean data files and metadata lifecycle
   verify      Verify local/cloud/sql data pipeline
-  view        (Paused) Use sql for querying data
   sql         Open DuckDB SQL shell with data pre-loaded
   features    Compute features for a symbol
   train       Train ML model
@@ -37,8 +36,8 @@ Options:
   --provider <name>     Data provider (default: eastmoney)
   --refresh             Force full refresh (overwrite existing data)
   --scale <mode>        Feature scaling: zscore|rank|none (features command)
-  --file <path>         Parquet file path (for view command)
-  --limit <n>           Max rows to display (for view command, default: all)
+  --file <path>         Parquet file path hint for sql/account command
+  --limit <n>           Row limit (e.g., account list)
   --model <name>        Model name (e.g., lgbm)
   --strategy <name>     Strategy name
   --source <name>       Sentiment source (rss, xueqiu, jin10)

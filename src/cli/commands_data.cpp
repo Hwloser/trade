@@ -11,8 +11,6 @@
 #include "trade/storage/parquet_writer.h"
 #include "trade/storage/storage_path.h"
 #include "trade/validator/data_validator.h"
-#include <arrow/api.h>
-#include <arrow/io/api.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -500,129 +498,6 @@ int cmd_info(const CliArgs& args, const trade::Config& config) {
         std::cout << "Data root: " << config.data.data_root << "\nProvider: "
                  << args.provider << std::endl;
     }
-    return 0;
-}
-
-// ============================================================================
-// view — display parquet file contents as a table
-// ============================================================================
-int cmd_view(const CliArgs& args, const trade::Config& config) {
-    std::string path = args.file;
-
-    // If no --file, try to find from --symbol
-    if (path.empty() && !args.symbol.empty()) {
-        trade::StoragePath paths(config.data.data_root);
-        auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-        int end_year = trade::date_year(now);
-        int start_year = trade::date_year(trade::parse_date(config.ingestion.min_start_date));
-        for (int year = end_year; year >= start_year; --year) {
-            std::string raw_path = paths.raw_daily(args.symbol, year);
-            std::string silver_path = paths.silver_daily(args.symbol, year);
-            std::string legacy_curated_path =
-                (std::filesystem::path(config.data.data_root) / "curated" /
-                 config.data.market_daily_subpath / std::to_string(year) /
-                 (args.symbol + ".parquet"))
-                    .string();
-
-            if (std::filesystem::exists(raw_path)) {
-                path = raw_path;
-                break;
-            }
-            if (std::filesystem::exists(silver_path)) {
-                path = silver_path;
-                break;
-            }
-            if (std::filesystem::exists(legacy_curated_path)) {
-                path = legacy_curated_path;
-                break;
-            }
-        }
-        if (path.empty()) {
-            path = paths.raw_daily(args.symbol, end_year);
-        }
-    }
-
-    if (path.empty()) {
-        spdlog::error("Specify --file <path.parquet> or --symbol <symbol>");
-        return 1;
-    }
-
-    std::shared_ptr<arrow::Table> table;
-    try {
-        table = trade::ParquetReader::read_table(path);
-    } catch (const std::exception& e) {
-        spdlog::error("Failed to read {}: {}", path, e.what());
-        return 1;
-    }
-
-    int64_t num_rows = table->num_rows();
-    int num_cols = table->num_columns();
-    int display_rows = (args.limit > 0 && args.limit < num_rows)
-        ? args.limit : static_cast<int>(num_rows);
-
-    std::cout << "File: " << path << "\n"
-              << "Rows: " << num_rows << "  Columns: " << num_cols << "\n\n";
-
-    // Compute column widths
-    std::vector<int> widths(num_cols);
-    std::vector<std::string> col_names(num_cols);
-    for (int c = 0; c < num_cols; ++c) {
-        col_names[c] = table->schema()->field(c)->name();
-        widths[c] = static_cast<int>(col_names[c].size());
-    }
-
-    // Get string representations for each cell
-    std::vector<std::vector<std::string>> cells(display_rows, std::vector<std::string>(num_cols));
-    for (int c = 0; c < num_cols; ++c) {
-        auto col = table->column(c);
-        for (int r = 0; r < display_rows; ++r) {
-            int chunk_idx = 0;
-            int64_t offset = r;
-            while (chunk_idx < col->num_chunks() &&
-                   offset >= col->chunk(chunk_idx)->length()) {
-                offset -= col->chunk(chunk_idx)->length();
-                ++chunk_idx;
-            }
-            if (chunk_idx < col->num_chunks()) {
-                auto arr = col->chunk(chunk_idx);
-                if (arr->IsNull(offset)) {
-                    cells[r][c] = "null";
-                } else {
-                    auto scalar = arr->GetScalar(offset);
-                    if (scalar.ok()) {
-                        cells[r][c] = (*scalar)->ToString();
-                    } else {
-                        cells[r][c] = "?";
-                    }
-                }
-            }
-            widths[c] = std::max(widths[c], static_cast<int>(cells[r][c].size()));
-        }
-    }
-
-    // Print header
-    for (int c = 0; c < num_cols; ++c) {
-        std::cout << std::left << std::setw(widths[c] + 2) << col_names[c];
-    }
-    std::cout << "\n";
-    for (int c = 0; c < num_cols; ++c) {
-        std::cout << std::string(widths[c], '-') << "  ";
-    }
-    std::cout << "\n";
-
-    // Print rows
-    for (int r = 0; r < display_rows; ++r) {
-        for (int c = 0; c < num_cols; ++c) {
-            std::cout << std::left << std::setw(widths[c] + 2) << cells[r][c];
-        }
-        std::cout << "\n";
-    }
-
-    if (display_rows < num_rows) {
-        std::cout << "... (" << (num_rows - display_rows)
-                  << " more rows)" << std::endl;
-    }
-
     return 0;
 }
 
