@@ -28,6 +28,7 @@
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
+#include "trade/storage/baidu_netdisk_client.h"
 #include "trade/storage/storage_path.h"
 #include <arrow/api.h>
 #include <arrow/io/api.h>
@@ -63,6 +64,7 @@ Usage:
 
 Commands:
   download    Download market data (incremental by default)
+  verify      Verify local/cloud/sql data pipeline
   view        (Paused) Use sql for querying data
   sql         Open DuckDB SQL shell with data pre-loaded
   features    Compute features for a symbol
@@ -150,12 +152,17 @@ std::vector<trade::Bar> load_bars(const std::string& symbol,
                                    const trade::Config& config) {
     trade::StoragePath paths(config.data.data_root);
     std::vector<trade::Bar> all_bars;
+    const bool cloud_mode = config.storage.enabled &&
+        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = trade::parse_date(config.ingestion.min_start_date);
     int start_year = trade::date_year(min_date);
     int end_year = trade::date_year(now);
     for (int year = start_year; year <= end_year; ++year) {
         auto path = paths.curated_daily(symbol, year);
+        if (!std::filesystem::exists(path) && !cloud_mode) {
+            continue;
+        }
         try {
             auto bars = trade::ParquetReader::read_bars(path);
             all_bars.insert(all_bars.end(), bars.begin(), bars.end());
@@ -242,6 +249,106 @@ std::vector<SqlViewDef> discover_sql_views(const trade::Config& config) {
     std::sort(views.begin(), views.end(),
               [](const SqlViewDef& a, const SqlViewDef& b) { return a.view_name < b.view_name; });
     return views;
+}
+
+std::string build_sql_init(const std::vector<SqlViewDef>& views) {
+    std::string init_sql;
+    for (const auto& v : views) {
+        init_sql += "CREATE OR REPLACE VIEW " + v.view_name +
+                    " AS SELECT * FROM read_parquet('" + sql_escape(v.glob_path) +
+                    "', union_by_name=true);";
+    }
+    auto has_dataset = [&](const std::string& dataset_id) {
+        return std::any_of(views.begin(), views.end(), [&](const SqlViewDef& v) {
+            return v.dataset_id == dataset_id;
+        });
+    };
+    if (has_dataset("curated.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM curated_cn_a_daily;";
+    }
+    if (has_dataset("raw.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM raw_cn_a_daily;";
+    }
+    return init_sql;
+}
+
+int cmd_verify(const CliArgs& args, const trade::Config& config) {
+    bool ok_local = false;
+    bool ok_cloud = false;
+    bool ok_sql = false;
+
+    trade::StoragePath paths(config.data.data_root);
+    trade::MetadataStore metadata(paths.metadata_db());
+
+    std::cout << "=== Verify Data Pipeline ===\n";
+
+    // 1) Local check
+    if (!args.symbol.empty()) {
+        auto bars = load_bars(args.symbol, config);
+        ok_local = !bars.empty();
+        std::cout << "[Local] symbol=" << args.symbol
+                  << " rows=" << bars.size()
+                  << " -> " << (ok_local ? "OK" : "FAIL") << "\n";
+    } else {
+        auto datasets = metadata.list_datasets();
+        ok_local = !datasets.empty();
+        std::cout << "[Local] catalog datasets=" << datasets.size()
+                  << " -> " << (ok_local ? "OK" : "FAIL") << "\n";
+    }
+
+    // 2) Cloud check (optional)
+    const bool cloud_mode = config.storage.enabled &&
+        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+    if (cloud_mode) {
+        trade::BaiduNetdiskClient client({
+            .access_token = config.storage.baidu_access_token,
+            .refresh_token = config.storage.baidu_refresh_token,
+            .app_key = config.storage.baidu_app_key,
+            .app_secret = config.storage.baidu_app_secret,
+            .root_path = config.storage.baidu_root,
+            .timeout_ms = config.storage.baidu_timeout_ms,
+            .retry_count = config.storage.baidu_retry_count,
+        });
+        auto ts = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        std::string probe = "_health/verify_" + std::to_string(ts) + ".txt";
+        const std::string msg = "trade-cloud-verify";
+        std::vector<uint8_t> up(msg.begin(), msg.end());
+        std::vector<uint8_t> down;
+        bool uploaded = client.upload_bytes(probe, up);
+        bool downloaded = uploaded && client.download_bytes(probe, &down);
+        ok_cloud = downloaded && (std::string(down.begin(), down.end()) == msg);
+        std::cout << "[Cloud] probe=" << probe
+                  << " uploaded=" << (uploaded ? "yes" : "no")
+                  << " downloaded=" << (downloaded ? "yes" : "no")
+                  << " -> " << (ok_cloud ? "OK" : "FAIL") << "\n";
+    } else {
+        ok_cloud = true;
+        std::cout << "[Cloud] skipped (storage backend is local/disabled)\n";
+    }
+
+    // 3) SQL check
+    if (std::system("which duckdb > /dev/null 2>&1") != 0) {
+        std::cout << "[SQL] duckdb not found -> FAIL\n";
+        ok_sql = false;
+    } else {
+        auto views = discover_sql_views(config);
+        if (!views.empty()) {
+            std::string init_sql = build_sql_init(views);
+            std::string sql = init_sql + "SELECT count(*) FROM " + views.front().view_name + ";";
+            std::string cmd = "duckdb -batch -init /dev/null -cmd \"" + sql + "\" :memory: > /dev/null 2>&1";
+            ok_sql = (std::system(cmd.c_str()) == 0);
+            std::cout << "[SQL] view=" << views.front().view_name
+                      << " -> " << (ok_sql ? "OK" : "FAIL") << "\n";
+        } else {
+            ok_sql = false;
+            std::cout << "[SQL] no dataset views found -> FAIL\n";
+        }
+    }
+
+    bool pass = ok_local && ok_cloud && ok_sql;
+    std::cout << "Result: " << (pass ? "PASS" : "FAIL") << "\n";
+    return pass ? 0 : 1;
 }
 
 // ============================================================================
@@ -1184,6 +1291,7 @@ int main(int argc, char* argv[]) {
 
     try {
         if (args.command == "download")  return cmd_download(args, config);
+        if (args.command == "verify")    return cmd_verify(args, config);
         if (args.command == "view") {
             spdlog::error("Command 'view' is paused. Use 'sql' for querying data.");
             return 1;

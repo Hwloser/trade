@@ -46,11 +46,13 @@ struct StorageConfig {
     bool mirror_hot_to_cloud = false;
 
     // Baidu Netdisk OpenAPI credentials
+    std::string baidu_app_id = "";
     std::string baidu_root = "/apps/trade";
     std::string baidu_access_token = "";
     std::string baidu_refresh_token = "";
     std::string baidu_app_key = "";
     std::string baidu_app_secret = "";
+    std::string baidu_sign_key = "";
     int baidu_timeout_ms = 30000;
     int baidu_retry_count = 2;
 };
