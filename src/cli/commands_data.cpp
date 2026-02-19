@@ -1,9 +1,8 @@
 #include "trade/cli/commands.h"
 
+#include "trade/app/pipelines/download_pipeline.h"
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
-#include "trade/collector/collector.h"
-#include "trade/provider/provider_factory.h"
 #include "trade/storage/baidu_netdisk_client.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
@@ -118,114 +117,17 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 // download
 // ============================================================================
 int cmd_download(const CliArgs& args, const trade::Config& config) {
-    auto provider = trade::ProviderFactory::create(args.provider, config);
-    if (!provider->ping()) {
-        spdlog::error("Cannot connect to {} provider", args.provider);
-        return 1;
+    app::DownloadRequest request;
+    request.symbol = args.symbol;
+    request.provider = args.provider;
+    request.refresh = args.refresh;
+    if (!args.start_date.empty()) {
+        request.start = parse_date(args.start_date);
     }
-    trade::Collector collector(std::move(provider), config);
-
-    trade::StoragePath paths(config.data.data_root);
-    trade::MetadataStore metadata(paths.metadata_db());
-    const std::string& dataset = config.ingestion.daily_bar_dataset;
-
-    // Default start from config (last N days)
-    auto now_tp = std::chrono::system_clock::now();
-    auto now_day = std::chrono::floor<std::chrono::days>(now_tp);
-    int history_days = std::max(1, config.ingestion.default_history_days);
-    auto default_start = now_day - std::chrono::days{history_days};
-    auto min_start = trade::parse_date(config.ingestion.min_start_date);
-    if (default_start < min_start) default_start = min_start;
-    std::string default_start_str = trade::format_date(default_start);
-
-    if (!args.symbol.empty()) {
-        trade::Date start, end;
-        end = args.end_date.empty()
-            ? std::chrono::floor<std::chrono::days>(now_tp)
-            : trade::parse_date(args.end_date);
-
-        std::string run_id = args.provider + "_dl_" + args.symbol + "_" +
-            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                now_tp.time_since_epoch()).count());
-        std::string mode = args.refresh ? "full" : "incremental";
-        metadata.begin_ingestion_run(run_id, args.provider, dataset, args.symbol, mode);
-
-        try {
-            // Incremental download: prefer watermark, fallback to last download
-            if (!args.refresh && args.start_date.empty()) {
-                int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
-                auto wm = metadata.last_watermark_date(args.provider, dataset, args.symbol);
-                if (wm) {
-                    start = *wm - std::chrono::days{lookback_days};
-                    if (start < min_start) start = min_start;
-                    spdlog::info("Incremental from watermark {} (lookback {}d => {})",
-                                 trade::format_date(*wm), lookback_days, trade::format_date(start));
-                } else {
-                    auto last = metadata.last_download_date(args.symbol);
-                    if (last) {
-                        start = trade::next_trading_day(*last);
-                        if (start < min_start) start = min_start;
-                        spdlog::info("Incremental from last download {} (start: {})",
-                                     trade::format_date(*last), trade::format_date(start));
-                    } else {
-                        start = default_start;
-                    }
-                }
-
-                if (start > end) {
-                    metadata.finish_ingestion_run(run_id, true, 0, 0);
-                    std::cout << "Already up to date (last target: "
-                              << trade::format_date(end) << ")" << std::endl;
-                    return 0;
-                }
-            } else {
-                start = args.start_date.empty()
-                    ? default_start
-                    : trade::parse_date(args.start_date);
-            }
-
-            auto report = collector.collect_symbol(args.symbol, start, end);
-            metadata.finish_ingestion_run(run_id, true,
-                                          static_cast<int64_t>(report.total_bars),
-                                          static_cast<int64_t>(report.valid_bars));
-
-            std::cout << "Downloaded " << report.total_bars << " bars for " << args.symbol
-                      << " (quality: " << std::fixed << std::setprecision(1)
-                      << (report.quality_score() * 100) << "%)" << std::endl;
-        } catch (const std::exception& e) {
-            metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
-            throw;
-        }
-    } else {
-        std::string run_id = args.provider + "_dl_all_" +
-            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                now_tp.time_since_epoch()).count());
-        std::string mode = args.refresh ? "full" : "incremental";
-        metadata.begin_ingestion_run(run_id, args.provider, dataset, "*", mode);
-
-        try {
-            if (args.refresh) {
-                auto [start_all, end_all] = resolve_dates(args, default_start_str);
-                collector.collect_all(start_all, end_all,
-                    [](const trade::Symbol& sym, int cur, int total) {
-                        std::cout << "\r[" << cur << "/" << total << "] " << sym
-                                 << "                " << std::flush;
-                    });
-            } else {
-                collector.update_all(
-                    [](const trade::Symbol& sym, int cur, int total) {
-                        std::cout << "\r[" << cur << "/" << total << "] " << sym
-                                 << "                " << std::flush;
-                    });
-            }
-            metadata.finish_ingestion_run(run_id, true, 0, 0);
-            std::cout << "\nDownload complete." << std::endl;
-        } catch (const std::exception& e) {
-            metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
-            throw;
-        }
+    if (!args.end_date.empty()) {
+        request.end = parse_date(args.end_date);
     }
-    return 0;
+    return app::run_download(request, config);
 }
 
 

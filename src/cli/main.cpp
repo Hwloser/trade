@@ -4,10 +4,46 @@
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
 
+#include <algorithm>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 #include <string>
 #include <vector>
+
+namespace {
+
+using CommandHandler = int (*)(const trade::cli::CliArgs&, const trade::Config&);
+
+struct CommandEntry {
+    const char* name;
+    CommandHandler handler;
+    bool paused;
+    const char* paused_message;
+};
+
+constexpr CommandEntry kCommandRegistry[] = {
+    {"download", trade::cli::cmd_download, false, nullptr},
+    {"verify", trade::cli::cmd_verify, false, nullptr},
+    {"view", nullptr, true, "Command 'view' is paused. Use 'sql' for querying data."},
+    {"sql", trade::cli::cmd_sql, false, nullptr},
+    {"info", nullptr, true, "Command 'info' is paused. Use 'sql' for querying data."},
+    {"features", trade::cli::cmd_features, false, nullptr},
+    {"train", trade::cli::cmd_train, false, nullptr},
+    {"predict", trade::cli::cmd_predict, false, nullptr},
+    {"risk", trade::cli::cmd_risk, false, nullptr},
+    {"backtest", trade::cli::cmd_backtest, false, nullptr},
+    {"sentiment", trade::cli::cmd_sentiment, false, nullptr},
+    {"report", trade::cli::cmd_report, false, nullptr},
+};
+
+const CommandEntry* find_command(const std::string& name) {
+    const auto it = std::find_if(std::begin(kCommandRegistry), std::end(kCommandRegistry),
+                                 [&](const CommandEntry& entry) { return name == entry.name; });
+    if (it == std::end(kCommandRegistry)) return nullptr;
+    return it;
+}
+
+} // namespace
 
 int main(int argc, char* argv[]) {
     auto args = trade::cli::parse_args(argc, argv);
@@ -50,24 +86,18 @@ int main(int argc, char* argv[]) {
     trade::ParquetReader::configure_runtime(config.data, config.storage);
 
     try {
-        if (args.command == "download") return trade::cli::cmd_download(args, config);
-        if (args.command == "verify") return trade::cli::cmd_verify(args, config);
-        if (args.command == "view") {
-            spdlog::error("Command 'view' is paused. Use 'sql' for querying data.");
-            return 1;
+        const CommandEntry* command = find_command(args.command);
+        if (command) {
+            if (command->paused) {
+                spdlog::error("{}", command->paused_message ? command->paused_message : "Command is paused.");
+                return 1;
+            }
+            if (!command->handler) {
+                spdlog::error("Command '{}' has no handler bound", args.command);
+                return 1;
+            }
+            return command->handler(args, config);
         }
-        if (args.command == "sql") return trade::cli::cmd_sql(args, config);
-        if (args.command == "info") {
-            spdlog::error("Command 'info' is paused. Use 'sql' for querying data.");
-            return 1;
-        }
-        if (args.command == "features") return trade::cli::cmd_features(args, config);
-        if (args.command == "train") return trade::cli::cmd_train(args, config);
-        if (args.command == "predict") return trade::cli::cmd_predict(args, config);
-        if (args.command == "risk") return trade::cli::cmd_risk(args, config);
-        if (args.command == "backtest") return trade::cli::cmd_backtest(args, config);
-        if (args.command == "sentiment") return trade::cli::cmd_sentiment(args, config);
-        if (args.command == "report") return trade::cli::cmd_report(args, config);
         spdlog::error("Unknown command: {}", args.command);
         trade::cli::print_usage();
         return 1;

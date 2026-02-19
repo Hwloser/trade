@@ -21,6 +21,10 @@ set(TRADE_CORE_SOURCES
     src/validator/data_validator.cpp
     # Collector
     src/collector/collector.cpp
+    # App pipelines
+    src/app/pipelines/download_pipeline.cpp
+    src/app/pipelines/sentiment_pipeline.cpp
+    src/app/pipelines/train_pipeline.cpp
     # Features
     src/features/feature_engine.cpp
     src/features/preprocessor.cpp
