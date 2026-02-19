@@ -14,8 +14,7 @@ Usage:
   trade_cli <command> [options]
 
 Commands:
-  download    Download market data (incremental by default)
-  collect     Layered collection pipeline (raw|silver|full)
+  collect     Layered collection pipeline (raw|silver|full) for market data
   cleanup     Audit/clean data files and metadata lifecycle
   verify      Verify local/cloud/sql data pipeline
   view        (Paused) Use sql for querying data
@@ -36,7 +35,7 @@ Options:
   --start <date>        Start date (YYYY-MM-DD)
   --end <date>          End date (YYYY-MM-DD)
   --provider <name>     Data provider (default: eastmoney)
-  --refresh             Force full re-download (overwrite existing data)
+  --refresh             Force full refresh (overwrite existing data)
   --file <path>         Parquet file path (for view command)
   --limit <n>           Max rows to display (for view command, default: all)
   --model <name>        Model name (e.g., lgbm)

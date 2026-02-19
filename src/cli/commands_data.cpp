@@ -199,23 +199,6 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 }
 
 // ============================================================================
-// download
-// ============================================================================
-int cmd_download(const CliArgs& args, const trade::Config& config) {
-    app::DownloadRequest request;
-    request.symbol = args.symbol;
-    request.provider = args.provider;
-    request.refresh = args.refresh;
-    if (!args.start_date.empty()) {
-        request.start = parse_date(args.start_date);
-    }
-    if (!args.end_date.empty()) {
-        request.end = parse_date(args.end_date);
-    }
-    return app::run_download(request, config);
-}
-
-// ============================================================================
 // collect
 // ============================================================================
 int cmd_collect(const CliArgs& args, const trade::Config& config) {
@@ -723,7 +706,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         std::cout << "  data   - specific file/symbol data\n";
     }
     if (views.empty() && !data_view_ready) {
-        std::cout << "  (no local parquet found yet; run download/sentiment first)\n";
+        std::cout << "  (no local parquet found yet; run collect/sentiment first)\n";
     }
     std::cout << "\nExample queries:\n";
     if (has_dataset("raw.cn_a.daily")) {
@@ -735,7 +718,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     } else if (!views.empty()) {
         std::cout << "  SELECT * FROM " << views.front().view_name << " LIMIT 20;\n";
     } else {
-        std::cout << "  -- no dataset views yet; run download/sentiment first\n";
+        std::cout << "  -- no dataset views yet; run collect/sentiment first\n";
     }
     if (data_view_ready) {
         std::cout << "  SELECT * FROM data LIMIT 20;\n";
