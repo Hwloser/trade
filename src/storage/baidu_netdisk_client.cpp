@@ -126,6 +126,36 @@ HttpResponse http_post_multipart_bytes(const std::string& url,
     return resp;
 }
 
+HttpResponse http_get(const std::string& url, int timeout_ms) {
+    ensure_curl_ready();
+    HttpResponse resp;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        resp.error = "curl_easy_init failed";
+        return resp;
+    }
+
+    std::string response_body;
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(timeout_ms));
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+
+    const CURLcode code = curl_easy_perform(curl);
+    if (code != CURLE_OK) {
+        resp.error = curl_easy_strerror(code);
+    } else {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &resp.status_code);
+    }
+    resp.body = std::move(response_body);
+    curl_easy_cleanup(curl);
+    return resp;
+}
+
 bool is_token_expired_json(const std::string& body) {
     try {
         const auto j = nlohmann::json::parse(body);
@@ -205,6 +235,39 @@ bool BaiduNetdiskClient::upload_bytes(const std::string& remote_rel_path,
     return false;
 }
 
+bool BaiduNetdiskClient::download_bytes(const std::string& remote_rel_path,
+                                        std::vector<uint8_t>* payload_out) {
+    if (!payload_out) return false;
+    payload_out->clear();
+
+    if (cfg_.access_token.empty()) {
+        spdlog::error("[baidu] empty access token");
+        return false;
+    }
+
+    std::string full = build_full_path(remote_rel_path);
+    std::string resp_body;
+    const int attempts = std::max(1, cfg_.retry_count + 1);
+    for (int i = 0; i < attempts; ++i) {
+        if (download_bytes_once(full, payload_out, &resp_body)) {
+            spdlog::debug("[baidu] downloaded {} bytes from {}", payload_out->size(), full);
+            return true;
+        }
+
+        const bool token_expired = is_token_expired_json(resp_body);
+        if (token_expired && refresh_access_token()) {
+            spdlog::warn("[baidu] access token refreshed, retrying download for {}", full);
+            continue;
+        }
+        if (i + 1 < attempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300 * (i + 1)));
+        }
+    }
+
+    spdlog::warn("[baidu] download failed after retries: {}", full);
+    return false;
+}
+
 bool BaiduNetdiskClient::upload_bytes_once(const std::string& remote_full_path,
                                            const std::vector<uint8_t>& payload,
                                            std::string* response_out) {
@@ -239,6 +302,34 @@ bool BaiduNetdiskClient::upload_bytes_once(const std::string& remote_full_path,
         // Some successful responses are small JSON payloads; if parsing fails,
         // rely on HTTP status only.
     }
+    return true;
+}
+
+bool BaiduNetdiskClient::download_bytes_once(const std::string& remote_full_path,
+                                             std::vector<uint8_t>* payload_out,
+                                             std::string* response_out) {
+    const std::string url =
+        "https://d.pcs.baidu.com/rest/2.0/pcs/file?method=download"
+        "&path=" + url_encode(remote_full_path) +
+        "&access_token=" + url_encode(cfg_.access_token);
+
+    HttpResponse resp = http_get(url, cfg_.timeout_ms);
+    if (response_out) *response_out = resp.body;
+
+    if (!resp.error.empty()) {
+        spdlog::warn("[baidu] download http error: {}", resp.error);
+        return false;
+    }
+    if (resp.status_code != 200) {
+        spdlog::warn("[baidu] download status {} body: {}", resp.status_code, resp.body);
+        return false;
+    }
+
+    if (is_token_expired_json(resp.body)) {
+        return false;
+    }
+
+    payload_out->assign(resp.body.begin(), resp.body.end());
     return true;
 }
 

@@ -1,77 +1,14 @@
-data:
-  data_root: "data"
-  raw_dir: "raw"
-  curated_dir: "curated"
-  models_dir: "models"
-  market_daily_subpath: "cn_a/daily"
+# Minimal entry config. Keep this file small.
+# Add new modules under config/modules and include them here.
+includes:
+  - modules/data_ingestion.yaml
+  - modules/provider_eastmoney.yaml
+  - modules/storage_baidu.yaml
+  - modules/sentiment.yaml
 
-ingestion:
-  default_history_days: 30
-  incremental_lookback_days: 5
-  min_start_date: "2020-01-01"
-  daily_bar_dataset: "cn_a_daily_bar"
-
-eastmoney:
-  timeout_ms: 30000
-  retry_count: 3
-  retry_delay_ms: 1000
-  rate_limit_ms: 200
-  forward_adjust: true
-
-storage:
-  enabled: false
-  backend: "local"
-  write_mode: "local_only"         # local_only | hybrid | cloud_only
-  hot_days: 30
-  keep_local_cold_copy: false
-  mirror_hot_to_cloud: false
-  baidu_root: "/apps/trade"
-  baidu_access_token: ""
-  baidu_refresh_token: ""
-  baidu_app_key: ""
-  baidu_app_secret: ""
-  baidu_timeout_ms: 30000
-  baidu_retry_count: 2
-
-cost:
-  stamp_tax_rate: 0.0005
-  commission_rate: 0.00025
-  commission_min_yuan: 5.0
-  transfer_fee_rate: 0.00001
-
-risk:
-  target_annual_vol: 0.11
-  max_single_weight: 0.10
-  soft_single_weight: 0.08
-  max_industry_weight: 0.35
-  soft_industry_weight: 0.30
-  max_top3_weight: 0.22
-  max_style_z: 1.0
-  beta_low: 0.6
-  beta_high: 1.2
-  max_liquidation_days: 2.5
-  base_cash_pct: 0.10
-
-backtest:
-  initial_capital: 1000000.0
-  max_positions: 25
-  min_positions: 15
-  min_adv_participation: 0.08
-  max_adv_participation: 0.12
-  rebalance_threshold: 0.01
-  alpha_cost_multiple: 1.5
-
-sentiment:
-  dict_path: "config/sentiment_dict.txt"
-  onnx_model_path: ""
-  tokenizer_path: ""
-  use_onnx: false
-  default_source: "rss"
-  default_history_days: 30
-  incremental_lookback_days: 1
-  rss_fetch_interval_min: 15
-  rss_feeds:
-    - name: "CLS"
-      url: "https://rsshub.app/cls/telegraph"
-    - name: "Sina"
-      url: "https://rsshub.app/sina/finance"
+# Optional local overrides can be added below, for example:
+# storage:
+#   enabled: true
+#   backend: "baidu_netdisk"
+#   write_mode: "hybrid"
+#   hot_days: 30

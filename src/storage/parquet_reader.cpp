@@ -1,12 +1,125 @@
 #include "trade/storage/parquet_reader.h"
 #include "trade/common/time_utils.h"
+#include "trade/storage/baidu_netdisk_client.h"
 #include <arrow/io/file.h>
 #include <parquet/arrow/reader.h>
 #include <spdlog/spdlog.h>
+#include <filesystem>
+#include <fstream>
 
 namespace trade {
 
 namespace {
+
+struct RuntimeStorage {
+    bool configured = false;
+    DataConfig data;
+    StorageConfig storage;
+};
+
+RuntimeStorage& runtime_storage() {
+    static RuntimeStorage cfg;
+    return cfg;
+}
+
+bool path_prefix_match(const std::filesystem::path& path,
+                       const std::filesystem::path& prefix) {
+    auto pit = path.begin();
+    auto qit = prefix.begin();
+    for (; qit != prefix.end(); ++pit, ++qit) {
+        if (pit == path.end() || *pit != *qit) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string to_rel_data_path(const std::string& path, const std::string& data_root) {
+    std::filesystem::path p = std::filesystem::path(path).lexically_normal();
+    std::filesystem::path root = std::filesystem::path(data_root).lexically_normal();
+
+    if (path_prefix_match(p, root)) {
+        auto rel = p.lexically_relative(root);
+        return rel.generic_string();
+    }
+
+    std::string s = p.generic_string();
+    std::string root_s = root.generic_string();
+    if (!root_s.empty() && s.rfind(root_s + "/", 0) == 0) {
+        return s.substr(root_s.size() + 1);
+    }
+    return s;
+}
+
+bool cloud_enabled() {
+    const auto& rt = runtime_storage();
+    if (!rt.configured || !rt.storage.enabled) return false;
+    return rt.storage.backend == "baidu_netdisk" || rt.storage.backend == "baidu";
+}
+
+bool download_to_local_if_missing(const std::string& path) {
+    if (std::filesystem::exists(path)) return true;
+    if (!cloud_enabled()) return false;
+
+    const auto& rt = runtime_storage();
+    BaiduNetdiskClient client({
+        .access_token = rt.storage.baidu_access_token,
+        .refresh_token = rt.storage.baidu_refresh_token,
+        .app_key = rt.storage.baidu_app_key,
+        .app_secret = rt.storage.baidu_app_secret,
+        .root_path = rt.storage.baidu_root,
+        .timeout_ms = rt.storage.baidu_timeout_ms,
+        .retry_count = rt.storage.baidu_retry_count,
+    });
+
+    std::string rel = to_rel_data_path(path, rt.data.data_root);
+    std::vector<uint8_t> bytes;
+    if (!client.download_bytes(rel, &bytes) || bytes.empty()) {
+        return false;
+    }
+
+    auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) return false;
+    ofs.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!ofs.good()) return false;
+
+    spdlog::info("Hydrated parquet from cloud: {}", path);
+    return true;
+}
+
+std::shared_ptr<arrow::io::RandomAccessFile> open_random_access(
+    const std::string& path) {
+    auto infile = arrow::io::ReadableFile::Open(path);
+    if (infile.ok()) return *infile;
+
+    if (download_to_local_if_missing(path)) {
+        infile = arrow::io::ReadableFile::Open(path);
+        if (infile.ok()) return *infile;
+    }
+    return nullptr;
+}
+
+std::unique_ptr<parquet::arrow::FileReader> open_parquet_reader(
+    const std::string& path) {
+    auto input = open_random_access(path);
+    if (!input) {
+        spdlog::error("Failed to open {} locally or from cloud", path);
+        return nullptr;
+    }
+
+    auto reader_result = parquet::arrow::OpenFile(input, arrow::default_memory_pool());
+    if (!reader_result.ok()) {
+        spdlog::error("Failed to open parquet reader for {}: {}",
+                      path, reader_result.status().ToString());
+        return nullptr;
+    }
+    return std::move(*reader_result);
+}
 
 Bar row_to_bar(const std::shared_ptr<arrow::Table>& table, int64_t row) {
     Bar bar;
@@ -78,6 +191,14 @@ Bar row_to_bar(const std::shared_ptr<arrow::Table>& table, int64_t row) {
 
 } // namespace
 
+void ParquetReader::configure_runtime(const DataConfig& data_cfg,
+                                      const StorageConfig& storage_cfg) {
+    auto& rt = runtime_storage();
+    rt.configured = true;
+    rt.data = data_cfg;
+    rt.storage = storage_cfg;
+}
+
 std::vector<Bar> ParquetReader::read_bars(const std::string& path) {
     auto table = read_table(path);
     if (!table) return {};
@@ -106,18 +227,8 @@ std::vector<Bar> ParquetReader::read_bars(const std::string& path,
 }
 
 std::shared_ptr<arrow::Table> ParquetReader::read_table(const std::string& path) {
-    auto infile = arrow::io::ReadableFile::Open(path);
-    if (!infile.ok()) {
-        spdlog::error("Failed to open {}: {}", path, infile.status().ToString());
-        return nullptr;
-    }
-
-    auto reader_result = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
-    if (!reader_result.ok()) {
-        spdlog::error("Failed to open parquet reader for {}: {}", path, reader_result.status().ToString());
-        return nullptr;
-    }
-    auto reader = std::move(*reader_result);
+    auto reader = open_parquet_reader(path);
+    if (!reader) return nullptr;
 
     std::shared_ptr<arrow::Table> table;
     auto status = reader->ReadTable(&table);
@@ -132,12 +243,8 @@ std::shared_ptr<arrow::Table> ParquetReader::read_table(const std::string& path)
 std::shared_ptr<arrow::Table> ParquetReader::read_columns(
     const std::string& path,
     const std::vector<std::string>& columns) {
-    auto infile = arrow::io::ReadableFile::Open(path);
-    if (!infile.ok()) return nullptr;
-
-    auto reader_result = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
-    if (!reader_result.ok()) return nullptr;
-    auto reader = std::move(*reader_result);
+    auto reader = open_parquet_reader(path);
+    if (!reader) return nullptr;
 
     // Get column indices
     auto schema = reader->parquet_reader()->metadata()->schema();
@@ -154,12 +261,8 @@ std::shared_ptr<arrow::Table> ParquetReader::read_columns(
 }
 
 int64_t ParquetReader::row_count(const std::string& path) {
-    auto infile = arrow::io::ReadableFile::Open(path);
-    if (!infile.ok()) return -1;
-
-    auto reader_result = parquet::arrow::OpenFile(*infile, arrow::default_memory_pool());
-    if (!reader_result.ok()) return -1;
-    auto reader = std::move(*reader_result);
+    auto reader = open_parquet_reader(path);
+    if (!reader) return -1;
 
     return reader->parquet_reader()->metadata()->num_rows();
 }

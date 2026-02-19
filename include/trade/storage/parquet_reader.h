@@ -1,5 +1,6 @@
 #pragma once
 
+#include "trade/common/config.h"
 #include "trade/model/bar.h"
 #include <string>
 #include <vector>
@@ -10,6 +11,9 @@ namespace trade {
 
 class ParquetReader {
 public:
+    static void configure_runtime(const DataConfig& data_cfg,
+                                  const StorageConfig& storage_cfg);
+
     // Read bars from parquet file
     static std::vector<Bar> read_bars(const std::string& path);
 

@@ -1,0 +1,14 @@
+sentiment:
+  dict_path: "config/sentiment_dict.txt"
+  onnx_model_path: ""
+  tokenizer_path: ""
+  use_onnx: false
+  default_source: "rss"
+  default_history_days: 30
+  incremental_lookback_days: 1
+  rss_fetch_interval_min: 15
+  rss_feeds:
+    - name: "CLS"
+      url: "https://rsshub.app/cls/telegraph"
+    - name: "Sina"
+      url: "https://rsshub.app/sina/finance"

@@ -25,12 +25,19 @@ public:
     bool upload_bytes(const std::string& remote_rel_path,
                       const std::vector<uint8_t>& payload);
 
+    // Download bytes from Netdisk path rooted at config.root_path.
+    bool download_bytes(const std::string& remote_rel_path,
+                        std::vector<uint8_t>* payload_out);
+
 private:
     Config cfg_;
 
     bool upload_bytes_once(const std::string& remote_full_path,
                            const std::vector<uint8_t>& payload,
                            std::string* response_out);
+    bool download_bytes_once(const std::string& remote_full_path,
+                             std::vector<uint8_t>* payload_out,
+                             std::string* response_out);
     bool refresh_access_token();
     std::string build_full_path(const std::string& remote_rel_path) const;
 };

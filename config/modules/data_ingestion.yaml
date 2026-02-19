@@ -1,0 +1,12 @@
+data:
+  data_root: "data"
+  raw_dir: "raw"
+  curated_dir: "curated"
+  models_dir: "models"
+  market_daily_subpath: "cn_a/daily"
+
+ingestion:
+  default_history_days: 30
+  incremental_lookback_days: 5
+  min_start_date: "2020-01-01"
+  daily_bar_dataset: "cn_a_daily_bar"

@@ -41,6 +41,7 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <nlohmann/json.hpp>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -60,7 +61,7 @@ Usage:
 
 Commands:
   download    Download market data (incremental by default)
-  view        View parquet file contents
+  view        (Paused) Use sql for querying data
   sql         Open DuckDB SQL shell with data pre-loaded
   features    Compute features for a symbol
   train       Train ML model
@@ -69,10 +70,10 @@ Commands:
   backtest    Run backtest
   sentiment   Analyze sentiment from RSS feeds
   report      Generate decision report
-  info        Show data info
+  info        (Paused) Use sql for querying metadata
 
 Options:
-  --config <path>       Config file path (default: config/config.yaml)
+  --config <path>       Config path (file or dir, default: config)
   --symbol <symbol>     Stock symbol (e.g., 600000.SH)
   --start <date>        Start date (YYYY-MM-DD)
   --end <date>          End date (YYYY-MM-DD)
@@ -91,7 +92,7 @@ Options:
 
 struct CliArgs {
     std::string command;
-    std::string config_path = "config/config.yaml";
+    std::string config_path = "config";
     std::string symbol;
     std::string start_date;
     std::string end_date;
@@ -410,6 +411,25 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     std::string raw_dir = config.data.data_root + "/" + config.data.raw_dir +
                           "/" + config.data.market_daily_subpath;
 
+    const bool cloud_mode = config.storage.enabled &&
+        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+
+    // Cloud backflow: hydrate requested file/symbol into local cache before DuckDB starts.
+    if (cloud_mode) {
+        if (!args.file.empty() && !std::filesystem::exists(args.file)) {
+            auto t = trade::ParquetReader::read_table(args.file);
+            if (!t) {
+                spdlog::warn("Failed to hydrate --file from cloud: {}", args.file);
+            }
+        }
+        if (!args.symbol.empty()) {
+            auto hydrated = load_bars(args.symbol, config);
+            if (hydrated.empty()) {
+                spdlog::warn("No local/cloud data found for symbol {}", args.symbol);
+            }
+        }
+    }
+
     // Build init SQL: create views for convenient querying
     std::string init_sql;
     init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM read_parquet('" + curated_dir + "/**/*.parquet', union_by_name=true);";
@@ -438,6 +458,12 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
               << "  SELECT symbol, count(*) as bars FROM daily GROUP BY symbol;\n"
               << "  SELECT * FROM daily WHERE date >= '2026-02-10';\n"
               << std::endl;
+
+    if (cloud_mode) {
+        std::cout << "Cloud mode enabled: DuckDB sees local + hydrated cache partitions.\n"
+                  << "Tip: use --symbol to pre-hydrate one symbol from Baidu cloud.\n"
+                  << std::endl;
+    }
 
     // Launch duckdb with init commands
     std::string cmd = "duckdb -init /dev/null -cmd \"" + init_sql + "\"";
@@ -1035,12 +1061,19 @@ int main(int argc, char* argv[]) {
 #endif
     }
     trade::ParquetStore::configure_runtime(config.data, config.storage);
+    trade::ParquetReader::configure_runtime(config.data, config.storage);
 
     try {
         if (args.command == "download")  return cmd_download(args, config);
-        if (args.command == "view")      return cmd_view(args, config);
+        if (args.command == "view") {
+            spdlog::error("Command 'view' is paused. Use 'sql' for querying data.");
+            return 1;
+        }
         if (args.command == "sql")       return cmd_sql(args, config);
-        if (args.command == "info")      return cmd_info(args, config);
+        if (args.command == "info") {
+            spdlog::error("Command 'info' is paused. Use 'sql' for querying data.");
+            return 1;
+        }
         if (args.command == "features")  return cmd_features(args, config);
         if (args.command == "train")     return cmd_train(args, config);
         if (args.command == "predict")   return cmd_predict(args, config);

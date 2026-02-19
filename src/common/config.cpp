@@ -1,14 +1,90 @@
 #include "trade/common/config.h"
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <set>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 
 namespace trade {
+namespace {
+
+YAML::Node merge_yaml(const YAML::Node& base, const YAML::Node& overlay) {
+    if (!overlay || overlay.IsNull()) return base;
+    if (!base || base.IsNull()) return overlay;
+
+    if (!base.IsMap() || !overlay.IsMap()) {
+        return overlay;
+    }
+
+    YAML::Node out(YAML::NodeType::Map);
+    for (const auto& kv : base) {
+        out[kv.first.Scalar()] = kv.second;
+    }
+    for (const auto& kv : overlay) {
+        const std::string key = kv.first.Scalar();
+        if (out[key] && out[key].IsMap() && kv.second.IsMap()) {
+            out[key] = merge_yaml(out[key], kv.second);
+        } else {
+            out[key] = kv.second;
+        }
+    }
+    return out;
+}
+
+YAML::Node load_yaml_with_includes(const std::filesystem::path& file_path,
+                                   std::set<std::string>& visiting) {
+    const auto canonical = std::filesystem::weakly_canonical(file_path).string();
+    if (visiting.count(canonical)) {
+        throw std::runtime_error("Recursive config include detected: " + canonical);
+    }
+    visiting.insert(canonical);
+
+    YAML::Node raw = YAML::LoadFile(canonical);
+    YAML::Node merged(YAML::NodeType::Map);
+
+    if (raw["includes"] && raw["includes"].IsSequence()) {
+        for (const auto& inc_node : raw["includes"]) {
+            if (!inc_node.IsScalar()) continue;
+            std::filesystem::path inc_path = inc_node.as<std::string>();
+            if (inc_path.is_relative()) {
+                inc_path = std::filesystem::path(canonical).parent_path() / inc_path;
+            }
+            YAML::Node inc_cfg = load_yaml_with_includes(inc_path, visiting);
+            merged = merge_yaml(merged, inc_cfg);
+        }
+    }
+
+    YAML::Node self_cfg(YAML::NodeType::Map);
+    for (const auto& kv : raw) {
+        const std::string key = kv.first.Scalar();
+        if (key == "includes") continue;
+        self_cfg[key] = kv.second;
+    }
+
+    visiting.erase(canonical);
+    return merge_yaml(merged, self_cfg);
+}
+
+YAML::Node load_root_config(const std::string& path) {
+    namespace fs = std::filesystem;
+    fs::path p = path;
+    if (fs::is_directory(p)) {
+        p = p / "config.yaml";
+    }
+    if (!fs::exists(p)) {
+        throw std::runtime_error("Config path not found: " + p.string());
+    }
+    std::set<std::string> visiting;
+    return load_yaml_with_includes(p, visiting);
+}
+
+} // namespace
 
 Config Config::load(const std::string& path) {
     Config cfg = defaults();
     try {
-        YAML::Node root = YAML::LoadFile(path);
+        YAML::Node root = load_root_config(path);
 
         if (auto n = root["data"]) {
             if (n["data_root"]) cfg.data.data_root = n["data_root"].as<std::string>();
