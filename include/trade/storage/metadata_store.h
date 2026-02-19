@@ -12,6 +12,23 @@ namespace trade {
 // SQLite-backed metadata store for instruments and data status
 class MetadataStore {
 public:
+    struct DatasetRecord {
+        std::string dataset_id;
+        std::string layer;
+        std::string domain;
+        std::string data_type;
+        std::string path_prefix;
+        int schema_version = 1;
+        std::optional<Date> latest_event_date;
+    };
+
+    struct DatasetFileRecord {
+        std::string dataset_id;
+        std::string file_path;
+        int64_t row_count = 0;
+        std::optional<Date> max_event_date;
+    };
+
     explicit MetadataStore(const std::string& db_path);
     ~MetadataStore();
 
@@ -53,6 +70,19 @@ public:
     // Holiday calendar
     void load_holidays(const std::vector<Date>& holidays);
     std::vector<Date> get_holidays(int year);
+
+    // Dataset catalog (for discovery/query/training reproducibility)
+    void upsert_dataset_file(const std::string& dataset_id,
+                             const std::string& layer,
+                             const std::string& domain,
+                             const std::string& data_type,
+                             const std::string& path_prefix,
+                             const std::string& file_path,
+                             int64_t row_count,
+                             std::optional<Date> max_event_date = std::nullopt,
+                             int schema_version = 1);
+    std::vector<DatasetRecord> list_datasets();
+    std::vector<DatasetFileRecord> list_dataset_files(const std::string& dataset_id);
 
 private:
     struct Impl;

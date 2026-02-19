@@ -2,7 +2,9 @@
 
 #include "trade/common/time_utils.h"
 #include "trade/storage/baidu_netdisk_client.h"
+#include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
+#include "trade/storage/storage_path.h"
 #include "trade/normalizer/bar_normalizer.h"
 
 #include <arrow/builder.h>
@@ -145,6 +147,45 @@ bool write_local_bytes(const std::string& path, const std::vector<uint8_t>& byte
         return false;
     }
     return true;
+}
+
+void update_catalog_if_possible(const std::string& abs_path,
+                                int64_t row_count,
+                                const std::optional<Date>& max_event_date) {
+    const auto& rt = runtime_storage();
+    if (!rt.configured) return;
+
+    const std::string rel = to_rel_data_path(abs_path, rt.data.data_root);
+    std::filesystem::path rp(rel);
+    std::vector<std::string> segs;
+    for (const auto& part : rp) {
+        segs.push_back(part.string());
+    }
+    if (segs.size() < 4) return;
+    if (rp.extension() != ".parquet") return;
+
+    const std::string layer = segs[0];
+    const std::string domain = segs[1];
+    const std::string data_type = segs[2];
+    const std::string dataset_id = layer + "." + domain + "." + data_type;
+    const std::string path_prefix =
+        (std::filesystem::path(layer) / domain / data_type).generic_string();
+
+    try {
+        StoragePath paths(rt.data.data_root);
+        MetadataStore metadata(paths.metadata_db());
+        metadata.upsert_dataset_file(dataset_id,
+                                     layer,
+                                     domain,
+                                     data_type,
+                                     path_prefix,
+                                     rel,
+                                     row_count,
+                                     max_event_date,
+                                     1);
+    } catch (const std::exception& e) {
+        spdlog::warn("Failed to update dataset catalog for {}: {}", rel, e.what());
+    }
 }
 
 int64_t to_epoch_ms(Timestamp ts) {
@@ -591,7 +632,10 @@ void ParquetStore::write_table(const std::string& path,
     if (!local_ok || !cloud_ok) {
         spdlog::error("Write failure for {} (local_ok={}, cloud_ok={})",
                       path, local_ok, cloud_ok);
+        return;
     }
+
+    update_catalog_if_possible(path, table->num_rows(), partition_max_date);
 }
 
 void ParquetStore::configure_runtime(const DataConfig& data_cfg,

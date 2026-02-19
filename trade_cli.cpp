@@ -41,6 +41,8 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -160,6 +162,86 @@ std::vector<trade::Bar> load_bars(const std::string& symbol,
         } catch (...) {}
     }
     return all_bars;
+}
+
+struct SqlViewDef {
+    std::string dataset_id;
+    std::string view_name;
+    std::string glob_path;
+};
+
+std::string sql_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        out.push_back(c);
+        if (c == '\'') out.push_back('\'');
+    }
+    return out;
+}
+
+std::string sanitize_view_name(std::string s) {
+    for (char& c : s) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) {
+            c = '_';
+        }
+    }
+    if (s.empty()) s = "dataset";
+    if (std::isdigit(static_cast<unsigned char>(s[0]))) {
+        s = "d_" + s;
+    }
+    return s;
+}
+
+bool has_local_parquet(const std::filesystem::path& dir) {
+    if (!std::filesystem::exists(dir)) return false;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() == ".parquet") return true;
+    }
+    return false;
+}
+
+std::vector<SqlViewDef> discover_sql_views(const trade::Config& config) {
+    trade::StoragePath paths(config.data.data_root);
+    trade::MetadataStore metadata(paths.metadata_db());
+    auto datasets = metadata.list_datasets();
+
+    std::vector<SqlViewDef> views;
+    views.reserve(datasets.size());
+    for (const auto& ds : datasets) {
+        auto prefix = std::filesystem::path(config.data.data_root) / ds.path_prefix;
+        if (!has_local_parquet(prefix)) continue;
+
+        SqlViewDef def;
+        def.dataset_id = ds.dataset_id;
+        def.view_name = sanitize_view_name(ds.dataset_id);
+        def.glob_path = (prefix / "**/*.parquet").string();
+        views.push_back(std::move(def));
+    }
+
+    auto add_fallback = [&](const std::string& dataset_id, const std::filesystem::path& prefix) {
+        if (!has_local_parquet(prefix)) return;
+        auto it = std::find_if(views.begin(), views.end(),
+                               [&](const SqlViewDef& v) { return v.dataset_id == dataset_id; });
+        if (it != views.end()) return;
+        views.push_back(SqlViewDef{
+            .dataset_id = dataset_id,
+            .view_name = sanitize_view_name(dataset_id),
+            .glob_path = (prefix / "**/*.parquet").string(),
+        });
+    };
+
+    add_fallback("curated.cn_a.daily",
+                 std::filesystem::path(config.data.data_root) /
+                 config.data.curated_dir / config.data.market_daily_subpath);
+    add_fallback("raw.cn_a.daily",
+                 std::filesystem::path(config.data.data_root) /
+                 config.data.raw_dir / config.data.market_daily_subpath);
+
+    std::sort(views.begin(), views.end(),
+              [](const SqlViewDef& a, const SqlViewDef& b) { return a.view_name < b.view_name; });
+    return views;
 }
 
 // ============================================================================
@@ -405,16 +487,11 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         return 1;
     }
 
-    trade::StoragePath paths(config.data.data_root);
-    std::string curated_dir = config.data.data_root + "/" + config.data.curated_dir +
-                              "/" + config.data.market_daily_subpath;
-    std::string raw_dir = config.data.data_root + "/" + config.data.raw_dir +
-                          "/" + config.data.market_daily_subpath;
-
     const bool cloud_mode = config.storage.enabled &&
         (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
 
     // Cloud backflow: hydrate requested file/symbol into local cache before DuckDB starts.
+    bool symbol_hydrated = false;
     if (cloud_mode) {
         if (!args.file.empty() && !std::filesystem::exists(args.file)) {
             auto t = trade::ParquetReader::read_table(args.file);
@@ -424,40 +501,82 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         }
         if (!args.symbol.empty()) {
             auto hydrated = load_bars(args.symbol, config);
-            if (hydrated.empty()) {
+            symbol_hydrated = !hydrated.empty();
+            if (!symbol_hydrated) {
                 spdlog::warn("No local/cloud data found for symbol {}", args.symbol);
             }
         }
     }
 
-    // Build init SQL: create views for convenient querying
+    // Build init SQL: create views from dataset catalog.
+    auto views = discover_sql_views(config);
     std::string init_sql;
-    init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM read_parquet('" + curated_dir + "/**/*.parquet', union_by_name=true);";
-    init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM read_parquet('" + raw_dir + "/**/*.parquet', union_by_name=true);";
+    for (const auto& v : views) {
+        init_sql += "CREATE OR REPLACE VIEW " + v.view_name +
+                    " AS SELECT * FROM read_parquet('" + sql_escape(v.glob_path) +
+                    "', union_by_name=true);";
+    }
+
+    auto has_dataset = [&](const std::string& dataset_id) {
+        return std::any_of(views.begin(), views.end(), [&](const SqlViewDef& v) {
+            return v.dataset_id == dataset_id;
+        });
+    };
+    if (has_dataset("curated.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM curated_cn_a_daily;";
+    }
+    if (has_dataset("raw.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM raw_cn_a_daily;";
+    }
 
     // If a specific file is given, also create a 'data' view
+    bool data_view_ready = false;
     if (!args.file.empty()) {
-        init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" + args.file + "');";
+        if (std::filesystem::exists(args.file)) {
+            init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" +
+                        sql_escape(args.file) + "', union_by_name=true);";
+            data_view_ready = true;
+        }
     } else if (!args.symbol.empty()) {
-        // Find parquet files for this symbol
-        auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-        int year = trade::date_year(now);
-        std::string path = paths.curated_daily(args.symbol, year);
-        init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" + path + "');";
+        if (!cloud_mode || symbol_hydrated) {
+            std::string pattern = config.data.data_root + "/" + config.data.curated_dir + "/" +
+                                  config.data.market_daily_subpath + "/**/" + args.symbol + ".parquet";
+            init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" +
+                        sql_escape(pattern) + "', union_by_name=true);";
+            data_view_ready = true;
+        }
     }
 
     std::cout << "Starting DuckDB SQL shell...\n"
-              << "Pre-configured views:\n"
-              << "  daily  - all curated daily bars\n"
-              << "  raw    - all raw daily bars\n";
-    if (!args.file.empty() || !args.symbol.empty()) {
+              << "Pre-configured views from catalog:\n";
+    for (const auto& v : views) {
+        std::cout << "  " << v.view_name << "  (" << v.dataset_id << ")\n";
+    }
+    if (has_dataset("curated.cn_a.daily")) {
+        std::cout << "  daily  (alias of curated_cn_a_daily)\n";
+    }
+    if (has_dataset("raw.cn_a.daily")) {
+        std::cout << "  raw    (alias of raw_cn_a_daily)\n";
+    }
+    if (data_view_ready) {
         std::cout << "  data   - specific file/symbol data\n";
     }
-    std::cout << "\nExample queries:\n"
-              << "  SELECT * FROM daily WHERE symbol='600000.SH' ORDER BY date;\n"
-              << "  SELECT symbol, count(*) as bars FROM daily GROUP BY symbol;\n"
-              << "  SELECT * FROM daily WHERE date >= '2026-02-10';\n"
-              << std::endl;
+    if (views.empty() && !data_view_ready) {
+        std::cout << "  (no local parquet found yet; run download/sentiment first)\n";
+    }
+    std::cout << "\nExample queries:\n";
+    if (has_dataset("curated.cn_a.daily")) {
+        std::cout << "  SELECT * FROM curated_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
+                  << "  SELECT symbol, count(*) FROM curated_cn_a_daily GROUP BY symbol;\n";
+    } else if (!views.empty()) {
+        std::cout << "  SELECT * FROM " << views.front().view_name << " LIMIT 20;\n";
+    } else {
+        std::cout << "  -- no dataset views yet; run download/sentiment first\n";
+    }
+    if (data_view_ready) {
+        std::cout << "  SELECT * FROM data LIMIT 20;\n";
+    }
+    std::cout << std::endl;
 
     if (cloud_mode) {
         std::cout << "Cloud mode enabled: DuckDB sees local + hydrated cache partitions.\n"

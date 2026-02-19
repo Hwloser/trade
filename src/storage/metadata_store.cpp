@@ -104,8 +104,33 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
         )
     )");
 
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS dataset_catalog (
+            dataset_id TEXT PRIMARY KEY,
+            layer TEXT NOT NULL,
+            domain TEXT NOT NULL,
+            data_type TEXT NOT NULL,
+            path_prefix TEXT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 1,
+            latest_event_date TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    )");
+
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS dataset_files (
+            dataset_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            row_count INTEGER NOT NULL DEFAULT 0,
+            max_event_date TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (dataset_id, file_path)
+        )
+    )");
+
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_downloads_symbol_end ON downloads(symbol, end_date)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_watermarks_lookup ON watermarks(source, dataset, symbol)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_files_dataset ON dataset_files(dataset_id)");
 
     spdlog::debug("MetadataStore initialized at {}", db_path);
 }
@@ -413,6 +438,153 @@ std::vector<Date> MetadataStore::get_holidays(int year) {
     }
     sqlite3_finalize(stmt);
     return result;
+}
+
+void MetadataStore::upsert_dataset_file(const std::string& dataset_id,
+                                        const std::string& layer,
+                                        const std::string& domain,
+                                        const std::string& data_type,
+                                        const std::string& path_prefix,
+                                        const std::string& file_path,
+                                        int64_t row_count,
+                                        std::optional<Date> max_event_date,
+                                        int schema_version) {
+    const char* sql_catalog = R"(
+        INSERT INTO dataset_catalog
+        (dataset_id, layer, domain, data_type, path_prefix, schema_version, latest_event_date, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(dataset_id)
+        DO UPDATE SET
+            layer = excluded.layer,
+            domain = excluded.domain,
+            data_type = excluded.data_type,
+            path_prefix = excluded.path_prefix,
+            schema_version = excluded.schema_version,
+            latest_event_date = CASE
+                WHEN excluded.latest_event_date IS NULL THEN dataset_catalog.latest_event_date
+                WHEN dataset_catalog.latest_event_date IS NULL THEN excluded.latest_event_date
+                WHEN excluded.latest_event_date > dataset_catalog.latest_event_date THEN excluded.latest_event_date
+                ELSE dataset_catalog.latest_event_date
+            END,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql_catalog, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert dataset_catalog: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, layer.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, domain.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, data_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, path_prefix.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 6, schema_version);
+    if (max_event_date) {
+        std::string d = format_date(*max_event_date);
+        sqlite3_bind_text(stmt, 7, d.c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 7);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert dataset catalog {}: {}",
+                      dataset_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+
+    const char* sql_file = R"(
+        INSERT INTO dataset_files
+        (dataset_id, file_path, row_count, max_event_date, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(dataset_id, file_path)
+        DO UPDATE SET
+            row_count = excluded.row_count,
+            max_event_date = CASE
+                WHEN excluded.max_event_date IS NULL THEN dataset_files.max_event_date
+                ELSE excluded.max_event_date
+            END,
+            updated_at = CURRENT_TIMESTAMP
+    )";
+    stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql_file, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare upsert dataset_files: {}", sqlite3_errmsg(impl_->db));
+        return;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, row_count);
+    if (max_event_date) {
+        std::string d = format_date(*max_event_date);
+        sqlite3_bind_text(stmt, 4, d.c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 4);
+    }
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to upsert dataset file {} {}: {}",
+                      dataset_id, file_path, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::vector<MetadataStore::DatasetRecord> MetadataStore::list_datasets() {
+    std::vector<DatasetRecord> out;
+    const char* sql = R"(
+        SELECT dataset_id, layer, domain, data_type, path_prefix, schema_version, latest_event_date
+        FROM dataset_catalog
+        ORDER BY dataset_id
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_datasets: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        DatasetRecord r;
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.layer = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.domain = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        r.data_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        r.path_prefix = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        r.schema_version = sqlite3_column_int(stmt, 5);
+        auto date_txt = sqlite3_column_text(stmt, 6);
+        if (date_txt) {
+            r.latest_event_date = parse_date(reinterpret_cast<const char*>(date_txt));
+        }
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<MetadataStore::DatasetFileRecord> MetadataStore::list_dataset_files(
+    const std::string& dataset_id) {
+    std::vector<DatasetFileRecord> out;
+    const char* sql = R"(
+        SELECT dataset_id, file_path, row_count, max_event_date
+        FROM dataset_files
+        WHERE dataset_id = ?
+        ORDER BY file_path
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_dataset_files: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        DatasetFileRecord r;
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.file_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.row_count = sqlite3_column_int64(stmt, 2);
+        auto date_txt = sqlite3_column_text(stmt, 3);
+        if (date_txt) {
+            r.max_event_date = parse_date(reinterpret_cast<const char*>(date_txt));
+        }
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
 }
 
 } // namespace trade
