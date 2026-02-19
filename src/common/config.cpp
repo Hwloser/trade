@@ -112,6 +112,13 @@ Config Config::load(const std::string& path) {
             if (n["write_raw_layer"]) {
                 cfg.ingestion.write_raw_layer = n["write_raw_layer"].as<bool>();
             }
+            if (n["write_silver_layer"]) {
+                cfg.ingestion.write_silver_layer = n["write_silver_layer"].as<bool>();
+            }
+            // Backward compatibility: old curated naming maps to silver layer.
+            if (n["write_curated_layer"]) {
+                cfg.ingestion.write_silver_layer = n["write_curated_layer"].as<bool>();
+            }
         }
 
         if (auto n = root["eastmoney"]) {

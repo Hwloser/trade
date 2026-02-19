@@ -81,12 +81,13 @@ void merge_and_write_silver_bars(const std::string& path,
 
 void record_market_quality(MetadataStore& metadata,
                            const std::string& run_id,
+                           const std::string& dataset_id,
                            const Symbol& symbol,
                            const QualityReport& report,
                            std::optional<Date> event_date) {
     MetadataStore::QualityCheckRecord qc;
     qc.run_id = run_id;
-    qc.dataset_id = "silver.cn_a.daily";
+    qc.dataset_id = dataset_id;
     qc.check_name = "quality_score";
     qc.metric_value = report.quality_score();
     qc.threshold_value = 0.95;
@@ -139,80 +140,85 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         return QualityReport{};
     }
 
-    // 2. Build silver bars from raw bars
-    auto bars = BarNormalizer::normalize(raw_bars);
+    // 2. Build optional silver bars from raw bars
+    std::vector<Bar> silver_bars;
+    Board board = Board::kMain;
+    if (config_.ingestion.write_silver_layer) {
+        silver_bars = BarNormalizer::normalize(raw_bars);
 
-    // 3. Compute price limits for silver layer
-    Board board = (!bars.empty() && bars[0].board != Board::kMain)
-        ? bars[0].board : Board::kMain;
-    BarNormalizer::compute_limits(bars, board);
+        // 3. Compute price limits for silver layer
+        board = (!silver_bars.empty() && silver_bars[0].board != Board::kMain)
+            ? silver_bars[0].board : Board::kMain;
+        BarNormalizer::compute_limits(silver_bars, board);
 
-    // 4. Merge northbound data by date (optional) into silver layer
-    if (provider_->supports_northbound() && !bars.empty()) {
-        std::set<Date> dates;
-        for (const auto& bar : bars) dates.insert(bar.date);
+        // 4. Merge northbound data by date (optional) into silver layer
+        if (provider_->supports_northbound() && !silver_bars.empty()) {
+            std::set<Date> dates;
+            for (const auto& bar : silver_bars) dates.insert(bar.date);
 
-        std::unordered_map<Date, std::unordered_map<Symbol, double>> north_by_date;
-        for (const auto& d : dates) {
-            auto north = provider_->fetch_northbound(d);
-            if (!north.empty()) {
-                north_by_date.emplace(d, std::move(north));
+            std::unordered_map<Date, std::unordered_map<Symbol, double>> north_by_date;
+            for (const auto& d : dates) {
+                auto north = provider_->fetch_northbound(d);
+                if (!north.empty()) {
+                    north_by_date.emplace(d, std::move(north));
+                }
+            }
+
+            for (auto& bar : silver_bars) {
+                auto dit = north_by_date.find(bar.date);
+                if (dit == north_by_date.end()) continue;
+                auto sit = dit->second.find(bar.symbol);
+                if (sit != dit->second.end()) {
+                    bar.north_net_buy = sit->second;
+                }
             }
         }
 
-        for (auto& bar : bars) {
-            auto dit = north_by_date.find(bar.date);
-            if (dit == north_by_date.end()) continue;
-            auto sit = dit->second.find(bar.symbol);
-            if (sit != dit->second.end()) {
-                bar.north_net_buy = sit->second;
+        // 5. Merge margin data by date (optional) into silver layer
+        if (provider_->supports_margin() && !silver_bars.empty()) {
+            std::set<Date> dates;
+            for (const auto& bar : silver_bars) dates.insert(bar.date);
+
+            std::unordered_map<Date, std::unordered_map<Symbol, double>> margin_by_date;
+            for (const auto& d : dates) {
+                auto margin = provider_->fetch_margin(d);
+                if (!margin.empty()) {
+                    margin_by_date.emplace(d, std::move(margin));
+                }
+            }
+
+            for (auto& bar : silver_bars) {
+                auto dit = margin_by_date.find(bar.date);
+                if (dit == margin_by_date.end()) continue;
+                auto sit = dit->second.find(bar.symbol);
+                if (sit != dit->second.end()) {
+                    bar.margin_balance = sit->second;
+                }
             }
         }
     }
 
-    // 5. Merge margin data by date (optional) into silver layer
-    if (provider_->supports_margin() && !bars.empty()) {
-        std::set<Date> dates;
-        for (const auto& bar : bars) dates.insert(bar.date);
-
-        std::unordered_map<Date, std::unordered_map<Symbol, double>> margin_by_date;
-        for (const auto& d : dates) {
-            auto margin = provider_->fetch_margin(d);
-            if (!margin.empty()) {
-                margin_by_date.emplace(d, std::move(margin));
-            }
-        }
-
-        for (auto& bar : bars) {
-            auto dit = margin_by_date.find(bar.date);
-            if (dit == margin_by_date.end()) continue;
-            auto sit = dit->second.find(bar.symbol);
-            if (sit != dit->second.end()) {
-                bar.margin_balance = sit->second;
-            }
-        }
-    }
-
-    // 6. Validate silver window
-    auto report = DataValidator::validate(bars);
+    // 6. Validate output window (raw by default, silver when enabled)
+    const auto& quality_bars =
+        config_.ingestion.write_silver_layer ? silver_bars : raw_bars;
+    auto report = DataValidator::validate(quality_bars);
     if (!report.is_clean()) {
         for (const auto& w : report.warnings) {
             spdlog::warn("{}: {}", symbol, w);
         }
     }
 
-    // 7. Partition by year and write silver (+ optional raw)
-    std::map<int, std::vector<Bar>> silver_by_year;
-    for (const auto& bar : bars) {
-        silver_by_year[date_year(bar.date)].push_back(bar);
+    // 7. Partition by year and write raw (+ optional silver)
+    const bool write_raw =
+        config_.ingestion.write_raw_layer || !config_.ingestion.write_silver_layer;
+    if (!config_.ingestion.write_raw_layer && !config_.ingestion.write_silver_layer) {
+        spdlog::warn("Both write_raw_layer and write_silver_layer are false; forcing raw write");
     }
-
-    if (config_.ingestion.write_raw_layer) {
+    if (write_raw) {
         std::map<int, std::vector<Bar>> raw_by_year;
         for (const auto& bar : raw_bars) {
             raw_by_year[date_year(bar.date)].push_back(bar);
         }
-
         for (auto& [year, year_raw] : raw_by_year) {
             auto raw_path = paths_.raw_daily(symbol, year);
             Date max_date = start;
@@ -223,13 +229,19 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    for (auto& [year, year_silver] : silver_by_year) {
-        auto silver_path = paths_.silver_daily(symbol, year);
-        Date max_date = start;
-        for (const auto& b : year_silver) {
-            if (b.date > max_date) max_date = b.date;
+    if (config_.ingestion.write_silver_layer) {
+        std::map<int, std::vector<Bar>> silver_by_year;
+        for (const auto& bar : silver_bars) {
+            silver_by_year[date_year(bar.date)].push_back(bar);
         }
-        merge_and_write_silver_bars(silver_path, std::move(year_silver), board, max_date);
+        for (auto& [year, year_silver] : silver_by_year) {
+            auto silver_path = paths_.silver_daily(symbol, year);
+            Date max_date = start;
+            for (const auto& b : year_silver) {
+                if (b.date > max_date) max_date = b.date;
+            }
+            merge_and_write_silver_bars(silver_path, std::move(year_silver), board, max_date);
+        }
     }
 
     // 8. Upsert instrument record
@@ -239,23 +251,35 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
     }
 
     // 9. Record download and advance watermark
+    auto minmax_date = std::minmax_element(
+        raw_bars.begin(), raw_bars.end(),
+        [](const Bar& a, const Bar& b) { return a.date < b.date; });
+    const Date batch_start = minmax_date.first->date;
+    const Date batch_end = minmax_date.second->date;
+
     metadata_.record_download(symbol,
-                              bars.front().date,
-                              bars.back().date,
-                              static_cast<int64_t>(bars.size()));
+                              batch_start,
+                              batch_end,
+                              static_cast<int64_t>(raw_bars.size()));
     metadata_.upsert_watermark(provider_->name(),
                                config_.ingestion.daily_bar_dataset,
                                symbol,
-                               bars.back().date);
+                               batch_end);
     metadata_.upsert_stream_checkpoint(provider_->name(),
                                        config_.ingestion.daily_bar_dataset,
                                        symbol,
                                        "{}",
-                                       bars.back().date);
-    record_market_quality(metadata_, run_id, symbol, report, bars.back().date);
+                                       batch_end);
+    const std::string quality_dataset = config_.ingestion.write_silver_layer
+        ? "silver.cn_a.daily"
+        : "raw.cn_a.daily";
+    record_market_quality(metadata_, run_id, quality_dataset, symbol, report, batch_end);
 
-    spdlog::info("Collected {} bars for {} (quality: {:.1f}%)",
-                 bars.size(), symbol, report.quality_score() * 100);
+    spdlog::info("Collected {} raw bars for {} (silver={}; quality: {:.1f}%)",
+                 raw_bars.size(),
+                 symbol,
+                 config_.ingestion.write_silver_layer ? "on" : "off",
+                 report.quality_score() * 100);
     return report;
 }
 

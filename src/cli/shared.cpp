@@ -32,24 +32,28 @@ std::vector<Bar> load_bars(const std::string& symbol,
     int start_year = date_year(min_date);
     int end_year = date_year(now);
     for (int year = start_year; year <= end_year; ++year) {
-        auto path = paths.silver_daily(symbol, year);
+        const std::string raw_path = paths.raw_daily(symbol, year);
+        const std::string silver_path = paths.silver_daily(symbol, year);
         std::string legacy_curated_path =
             (std::filesystem::path(config.data.data_root) / "curated" /
              config.data.market_daily_subpath / std::to_string(year) /
              (symbol + ".parquet"))
                 .string();
-        const bool path_exists =
-            std::filesystem::exists(path) || std::filesystem::exists(legacy_curated_path);
-        if (!path_exists && !cloud_mode) continue;
-
-        try {
-            auto bars = ParquetReader::read_bars(path);
-            all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-        } catch (...) {
+        const std::vector<std::string> candidates = {
+            raw_path,
+            silver_path,
+            legacy_curated_path,
+        };
+        for (const auto& path : candidates) {
+            if (!cloud_mode && !std::filesystem::exists(path)) continue;
             try {
-                auto bars = ParquetReader::read_bars(legacy_curated_path);
-                all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-            } catch (...) {}
+                auto bars = ParquetReader::read_bars(path);
+                if (!bars.empty()) {
+                    all_bars.insert(all_bars.end(), bars.begin(), bars.end());
+                    break;
+                }
+            } catch (...) {
+            }
         }
     }
     return all_bars;
@@ -176,15 +180,15 @@ std::vector<SqlViewDef> discover_sql_views(const Config& config) {
         });
     };
 
+    add_fallback("raw.cn_a.daily",
+                 std::filesystem::path(config.data.data_root) /
+                 config.data.raw_dir / config.data.market_daily_subpath);
     add_fallback("silver.cn_a.daily",
                  std::filesystem::path(config.data.data_root) /
                  config.data.silver_dir / config.data.market_daily_subpath);
     add_fallback("silver.cn_a.daily",
                  std::filesystem::path(config.data.data_root) /
                  "curated" / config.data.market_daily_subpath);
-    add_fallback("raw.cn_a.daily",
-                 std::filesystem::path(config.data.data_root) /
-                 config.data.raw_dir / config.data.market_daily_subpath);
 
     std::sort(views.begin(), views.end(),
               [](const SqlViewDef& a, const SqlViewDef& b) { return a.view_name < b.view_name; });
@@ -203,10 +207,10 @@ std::string build_sql_init(const std::vector<SqlViewDef>& views) {
             return v.dataset_id == dataset_id;
         });
     };
-    if (has_dataset("silver.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM silver_cn_a_daily;";
-    } else if (has_dataset("raw.cn_a.daily")) {
+    if (has_dataset("raw.cn_a.daily")) {
         init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM raw_cn_a_daily;";
+    } else if (has_dataset("silver.cn_a.daily")) {
+        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM silver_cn_a_daily;";
     }
     if (has_dataset("raw.cn_a.daily")) {
         init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM raw_cn_a_daily;";

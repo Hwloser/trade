@@ -161,8 +161,33 @@ int cmd_view(const CliArgs& args, const trade::Config& config) {
     if (path.empty() && !args.symbol.empty()) {
         trade::StoragePath paths(config.data.data_root);
         auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-        int year = trade::date_year(now);
-        path = paths.silver_daily(args.symbol, year);
+        int end_year = trade::date_year(now);
+        int start_year = trade::date_year(trade::parse_date(config.ingestion.min_start_date));
+        for (int year = end_year; year >= start_year; --year) {
+            std::string raw_path = paths.raw_daily(args.symbol, year);
+            std::string silver_path = paths.silver_daily(args.symbol, year);
+            std::string legacy_curated_path =
+                (std::filesystem::path(config.data.data_root) / "curated" /
+                 config.data.market_daily_subpath / std::to_string(year) /
+                 (args.symbol + ".parquet"))
+                    .string();
+
+            if (std::filesystem::exists(raw_path)) {
+                path = raw_path;
+                break;
+            }
+            if (std::filesystem::exists(silver_path)) {
+                path = silver_path;
+                break;
+            }
+            if (std::filesystem::exists(legacy_curated_path)) {
+                path = legacy_curated_path;
+                break;
+            }
+        }
+        if (path.empty()) {
+            path = paths.raw_daily(args.symbol, end_year);
+        }
     }
 
     if (path.empty()) {
@@ -301,8 +326,12 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         }
     } else if (!args.symbol.empty()) {
         if (!cloud_mode || symbol_hydrated) {
-            std::string pattern = config.data.data_root + "/" + config.data.silver_dir + "/" +
-                                  config.data.market_daily_subpath + "/**/" + args.symbol + ".parquet";
+            std::string layer_dir = has_dataset("raw.cn_a.daily")
+                ? config.data.raw_dir
+                : config.data.silver_dir;
+            std::string pattern = config.data.data_root + "/" + layer_dir + "/" +
+                                  config.data.market_daily_subpath + "/**/" +
+                                  args.symbol + ".parquet";
             init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" +
                         sql_escape(pattern) + "', union_by_name=true);";
             data_view_ready = true;
@@ -314,7 +343,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     for (const auto& v : views) {
         std::cout << "  " << v.view_name << "  (" << v.dataset_id << ")\n";
     }
-    if (has_dataset("silver.cn_a.daily")) {
+    if (has_dataset("raw.cn_a.daily")) {
+        std::cout << "  daily  (alias of raw_cn_a_daily)\n";
+    } else if (has_dataset("silver.cn_a.daily")) {
         std::cout << "  daily  (alias of silver_cn_a_daily)\n";
     }
     if (has_dataset("raw.cn_a.daily")) {
@@ -327,7 +358,10 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         std::cout << "  (no local parquet found yet; run download/sentiment first)\n";
     }
     std::cout << "\nExample queries:\n";
-    if (has_dataset("silver.cn_a.daily")) {
+    if (has_dataset("raw.cn_a.daily")) {
+        std::cout << "  SELECT * FROM raw_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
+                  << "  SELECT symbol, count(*) FROM raw_cn_a_daily GROUP BY symbol;\n";
+    } else if (has_dataset("silver.cn_a.daily")) {
         std::cout << "  SELECT * FROM silver_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
                   << "  SELECT symbol, count(*) FROM silver_cn_a_daily GROUP BY symbol;\n";
     } else if (!views.empty()) {

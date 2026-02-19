@@ -19,7 +19,8 @@ struct IngestionConfig {
     int incremental_lookback_days = 5;         // overlap window for correction
     std::string min_start_date = "2020-01-01"; // lower bound for historical pulls
     std::string daily_bar_dataset = "cn_a_daily_bar";
-    bool write_raw_layer = false;              // keep raw market copy in addition to silver
+    bool write_raw_layer = true;               // persist provider output to raw layer
+    bool write_silver_layer = false;           // optional normalized/enriched copy
 };
 
 struct EastMoneyConfig {
