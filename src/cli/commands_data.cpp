@@ -220,15 +220,10 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
 // ============================================================================
 int cmd_collect(const CliArgs& args, const trade::Config& config) {
     const std::string action = args.action.empty() ? "raw" : args.action;
-    if (action == "raw" || action == "full") {
+    if (action == "raw") {
         trade::Config stage_cfg = config;
-        if (action == "raw") {
-            stage_cfg.ingestion.write_silver_layer = false;
-            stage_cfg.ingestion.write_raw_layer = true;
-        } else {
-            stage_cfg.ingestion.write_raw_layer = true;
-            stage_cfg.ingestion.write_silver_layer = true;
-        }
+        stage_cfg.ingestion.write_silver_layer = false;
+        stage_cfg.ingestion.write_raw_layer = true;
 
         app::DownloadRequest request;
         request.symbol = args.symbol;
@@ -237,6 +232,56 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         if (!args.start_date.empty()) request.start = parse_date(args.start_date);
         if (!args.end_date.empty()) request.end = parse_date(args.end_date);
         return app::run_download(request, stage_cfg);
+    }
+
+    if (action == "full") {
+        trade::Config raw_cfg = config;
+        raw_cfg.ingestion.write_silver_layer = false;
+        raw_cfg.ingestion.write_raw_layer = true;
+
+        app::DownloadRequest request;
+        request.symbol = args.symbol;
+        request.provider = args.provider;
+        request.refresh = args.refresh;
+        if (!args.start_date.empty()) request.start = parse_date(args.start_date);
+        if (!args.end_date.empty()) request.end = parse_date(args.end_date);
+
+        int rc = app::run_download(request, raw_cfg);
+        if (rc != 0) return rc;
+
+        auto provider = ProviderFactory::create(args.provider, config);
+        if (!provider->ping()) {
+            spdlog::error("Cannot connect to {} provider", args.provider);
+            return 1;
+        }
+
+        trade::Config silver_cfg = config;
+        silver_cfg.ingestion.write_raw_layer = false;
+        silver_cfg.ingestion.write_silver_layer = true;
+        Collector collector(std::move(provider), silver_cfg);
+
+        auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+        Date start = args.start_date.empty()
+            ? parse_date(silver_cfg.ingestion.min_start_date)
+            : parse_date(args.start_date);
+        Date end = args.end_date.empty() ? today : parse_date(args.end_date);
+
+        if (!args.symbol.empty()) {
+            auto report = collector.build_silver_symbol(args.symbol, start, end);
+            std::cout << "Built silver for " << args.symbol
+                      << " (rows=" << report.total_bars
+                      << ", quality=" << std::fixed << std::setprecision(1)
+                      << (report.quality_score() * 100) << "%)"
+                      << std::endl;
+        } else {
+            collector.build_silver_all(start, end,
+                [](const Symbol& sym, int cur, int total) {
+                    std::cout << "\r[full:silver " << cur << "/" << total << "] " << sym
+                              << "                " << std::flush;
+                });
+            std::cout << "\nFull pipeline complete." << std::endl;
+        }
+        return 0;
     }
 
     if (action == "silver") {

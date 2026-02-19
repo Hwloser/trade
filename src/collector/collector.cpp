@@ -198,6 +198,9 @@ Collector::Collector(std::unique_ptr<IDataProvider> provider,
 
 QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date end) {
     spdlog::info("Collecting {} [{}, {}]", symbol, format_date(start), format_date(end));
+    if (config_.ingestion.write_silver_layer) {
+        spdlog::debug("write_silver_layer is ignored in collect; use build_silver_* from raw");
+    }
     const std::string run_id = provider_->name() + "_collect_" + symbol + "_" +
         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
@@ -209,115 +212,33 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         return QualityReport{};
     }
 
-    // 2. Build optional silver bars from raw bars
-    std::vector<Bar> silver_bars;
-    Board board = Board::kMain;
-    if (config_.ingestion.write_silver_layer) {
-        silver_bars = BarNormalizer::normalize(raw_bars);
-
-        // 3. Compute price limits for silver layer
-        board = (!silver_bars.empty() && silver_bars[0].board != Board::kMain)
-            ? silver_bars[0].board : Board::kMain;
-        BarNormalizer::compute_limits(silver_bars, board);
-
-        // 4. Merge northbound data by date (optional) into silver layer
-        if (provider_->supports_northbound() && !silver_bars.empty()) {
-            std::set<Date> dates;
-            for (const auto& bar : silver_bars) dates.insert(bar.date);
-
-            for (const auto& d : dates) {
-                auto cache_it = northbound_cache_.find(d);
-                if (cache_it == northbound_cache_.end()) {
-                    northbound_cache_.emplace(d, provider_->fetch_northbound(d));
-                }
-            }
-
-            for (auto& bar : silver_bars) {
-                auto dit = northbound_cache_.find(bar.date);
-                if (dit == northbound_cache_.end()) continue;
-                auto sit = dit->second.find(bar.symbol);
-                if (sit != dit->second.end()) {
-                    bar.north_net_buy = sit->second;
-                }
-            }
-        }
-
-        // 5. Merge margin data by date (optional) into silver layer
-        if (provider_->supports_margin() && !silver_bars.empty()) {
-            std::set<Date> dates;
-            for (const auto& bar : silver_bars) dates.insert(bar.date);
-
-            for (const auto& d : dates) {
-                auto cache_it = margin_cache_.find(d);
-                if (cache_it == margin_cache_.end()) {
-                    margin_cache_.emplace(d, provider_->fetch_margin(d));
-                }
-            }
-
-            for (auto& bar : silver_bars) {
-                auto dit = margin_cache_.find(bar.date);
-                if (dit == margin_cache_.end()) continue;
-                auto sit = dit->second.find(bar.symbol);
-                if (sit != dit->second.end()) {
-                    bar.margin_balance = sit->second;
-                }
-            }
-        }
-    }
-
-    // 6. Validate output window (raw by default, silver when enabled)
-    const auto& quality_bars =
-        config_.ingestion.write_silver_layer ? silver_bars : raw_bars;
-    auto report = DataValidator::validate(quality_bars);
+    // 2. Validate raw window.
+    auto report = DataValidator::validate(raw_bars);
     if (!report.is_clean()) {
         for (const auto& w : report.warnings) {
             spdlog::warn("{}: {}", symbol, w);
         }
     }
 
-    // 7. Partition by year and write raw (+ optional silver)
-    const bool write_raw =
-        config_.ingestion.write_raw_layer || !config_.ingestion.write_silver_layer;
-    if (!config_.ingestion.write_raw_layer && !config_.ingestion.write_silver_layer) {
-        spdlog::warn("Both write_raw_layer and write_silver_layer are false; forcing raw write");
+    // 3. Partition by year and write raw only.
+    if (!config_.ingestion.write_raw_layer) {
+        spdlog::warn("write_raw_layer=false ignored: collect always writes raw");
     }
     bool raw_changed = false;
-    if (write_raw) {
-        std::map<int, std::vector<Bar>> raw_by_year;
-        for (const auto& bar : raw_bars) {
-            raw_by_year[date_year(bar.date)].push_back(bar);
-        }
-        for (auto& [year, year_raw] : raw_by_year) {
-            auto raw_path = paths_.raw_daily(symbol, year);
-            Date max_date = start;
-            for (const auto& b : year_raw) {
-                if (b.date > max_date) max_date = b.date;
-            }
-            raw_changed = merge_and_write_raw_bars(raw_path, std::move(year_raw), max_date) || raw_changed;
-        }
-        if (!raw_changed) {
-            spdlog::info("{} raw layer unchanged (skip rewrite)", symbol);
-        }
+    std::map<int, std::vector<Bar>> raw_by_year;
+    for (const auto& bar : raw_bars) {
+        raw_by_year[date_year(bar.date)].push_back(bar);
     }
-
-    bool silver_changed = false;
-    if (config_.ingestion.write_silver_layer) {
-        std::map<int, std::vector<Bar>> silver_by_year;
-        for (const auto& bar : silver_bars) {
-            silver_by_year[date_year(bar.date)].push_back(bar);
+    for (auto& [year, year_raw] : raw_by_year) {
+        auto raw_path = paths_.raw_daily(symbol, year);
+        Date max_date = start;
+        for (const auto& b : year_raw) {
+            if (b.date > max_date) max_date = b.date;
         }
-        for (auto& [year, year_silver] : silver_by_year) {
-            auto silver_path = paths_.silver_daily(symbol, year);
-            Date max_date = start;
-            for (const auto& b : year_silver) {
-                if (b.date > max_date) max_date = b.date;
-            }
-            silver_changed = merge_and_write_silver_bars(
-                silver_path, std::move(year_silver), board, max_date) || silver_changed;
-        }
-        if (!silver_changed) {
-            spdlog::info("{} silver layer unchanged (skip rewrite)", symbol);
-        }
+        raw_changed = merge_and_write_raw_bars(raw_path, std::move(year_raw), max_date) || raw_changed;
+    }
+    if (!raw_changed) {
+        spdlog::info("{} raw layer unchanged (skip rewrite)", symbol);
     }
 
     // 8. Upsert instrument record
@@ -346,19 +267,15 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
                                        symbol,
                                        "{}",
                                        batch_end);
-    if (raw_changed || silver_changed) {
-        const std::string quality_dataset = config_.ingestion.write_silver_layer
-            ? "silver.cn_a.daily"
-            : "raw.cn_a.daily";
-        record_market_quality(metadata_, run_id, quality_dataset, symbol, report, batch_end);
+    if (raw_changed) {
+        record_market_quality(metadata_, run_id, "raw.cn_a.daily", symbol, report, batch_end);
     } else {
         spdlog::debug("{} no partition changed, skip quality check insert", symbol);
     }
 
-    spdlog::info("Collected {} raw bars for {} (silver={}; quality: {:.1f}%)",
+    spdlog::info("Collected {} raw bars for {} (quality: {:.1f}%)",
                  raw_bars.size(),
                  symbol,
-                 config_.ingestion.write_silver_layer ? "on" : "off",
                  report.quality_score() * 100);
     return report;
 }
