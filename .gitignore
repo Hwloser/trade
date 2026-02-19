@@ -25,6 +25,7 @@ dist/
 # Data (too large for git)
 data/raw/
 data/curated/
+data/silver/
 data/models/*.model
 data/models/sentiment/*.onnx
 
