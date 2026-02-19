@@ -49,9 +49,11 @@ int run_download(const DownloadRequest& request, const Config& config) {
     if (!request.symbol.empty()) {
         Date start;
         Date end = request.end.value_or(std::chrono::floor<std::chrono::days>(now_tp));
+        std::optional<Date> current_wm;
         if (!request.refresh && !request.start) {
             int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
             auto wm = metadata.last_watermark_date(request.provider, dataset, request.symbol);
+            current_wm = wm;
             if (wm) {
                 start = *wm - std::chrono::days{lookback_days};
                 if (start < min_start) start = min_start;
@@ -88,7 +90,11 @@ int run_download(const DownloadRequest& request, const Config& config) {
             }
         }
         const int dedup_hours = std::max(0, config.ingestion.request_dedup_hours);
+        const bool explicit_window_request = request.start.has_value() || request.end.has_value();
+        const bool watermark_covers_end = current_wm.has_value() && (*current_wm >= end);
+        const bool dedup_eligible = explicit_window_request || watermark_covers_end;
         if (!request.refresh && dedup_hours > 0 &&
+            dedup_eligible &&
             (has_local_raw_partition || cloud_mode) &&
             metadata.has_recent_successful_request(request.provider,
                                                    dataset,
