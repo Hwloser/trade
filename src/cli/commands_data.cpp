@@ -318,6 +318,14 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         return 1;
     }
 
+    const bool no_pull_args = args.symbol.empty() &&
+                              args.start_date.empty() &&
+                              args.end_date.empty() &&
+                              !args.refresh;
+    if (no_pull_args) {
+        spdlog::info("collect without explicit args -> full refresh all symbols from min_start_date");
+    }
+
     trade::Config stage_cfg = config;
     stage_cfg.ingestion.write_silver_layer = false;
     stage_cfg.ingestion.write_raw_layer = true;
@@ -325,8 +333,12 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
     app::DownloadRequest request;
     request.symbol = args.symbol;
     request.provider = args.provider;
-    request.refresh = args.refresh;
-    if (!args.start_date.empty()) request.start = parse_date(args.start_date);
+    request.refresh = args.refresh || no_pull_args;
+    if (!args.start_date.empty()) {
+        request.start = parse_date(args.start_date);
+    } else if (no_pull_args) {
+        request.start = parse_date(config.ingestion.min_start_date);
+    }
     if (!args.end_date.empty()) request.end = parse_date(args.end_date);
     return app::run_download(request, stage_cfg);
 }
