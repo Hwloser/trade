@@ -12,7 +12,9 @@
 #include "trade/storage/storage_path.h"
 #include "trade/validator/data_validator.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -21,6 +23,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <spdlog/spdlog.h>
@@ -120,6 +123,12 @@ public:
 
     bool ping() override { return true; }
 };
+
+std::atomic<bool> g_stream_stop{false};
+
+void on_stream_signal(int) {
+    g_stream_stop.store(true);
+}
 
 } // namespace
 
@@ -250,8 +259,61 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         return app::run_sentiment(sentiment_request, config);
     }
 
+    if (action == "stream") {
+        if (args.symbol.empty()) {
+            spdlog::error("collect --action stream requires --symbol list (comma-separated).");
+            return 1;
+        }
+        if (args.start_date.empty()) {
+            spdlog::error("collect --action stream requires --start.");
+            return 1;
+        }
+        if (!args.end_date.empty()) {
+            spdlog::warn("--end is ignored in stream mode; end is always current time.");
+        }
+
+        trade::Config stage_cfg = config;
+        stage_cfg.ingestion.write_silver_layer = false;
+        stage_cfg.ingestion.write_raw_layer = true;
+
+        app::DownloadRequest request;
+        request.symbol = args.symbol;
+        request.provider = args.provider;
+        request.refresh = false;
+        request.start = parse_date(args.start_date);
+
+        const int interval_sec = std::max(1, config.ingestion.stream_poll_interval_sec);
+        g_stream_stop.store(false);
+        auto prev_handler = std::signal(SIGINT, on_stream_signal);
+
+        std::cout << "Stream collection started (provider=" << request.provider
+                  << ", symbols=" << request.symbol
+                  << ", poll=" << interval_sec << "s). Press Ctrl+C to stop."
+                  << std::endl;
+
+        int cycle = 0;
+        int rc = 0;
+        while (!g_stream_stop.load()) {
+            ++cycle;
+            spdlog::info("stream cycle {}", cycle);
+            rc = app::run_download(request, stage_cfg);
+            if (rc != 0) {
+                std::signal(SIGINT, prev_handler);
+                return rc;
+            }
+
+            for (int i = 0; i < interval_sec && !g_stream_stop.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
+
+        std::signal(SIGINT, prev_handler);
+        std::cout << "Stream collection stopped." << std::endl;
+        return rc;
+    }
+
     if (action != "raw") {
-        spdlog::error("Unsupported collect action '{}'. Use raw|sentiment|all", action);
+        spdlog::error("Unsupported collect action '{}'. Use raw|sentiment|all|stream", action);
         return 1;
     }
 

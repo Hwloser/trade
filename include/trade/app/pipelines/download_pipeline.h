@@ -8,7 +8,7 @@
 namespace trade::app {
 
 struct DownloadRequest {
-    std::string symbol;
+    std::string symbol; // single symbol or comma-separated symbol list
     std::optional<Date> start;
     std::optional<Date> end;
     std::string provider = "eastmoney";

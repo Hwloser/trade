@@ -7,10 +7,12 @@
 #include "trade/storage/storage_path.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <unordered_set>
 #include <spdlog/spdlog.h>
 
 namespace trade::app {
@@ -22,6 +24,38 @@ std::pair<Date, Date> resolve_request_dates(const DownloadRequest& request,
     auto end = request.end.value_or(
         std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
     return {start, end};
+}
+
+std::string trim_copy(std::string s) {
+    auto not_space = [](unsigned char c) { return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
+    s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
+    return s;
+}
+
+std::vector<Symbol> parse_symbol_list(const std::string& raw) {
+    std::vector<Symbol> out;
+    std::unordered_set<std::string> seen;
+    std::string token;
+
+    auto flush = [&]() {
+        auto sym = trim_copy(token);
+        token.clear();
+        if (sym.empty()) return;
+        if (seen.insert(sym).second) {
+            out.push_back(sym);
+        }
+    };
+
+    for (char ch : raw) {
+        if (ch == ',' || ch == ';') {
+            flush();
+        } else {
+            token.push_back(ch);
+        }
+    }
+    flush();
+    return out;
 }
 
 } // namespace
@@ -45,46 +79,94 @@ int run_download(const DownloadRequest& request, const Config& config) {
     auto min_start = parse_date(config.ingestion.min_start_date);
     if (default_start < min_start) default_start = min_start;
     std::string default_start_str = format_date(default_start);
+    auto symbols = parse_symbol_list(request.symbol);
 
-    if (!request.symbol.empty()) {
-        Date start;
-        Date end = request.end.value_or(std::chrono::floor<std::chrono::days>(now_tp));
-        std::optional<Date> current_wm;
-        if (!request.refresh && !request.start) {
-            int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
-            auto wm = metadata.last_watermark_date(request.provider, dataset, request.symbol);
-            current_wm = wm;
-            if (wm) {
-                start = *wm - std::chrono::days{lookback_days};
+    // Incremental update contract:
+    // 1) Must provide explicit symbol list.
+    // 2) Must provide bootstrap start date.
+    if (!request.refresh) {
+        if (symbols.empty()) {
+            spdlog::error("Incremental mode requires --symbol list (comma-separated).");
+            return 1;
+        }
+        if (!request.start.has_value()) {
+            spdlog::error("Incremental mode requires --start (bootstrap boundary).");
+            return 1;
+        }
+    }
+
+    if (request.start && request.end && *request.start > *request.end) {
+        spdlog::error("Invalid date range: --start > --end");
+        return 1;
+    }
+
+    if (symbols.empty()) {
+        // Keep full-refresh all-symbol backfill behavior.
+        std::string run_id = request.provider + "_dl_all_" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                now_tp.time_since_epoch()).count());
+        metadata.begin_ingestion_run(run_id, request.provider, dataset, "*", "full");
+        try {
+            auto [start_all, end_all] = resolve_request_dates(request, default_start_str);
+            collector.collect_all(start_all, end_all,
+                [](const Symbol& sym, int cur, int total) {
+                    std::cout << "\r[" << cur << "/" << total << "] " << sym
+                              << "                " << std::flush;
+                });
+            metadata.finish_ingestion_run(run_id, true, 0, 0);
+            std::cout << "\nDownload complete." << std::endl;
+        } catch (const std::exception& e) {
+            metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
+            throw;
+        }
+        return 0;
+    }
+
+    int success_symbols = 0;
+    int skipped_symbols = 0;
+    for (const auto& symbol : symbols) {
+        Date end = request.end.value_or(now_day);
+        Date start = request.start.value_or(default_start);
+        std::optional<Date> current_wm =
+            metadata.last_watermark_date(request.provider, dataset, symbol);
+
+        if (!request.refresh) {
+            const int lookback_days = std::max(0, config.ingestion.incremental_lookback_days);
+            Date bootstrap_start = *request.start;
+            if (bootstrap_start < min_start) bootstrap_start = min_start;
+
+            if (current_wm) {
+                start = *current_wm - std::chrono::days{lookback_days};
+                if (start < bootstrap_start) start = bootstrap_start;
                 if (start < min_start) start = min_start;
-                spdlog::info("Incremental from watermark {} (lookback {}d => {})",
-                             format_date(*wm), lookback_days, format_date(start));
+                spdlog::info("Incremental {} from watermark {} (lookback {}d => {}, bootstrap {})",
+                             symbol,
+                             format_date(*current_wm),
+                             lookback_days,
+                             format_date(start),
+                             format_date(bootstrap_start));
             } else {
-                auto last = metadata.last_download_date(request.symbol);
-                if (last) {
-                    start = next_trading_day(*last);
-                    if (start < min_start) start = min_start;
-                    spdlog::info("Incremental from last download {} (start: {})",
-                                 format_date(*last), format_date(start));
-                } else {
-                    start = default_start;
-                }
+                start = bootstrap_start;
+                spdlog::info("Incremental {} bootstrap from start {} (no watermark)",
+                             symbol,
+                             format_date(start));
             }
 
             if (start > end) {
-                std::cout << "Already up to date (last target: "
-                          << format_date(end) << ")" << std::endl;
-                return 0;
+                std::cout << "Already up to date for " << symbol
+                          << " (last target: " << format_date(end) << ")" << std::endl;
+                ++skipped_symbols;
+                continue;
             }
         } else {
-            start = request.start.value_or(default_start);
+            if (start < min_start) start = min_start;
         }
 
         const bool cloud_mode = config.storage.enabled &&
             (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
         bool has_local_raw_partition = false;
         for (int y = date_year(start); y <= date_year(end); ++y) {
-            if (std::filesystem::exists(paths.raw_daily(request.symbol, y))) {
+            if (std::filesystem::exists(paths.raw_daily(symbol, y))) {
                 has_local_raw_partition = true;
                 break;
             }
@@ -98,44 +180,46 @@ int run_download(const DownloadRequest& request, const Config& config) {
             (has_local_raw_partition || cloud_mode) &&
             metadata.has_recent_successful_request(request.provider,
                                                    dataset,
-                                                   request.symbol,
+                                                   symbol,
                                                    start,
                                                    end,
                                                    dedup_hours)) {
-            std::cout << "Skip duplicate request for " << request.symbol
+            std::cout << "Skip duplicate request for " << symbol
                       << " [" << format_date(start) << ", " << format_date(end)
                       << "] within " << dedup_hours << "h window." << std::endl;
-            return 0;
+            ++skipped_symbols;
+            continue;
         }
 
-        std::string run_id = request.provider + "_dl_" + request.symbol + "_" +
+        std::string run_id = request.provider + "_dl_" + symbol + "_" +
             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                now_tp.time_since_epoch()).count());
+                std::chrono::system_clock::now().time_since_epoch()).count());
         std::string mode = request.refresh ? "full" : "incremental";
-        metadata.begin_ingestion_run(run_id, request.provider, dataset, request.symbol, mode);
+        metadata.begin_ingestion_run(run_id, request.provider, dataset, symbol, mode);
 
         try {
-            auto report = collector.collect_symbol(request.symbol, start, end);
+            auto report = collector.collect_symbol(symbol, start, end);
             metadata.finish_ingestion_run(run_id, true,
                                           static_cast<int64_t>(report.total_bars),
                                           static_cast<int64_t>(report.valid_bars));
             metadata.record_request_fingerprint(request.provider,
                                                 dataset,
-                                                request.symbol,
+                                                symbol,
                                                 start,
                                                 end,
                                                 "success",
                                                 run_id,
                                                 static_cast<int64_t>(report.total_bars));
 
-            std::cout << "Downloaded " << report.total_bars << " bars for " << request.symbol
+            std::cout << "Downloaded " << report.total_bars << " bars for " << symbol
                       << " (quality: " << std::fixed << std::setprecision(1)
                       << (report.quality_score() * 100) << "%)" << std::endl;
+            ++success_symbols;
         } catch (const std::exception& e) {
             metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
             metadata.record_request_fingerprint(request.provider,
                                                 dataset,
-                                                request.symbol,
+                                                symbol,
                                                 start,
                                                 end,
                                                 "failed",
@@ -143,34 +227,12 @@ int run_download(const DownloadRequest& request, const Config& config) {
                                                 0);
             throw;
         }
-    } else {
-        std::string run_id = request.provider + "_dl_all_" +
-            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                now_tp.time_since_epoch()).count());
-        std::string mode = request.refresh ? "full" : "incremental";
-        metadata.begin_ingestion_run(run_id, request.provider, dataset, "*", mode);
+    }
 
-        try {
-            if (request.refresh) {
-                auto [start_all, end_all] = resolve_request_dates(request, default_start_str);
-                collector.collect_all(start_all, end_all,
-                    [](const Symbol& sym, int cur, int total) {
-                        std::cout << "\r[" << cur << "/" << total << "] " << sym
-                                 << "                " << std::flush;
-                    });
-            } else {
-                collector.update_all(
-                    [](const Symbol& sym, int cur, int total) {
-                        std::cout << "\r[" << cur << "/" << total << "] " << sym
-                                 << "                " << std::flush;
-                    });
-            }
-            metadata.finish_ingestion_run(run_id, true, 0, 0);
-            std::cout << "\nDownload complete." << std::endl;
-        } catch (const std::exception& e) {
-            metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
-            throw;
-        }
+    if (symbols.size() > 1) {
+        std::cout << "Download summary: success=" << success_symbols
+                  << ", skipped=" << skipped_symbols
+                  << ", total=" << symbols.size() << std::endl;
     }
 
     return 0;

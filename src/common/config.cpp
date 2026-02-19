@@ -118,6 +118,9 @@ Config Config::load(const std::string& path) {
             if (n["request_dedup_hours"]) {
                 cfg.ingestion.request_dedup_hours = n["request_dedup_hours"].as<int>();
             }
+            if (n["stream_poll_interval_sec"]) {
+                cfg.ingestion.stream_poll_interval_sec = n["stream_poll_interval_sec"].as<int>();
+            }
             // Backward compatibility: old curated naming maps to silver layer.
             if (n["write_curated_layer"]) {
                 cfg.ingestion.write_silver_layer = n["write_curated_layer"].as<bool>();

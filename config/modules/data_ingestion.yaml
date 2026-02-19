@@ -13,3 +13,4 @@ ingestion:
   write_raw_layer: true
   write_silver_layer: false
   request_dedup_hours: 24
+  stream_poll_interval_sec: 60

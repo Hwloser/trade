@@ -30,7 +30,7 @@ Commands:
 
 Options:
   --config <path>       Config path (file or dir, default: config)
-  --symbol <symbol>     Stock symbol (e.g., 600000.SH)
+  --symbol <symbol>     Stock symbol(s), comma-separated (e.g., 600000.SH,000001.SZ)
   --start <date>        Start date (YYYY-MM-DD)
   --end <date>          End date (YYYY-MM-DD)
   --provider <name>     Data provider (default: eastmoney)
@@ -45,7 +45,7 @@ Options:
   --role <level>        CLI role: user|admin (default from config/security)
   --admin-token <tok>   Admin token (or env TRADE_ADMIN_TOKEN)
   --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
-                        collect: raw|sentiment|all (default: raw)
+                        collect: raw|sentiment|all|stream (default: raw)
                         cleanup: audit|apply
   --account-id <id>     Brokerage account id
   --broker <name>       Broker id/name (e.g., ths)

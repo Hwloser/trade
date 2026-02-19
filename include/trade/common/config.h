@@ -22,6 +22,7 @@ struct IngestionConfig {
     bool write_raw_layer = true;               // persist provider output to raw layer
     bool write_silver_layer = false;           // optional normalized/enriched copy
     int request_dedup_hours = 24;              // skip identical successful requests within window
+    int stream_poll_interval_sec = 60;         // polling interval for collect --action stream
 };
 
 struct EastMoneyConfig {
