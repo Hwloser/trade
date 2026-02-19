@@ -141,6 +141,13 @@ Config Config::load(const std::string& path) {
             if (n["mirror_hot_to_cloud"]) {
                 cfg.storage.mirror_hot_to_cloud = n["mirror_hot_to_cloud"].as<bool>();
             }
+            if (n["ttl_global_days"]) cfg.storage.ttl_global_days = n["ttl_global_days"].as<int>();
+            if (n["ttl_raw_days"]) cfg.storage.ttl_raw_days = n["ttl_raw_days"].as<int>();
+            if (n["ttl_silver_days"]) cfg.storage.ttl_silver_days = n["ttl_silver_days"].as<int>();
+            if (n["ttl_gold_days"]) cfg.storage.ttl_gold_days = n["ttl_gold_days"].as<int>();
+            if (n["ttl_sentiment_raw_days"]) {
+                cfg.storage.ttl_sentiment_raw_days = n["ttl_sentiment_raw_days"].as<int>();
+            }
             if (n["baidu_app_id"]) cfg.storage.baidu_app_id = n["baidu_app_id"].as<std::string>();
             if (n["baidu_root"]) cfg.storage.baidu_root = n["baidu_root"].as<std::string>();
             if (n["baidu_access_token"]) {
@@ -227,6 +234,36 @@ Config Config::load(const std::string& path) {
             if (n["incremental_lookback_days"]) {
                 cfg.sentiment.incremental_lookback_days = n["incremental_lookback_days"].as<int>();
             }
+            if (n["xueqiu_cookie"]) cfg.sentiment.xueqiu_cookie = n["xueqiu_cookie"].as<std::string>();
+            if (n["xueqiu_user_agent"]) {
+                cfg.sentiment.xueqiu_user_agent = n["xueqiu_user_agent"].as<std::string>();
+            }
+            if (n["xueqiu_timeout_ms"]) {
+                cfg.sentiment.xueqiu_timeout_ms = n["xueqiu_timeout_ms"].as<int>();
+            }
+            if (n["xueqiu_rate_limit_ms"]) {
+                cfg.sentiment.xueqiu_rate_limit_ms = n["xueqiu_rate_limit_ms"].as<int>();
+            }
+            if (n["xueqiu_retry_count"]) {
+                cfg.sentiment.xueqiu_retry_count = n["xueqiu_retry_count"].as<int>();
+            }
+            if (n["xueqiu_max_pages"]) {
+                cfg.sentiment.xueqiu_max_pages = n["xueqiu_max_pages"].as<int>();
+            }
+            if (n["jin10_api_key"]) cfg.sentiment.jin10_api_key = n["jin10_api_key"].as<std::string>();
+            if (n["jin10_base_url"]) cfg.sentiment.jin10_base_url = n["jin10_base_url"].as<std::string>();
+            if (n["jin10_timeout_ms"]) {
+                cfg.sentiment.jin10_timeout_ms = n["jin10_timeout_ms"].as<int>();
+            }
+            if (n["jin10_rate_limit_ms"]) {
+                cfg.sentiment.jin10_rate_limit_ms = n["jin10_rate_limit_ms"].as<int>();
+            }
+            if (n["jin10_retry_count"]) {
+                cfg.sentiment.jin10_retry_count = n["jin10_retry_count"].as<int>();
+            }
+            if (n["jin10_max_items_per_request"]) {
+                cfg.sentiment.jin10_max_items_per_request = n["jin10_max_items_per_request"].as<int>();
+            }
             if (n["rss_feeds"] && n["rss_feeds"].IsSequence()) {
                 cfg.sentiment.rss_feeds.clear();
                 for (const auto& feed : n["rss_feeds"]) {
@@ -237,6 +274,17 @@ Config Config::load(const std::string& path) {
                         cfg.sentiment.rss_feeds.push_back(std::move(f));
                     }
                 }
+            }
+        }
+
+        if (cfg.sentiment.xueqiu_cookie.empty()) {
+            if (const char* v = std::getenv("XUEQIU_COOKIE")) {
+                cfg.sentiment.xueqiu_cookie = v;
+            }
+        }
+        if (cfg.sentiment.jin10_api_key.empty()) {
+            if (const char* v = std::getenv("JIN10_API_KEY")) {
+                cfg.sentiment.jin10_api_key = v;
             }
         }
 

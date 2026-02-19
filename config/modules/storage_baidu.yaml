@@ -5,6 +5,11 @@ storage:
   hot_days: 30
   keep_local_cold_copy: false
   mirror_hot_to_cloud: false
+  ttl_global_days: 0               # 0 = disabled
+  ttl_raw_days: 0
+  ttl_silver_days: 0
+  ttl_gold_days: 0
+  ttl_sentiment_raw_days: 7
   baidu_app_id: "122110021"
   baidu_root: "/apps/trade"
   baidu_access_token: ""

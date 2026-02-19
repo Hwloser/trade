@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <optional>
 #include <sstream>
 #include <thread>
 
@@ -131,6 +134,50 @@ static std::string atom_link_href(const std::string& xml, size_t start_pos = 0) 
     return xml.substr(href_pos, end_pos - href_pos);
 }
 
+static std::string trim(std::string s) {
+    auto l = s.find_first_not_of(" \t\r\n");
+    if (l == std::string::npos) return "";
+    auto r = s.find_last_not_of(" \t\r\n");
+    return s.substr(l, r - l + 1);
+}
+
+static Timestamp parse_feed_time(const std::string& raw) {
+    auto now = std::chrono::system_clock::now();
+    std::string s = trim(raw);
+    if (s.empty()) return now;
+
+    // RFC-822 with timezone suffix, e.g. "Thu, 20 Feb 2026 08:30:00 GMT"
+    auto try_parse_tm = [&](const std::string& t, const char* fmt) -> std::optional<std::tm> {
+        std::tm tm{};
+        std::istringstream iss(t);
+        iss >> std::get_time(&tm, fmt);
+        if (!iss.fail()) return tm;
+        return std::nullopt;
+    };
+
+    std::string no_tz = s;
+    auto last_space = s.find_last_of(' ');
+    if (last_space != std::string::npos) {
+        std::string tz = s.substr(last_space + 1);
+        bool tz_token = false;
+        if (tz == "GMT" || tz == "UTC" || tz == "CST") tz_token = true;
+        if (!tz.empty() && (tz[0] == '+' || tz[0] == '-')) tz_token = true;
+        if (tz_token) no_tz = s.substr(0, last_space);
+    }
+
+    if (auto tm = try_parse_tm(no_tz, "%a, %d %b %Y %H:%M:%S")) {
+        return std::chrono::system_clock::from_time_t(std::mktime(&*tm));
+    }
+    if (auto tm = try_parse_tm(no_tz, "%Y-%m-%dT%H:%M:%S")) {
+        return std::chrono::system_clock::from_time_t(std::mktime(&*tm));
+    }
+    if (auto tm = try_parse_tm(no_tz, "%Y-%m-%d %H:%M:%S")) {
+        return std::chrono::system_clock::from_time_t(std::mktime(&*tm));
+    }
+
+    return now;
+}
+
 std::vector<TextEvent> RssSource::fetch_feed(const FeedInfo& feed) {
     // Enforce rate limit for this host
     std::string host = extract_host(feed.url);
@@ -186,7 +233,11 @@ std::vector<TextEvent> RssSource::parse_rss(const std::string& xml,
         ev.title = xml_tag_content(item_xml, "title");
         ev.url = xml_tag_content(item_xml, "link");
         ev.raw_text = xml_tag_content(item_xml, "description");
-        ev.timestamp = std::chrono::system_clock::now(); // Default; pubDate parsing below
+        ev.timestamp = std::chrono::system_clock::now(); // Default fallback
+        auto pub_date = xml_tag_content(item_xml, "pubDate");
+        if (!pub_date.empty()) {
+            ev.timestamp = parse_feed_time(pub_date);
+        }
 
         // Strip HTML from title and description
         ev.title = TextCleaner::remove_html_tags(ev.title);
@@ -244,7 +295,16 @@ std::vector<TextEvent> RssSource::parse_atom(const std::string& xml,
             ev.raw_text = xml_tag_content(entry_xml, "content");
         }
 
-        ev.timestamp = std::chrono::system_clock::now(); // Default timestamp
+        ev.timestamp = std::chrono::system_clock::now();
+        auto updated = xml_tag_content(entry_xml, "updated");
+        if (!updated.empty()) {
+            ev.timestamp = parse_feed_time(updated);
+        } else {
+            auto published = xml_tag_content(entry_xml, "published");
+            if (!published.empty()) {
+                ev.timestamp = parse_feed_time(published);
+            }
+        }
 
         // Strip HTML from title and body
         ev.title = TextCleaner::remove_html_tags(ev.title);

@@ -7,6 +7,18 @@ sentiment:
   default_history_days: 30
   incremental_lookback_days: 1
   rss_fetch_interval_min: 15
+  xueqiu_cookie: ""                # or env XUEQIU_COOKIE
+  xueqiu_user_agent: "Mozilla/5.0"
+  xueqiu_timeout_ms: 15000
+  xueqiu_rate_limit_ms: 3000
+  xueqiu_retry_count: 2
+  xueqiu_max_pages: 5
+  jin10_api_key: ""                # or env JIN10_API_KEY
+  jin10_base_url: "https://open.jin10.com"
+  jin10_timeout_ms: 10000
+  jin10_rate_limit_ms: 1000
+  jin10_retry_count: 3
+  jin10_max_items_per_request: 100
   rss_feeds:
     - name: "CLS"
       url: "https://rsshub.app/cls/telegraph"

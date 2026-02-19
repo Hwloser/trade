@@ -240,6 +240,7 @@ std::string build_metadata_views_sql(const Config& config) {
     std::vector<std::vector<std::string>> file_rows;
     std::vector<std::vector<std::string>> schema_rows;
     std::vector<std::vector<std::string>> quality_rows;
+    std::vector<std::vector<std::string>> tombstone_rows;
     std::vector<std::vector<std::string>> account_rows;
     std::vector<std::vector<std::string>> account_cash_rows;
     std::vector<std::vector<std::string>> account_position_rows;
@@ -329,6 +330,16 @@ std::string build_metadata_views_sql(const Config& config) {
             sql_string(c.run_id),
         });
     }
+    auto tombstones = metadata.list_dataset_tombstones("", 200);
+    for (const auto& t : tombstones) {
+        tombstone_rows.push_back({
+            sql_string(t.dataset_id),
+            sql_string(t.file_path),
+            std::to_string(t.version),
+            sql_string(t.reason),
+            sql_date_or_null(t.max_event_date),
+        });
+    }
 
     std::string sql;
     sql += build_values_view_sql(
@@ -349,6 +360,10 @@ std::string build_metadata_views_sql(const Config& config) {
         {"dataset_id", "check_name", "status", "severity", "metric_value", "threshold_value",
          "message", "event_date", "run_id"},
         quality_rows);
+    sql += build_values_view_sql(
+        "meta_dataset_tombstones_recent",
+        {"dataset_id", "file_path", "version", "reason", "max_event_date"},
+        tombstone_rows);
     sql += build_values_view_sql(
         "meta_accounts",
         {"account_id", "broker", "account_name", "is_active"},

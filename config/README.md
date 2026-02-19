@@ -7,8 +7,8 @@ It supports `includes` and merges module files in order.
 
 - `config/modules/data_ingestion.yaml`: data root and ingestion windows (`raw/silver`, incremental/backfill)
 - `config/modules/provider_eastmoney.yaml`: provider connectivity
-- `config/modules/storage_baidu.yaml`: local/cloud storage policy + Baidu credentials
-- `config/modules/sentiment.yaml`: sentiment pipeline defaults + RSS feeds
+- `config/modules/storage_baidu.yaml`: local/cloud storage policy + Baidu credentials + TTL retention
+- `config/modules/sentiment.yaml`: sentiment pipeline defaults + RSS/Xueqiu/Jin10 source config
 
 ## Usage
 
@@ -25,3 +25,5 @@ It supports `includes` and merges module files in order.
    - `BAIDU_REFRESH_TOKEN`
    - `BAIDU_APP_KEY`
    - `BAIDU_APP_SECRET`
+   - `XUEQIU_COOKIE`
+   - `JIN10_API_KEY`

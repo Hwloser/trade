@@ -7,6 +7,7 @@ namespace trade::cli {
 
 int cmd_verify(const CliArgs& args, const Config& config);
 int cmd_download(const CliArgs& args, const Config& config);
+int cmd_cleanup(const CliArgs& args, const Config& config);
 int cmd_info(const CliArgs& args, const Config& config);
 int cmd_view(const CliArgs& args, const Config& config);
 int cmd_sql(const CliArgs& args, const Config& config);

@@ -156,17 +156,16 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
             std::set<Date> dates;
             for (const auto& bar : silver_bars) dates.insert(bar.date);
 
-            std::unordered_map<Date, std::unordered_map<Symbol, double>> north_by_date;
             for (const auto& d : dates) {
-                auto north = provider_->fetch_northbound(d);
-                if (!north.empty()) {
-                    north_by_date.emplace(d, std::move(north));
+                auto cache_it = northbound_cache_.find(d);
+                if (cache_it == northbound_cache_.end()) {
+                    northbound_cache_.emplace(d, provider_->fetch_northbound(d));
                 }
             }
 
             for (auto& bar : silver_bars) {
-                auto dit = north_by_date.find(bar.date);
-                if (dit == north_by_date.end()) continue;
+                auto dit = northbound_cache_.find(bar.date);
+                if (dit == northbound_cache_.end()) continue;
                 auto sit = dit->second.find(bar.symbol);
                 if (sit != dit->second.end()) {
                     bar.north_net_buy = sit->second;
@@ -179,17 +178,16 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
             std::set<Date> dates;
             for (const auto& bar : silver_bars) dates.insert(bar.date);
 
-            std::unordered_map<Date, std::unordered_map<Symbol, double>> margin_by_date;
             for (const auto& d : dates) {
-                auto margin = provider_->fetch_margin(d);
-                if (!margin.empty()) {
-                    margin_by_date.emplace(d, std::move(margin));
+                auto cache_it = margin_cache_.find(d);
+                if (cache_it == margin_cache_.end()) {
+                    margin_cache_.emplace(d, provider_->fetch_margin(d));
                 }
             }
 
             for (auto& bar : silver_bars) {
-                auto dit = margin_by_date.find(bar.date);
-                if (dit == margin_by_date.end()) continue;
+                auto dit = margin_cache_.find(bar.date);
+                if (dit == margin_cache_.end()) continue;
                 auto sit = dit->second.find(bar.symbol);
                 if (sit != dit->second.end()) {
                     bar.margin_balance = sit->second;

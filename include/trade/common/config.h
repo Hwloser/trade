@@ -47,6 +47,14 @@ struct StorageConfig {
     bool keep_local_cold_copy = false;
     bool mirror_hot_to_cloud = false;
 
+    // Retention/TTL policy (0 = disabled)
+    // Priority: dataset-specific (future) > layer-specific > global.
+    int ttl_global_days = 0;
+    int ttl_raw_days = 0;
+    int ttl_silver_days = 0;
+    int ttl_gold_days = 0;
+    int ttl_sentiment_raw_days = 7;
+
     // Baidu Netdisk OpenAPI credentials
     std::string baidu_app_id = "";
     std::string baidu_root = "/apps/trade";
@@ -107,6 +115,22 @@ struct SentimentConfig {
     int default_history_days = 30;
     int incremental_lookback_days = 1;
     std::vector<SentimentFeedConfig> rss_feeds;
+
+    // Xueqiu source
+    std::string xueqiu_cookie = "";
+    std::string xueqiu_user_agent = "Mozilla/5.0";
+    int xueqiu_timeout_ms = 15000;
+    int xueqiu_rate_limit_ms = 3000;
+    int xueqiu_retry_count = 2;
+    int xueqiu_max_pages = 5;
+
+    // Jin10 source
+    std::string jin10_api_key = "";
+    std::string jin10_base_url = "https://open.jin10.com";
+    int jin10_timeout_ms = 10000;
+    int jin10_rate_limit_ms = 1000;
+    int jin10_retry_count = 3;
+    int jin10_max_items_per_request = 100;
 };
 
 struct Config {

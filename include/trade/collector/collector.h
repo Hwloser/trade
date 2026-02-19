@@ -7,7 +7,9 @@
 #include "trade/normalizer/bar_normalizer.h"
 #include "trade/validator/data_validator.h"
 #include "trade/common/config.h"
+#include <map>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace trade {
@@ -34,6 +36,11 @@ private:
     StoragePath paths_;
     MetadataStore metadata_;
     Config config_;
+
+    // Cache optional per-date side datasets to avoid repeated provider calls
+    // when collecting many symbols in the same run.
+    std::map<Date, std::unordered_map<Symbol, double>> northbound_cache_;
+    std::map<Date, std::unordered_map<Symbol, double>> margin_cache_;
 };
 
 } // namespace trade

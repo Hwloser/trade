@@ -199,6 +199,19 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
         )
     )");
 
+    // Soft-delete records (tombstones) for lifecycle / recovery workflow.
+    impl_->exec(R"(
+        CREATE TABLE IF NOT EXISTS dataset_tombstones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dataset_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            max_event_date TEXT,
+            deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    )");
+
     // Data-quality events (checks, thresholds, pass/fail).
     impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS quality_checks (
@@ -321,6 +334,7 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_stream_checkpoints_lookup ON stream_checkpoints(source, stream, shard)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_training_snapshots_dataset ON training_snapshots(dataset_id, created_at)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_file_versions_lookup ON dataset_file_versions(dataset_id, file_path, version)");
+    impl_->exec("CREATE INDEX IF NOT EXISTS idx_dataset_tombstones_lookup ON dataset_tombstones(dataset_id, deleted_at)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_broker_accounts_active ON broker_accounts(is_active, broker)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_account_cash_lookup ON account_cash_snapshots(account_id, as_of_date)");
     impl_->exec("CREATE INDEX IF NOT EXISTS idx_account_position_lookup ON account_position_snapshots(account_id, as_of_date, symbol)");
@@ -864,6 +878,126 @@ MetadataStore::list_dataset_file_versions(const std::string& dataset_id,
         r.max_event_date = read_date_column(stmt, 4);
         r.run_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
         r.content_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        out.push_back(std::move(r));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+void MetadataStore::delete_dataset_file(const std::string& dataset_id,
+                                        const std::string& file_path,
+                                        const std::string& reason) {
+    impl_->exec("BEGIN TRANSACTION");
+    try {
+        int cur_version = 0;
+        std::optional<Date> max_event_date;
+
+        const char* sql_get = R"(
+            SELECT current_version, max_event_date
+            FROM dataset_files
+            WHERE dataset_id = ? AND file_path = ?
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, sql_get, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                cur_version = sqlite3_column_int(stmt, 0);
+                max_event_date = read_date_column(stmt, 1);
+            }
+        }
+        sqlite3_finalize(stmt);
+
+        const char* sql_tomb = R"(
+            INSERT INTO dataset_tombstones
+            (dataset_id, file_path, version, reason, max_event_date, deleted_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        )";
+        stmt = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, sql_tomb, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 3, cur_version);
+            sqlite3_bind_text(stmt, 4, reason.c_str(), -1, SQLITE_TRANSIENT);
+            bind_date_or_null(stmt, 5, max_event_date);
+            (void)sqlite3_step(stmt);
+        } else {
+            spdlog::warn("Failed to prepare dataset_tombstones insert: {}",
+                         sqlite3_errmsg(impl_->db));
+        }
+        sqlite3_finalize(stmt);
+
+        const char* sql_del = R"(
+            DELETE FROM dataset_files
+            WHERE dataset_id = ? AND file_path = ?
+        )";
+        stmt = nullptr;
+        if (sqlite3_prepare_v2(impl_->db, sql_del, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                spdlog::error("Failed to delete dataset file {} {}: {}",
+                              dataset_id, file_path, sqlite3_errmsg(impl_->db));
+            }
+        } else {
+            spdlog::error("Failed to prepare delete dataset file: {}",
+                          sqlite3_errmsg(impl_->db));
+        }
+        sqlite3_finalize(stmt);
+        impl_->exec("COMMIT");
+    } catch (...) {
+        impl_->exec("ROLLBACK");
+        throw;
+    }
+}
+
+int MetadataStore::prune_empty_datasets() {
+    const char* sql = R"(
+        DELETE FROM dataset_catalog
+        WHERE dataset_id NOT IN (
+            SELECT DISTINCT dataset_id FROM dataset_files
+        )
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare prune_empty_datasets: {}", sqlite3_errmsg(impl_->db));
+        return 0;
+    }
+    int before = sqlite3_total_changes(impl_->db);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to prune empty datasets: {}", sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+    int after = sqlite3_total_changes(impl_->db);
+    return std::max(0, after - before);
+}
+
+std::vector<MetadataStore::DatasetTombstoneRecord>
+MetadataStore::list_dataset_tombstones(const std::string& dataset_id, int limit) {
+    std::vector<DatasetTombstoneRecord> out;
+    const char* sql = R"(
+        SELECT dataset_id, file_path, version, reason, max_event_date
+        FROM dataset_tombstones
+        WHERE (? = '' OR dataset_id = ?)
+        ORDER BY id DESC
+        LIMIT ?
+    )";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare list_dataset_tombstones: {}", sqlite3_errmsg(impl_->db));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, clamp_limit(limit));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        DatasetTombstoneRecord r;
+        r.dataset_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        r.file_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.version = sqlite3_column_int(stmt, 2);
+        r.reason = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        r.max_event_date = read_date_column(stmt, 4);
         out.push_back(std::move(r));
     }
     sqlite3_finalize(stmt);

@@ -15,6 +15,7 @@ Usage:
 
 Commands:
   download    Download market data (incremental by default)
+  cleanup     Audit/clean data files and metadata lifecycle
   verify      Verify local/cloud/sql data pipeline
   view        (Paused) Use sql for querying data
   sql         Open DuckDB SQL shell with data pre-loaded
@@ -42,6 +43,7 @@ Options:
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
   --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
+                        cleanup: audit|apply
   --account-id <id>     Brokerage account id
   --broker <name>       Broker id/name (e.g., ths)
   --name <name>         Account display name

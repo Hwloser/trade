@@ -81,6 +81,14 @@ public:
         std::string content_hash;
     };
 
+    struct DatasetTombstoneRecord {
+        std::string dataset_id;
+        std::string file_path;
+        int version = 0;
+        std::string reason;
+        std::optional<Date> max_event_date;
+    };
+
     explicit MetadataStore(const std::string& db_path);
     ~MetadataStore();
 
@@ -141,6 +149,13 @@ public:
     std::vector<DatasetFileVersionRecord> list_dataset_file_versions(
         const std::string& dataset_id,
         const std::string& file_path);
+    void delete_dataset_file(const std::string& dataset_id,
+                             const std::string& file_path,
+                             const std::string& reason = "cleanup");
+    int prune_empty_datasets();
+    std::vector<DatasetTombstoneRecord> list_dataset_tombstones(
+        const std::string& dataset_id,
+        int limit = 100);
 
     // Schema registry
     void upsert_schema(const std::string& dataset_id,

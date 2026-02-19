@@ -8,6 +8,7 @@
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
 #include "trade/storage/storage_path.h"
+#include "trade/validator/data_validator.h"
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 #include <algorithm>
@@ -17,11 +18,93 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <spdlog/spdlog.h>
 
 namespace trade::cli {
+namespace {
+
+bool cloud_mode_enabled(const trade::Config& config) {
+    return config.storage.enabled &&
+        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+}
+
+int days_old(Date d) {
+    auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    return static_cast<int>(std::chrono::duration_cast<std::chrono::days>(now - d).count());
+}
+
+bool is_legacy_curated_dataset(const std::string& dataset_id, const std::string& layer) {
+    return layer == "curated" || dataset_id.rfind("curated.", 0) == 0;
+}
+
+int ttl_days_for_dataset(const trade::Config& config,
+                         const trade::MetadataStore::DatasetRecord& ds) {
+    if (ds.dataset_id.rfind("raw.sentiment.", 0) == 0 &&
+        config.storage.ttl_sentiment_raw_days > 0) {
+        return config.storage.ttl_sentiment_raw_days;
+    }
+    if (ds.layer == "raw" && config.storage.ttl_raw_days > 0) {
+        return config.storage.ttl_raw_days;
+    }
+    if (ds.layer == "silver" && config.storage.ttl_silver_days > 0) {
+        return config.storage.ttl_silver_days;
+    }
+    if (ds.layer == "gold" && config.storage.ttl_gold_days > 0) {
+        return config.storage.ttl_gold_days;
+    }
+    if (config.storage.ttl_global_days > 0) {
+        return config.storage.ttl_global_days;
+    }
+    return 0;
+}
+
+bool is_valid_raw_bar(const Bar& b) {
+    if (b.open <= 0 || b.high <= 0 || b.low <= 0 || b.close <= 0) return false;
+    if (b.high < b.low) return false;
+    if (b.high < b.open || b.high < b.close) return false;
+    if (b.low > b.open || b.low > b.close) return false;
+    if (b.volume < 0 || b.amount < 0) return false;
+    if (b.volume > 0 && b.amount <= 0) return false;
+    if (b.volume == 0 && b.amount > 0) return false;
+    return true;
+}
+
+std::vector<Bar> sanitize_raw_bars(const std::vector<Bar>& bars,
+                                   int64_t* invalid_dropped,
+                                   int64_t* duplicate_dropped) {
+    int64_t bad = 0;
+    std::map<Date, Bar> by_date;
+    int64_t valid_rows = 0;
+    for (const auto& b : bars) {
+        if (!is_valid_raw_bar(b)) {
+            ++bad;
+            continue;
+        }
+        ++valid_rows;
+        by_date[b.date] = b;  // latest wins on duplicate dates
+    }
+
+    std::vector<Bar> cleaned;
+    cleaned.reserve(by_date.size());
+    for (const auto& [_, b] : by_date) {
+        cleaned.push_back(b);
+    }
+
+    if (invalid_dropped) *invalid_dropped = bad;
+    if (duplicate_dropped) *duplicate_dropped = std::max<int64_t>(0, valid_rows - cleaned.size());
+    return cleaned;
+}
+
+std::string symbol_from_file_path(const std::string& rel_path) {
+    return std::filesystem::path(rel_path).stem().string();
+}
+
+} // namespace
+
 int cmd_verify(const CliArgs& args, const trade::Config& config) {
     bool ok_local = false;
     bool ok_cloud = false;
@@ -128,6 +211,182 @@ int cmd_download(const CliArgs& args, const trade::Config& config) {
         request.end = parse_date(args.end_date);
     }
     return app::run_download(request, config);
+}
+
+// ============================================================================
+// cleanup
+// ============================================================================
+int cmd_cleanup(const CliArgs& args, const trade::Config& config) {
+    const bool apply = (args.action == "apply");
+    const bool cloud_mode = cloud_mode_enabled(config);
+    const std::string mode = apply ? "apply" : "audit";
+
+    trade::StoragePath paths(config.data.data_root);
+    trade::MetadataStore metadata(paths.metadata_db());
+    auto datasets = metadata.list_datasets();
+
+    std::unordered_map<std::string, trade::MetadataStore::DatasetRecord> ds_by_id;
+    ds_by_id.reserve(datasets.size());
+    for (const auto& ds : datasets) {
+        ds_by_id[ds.dataset_id] = ds;
+    }
+
+    int files_total = 0;
+    int files_missing_local = 0;
+    int files_ttl_expired = 0;
+    int files_legacy_curated = 0;
+    int files_removed = 0;
+    int raw_files_dirty = 0;
+    int raw_files_cleaned = 0;
+    int64_t raw_rows_removed = 0;
+
+    std::cout << "=== Data Cleanup (" << mode << ") ===\n"
+              << "Data root: " << config.data.data_root << "\n"
+              << "Cloud mode: " << (cloud_mode ? "enabled" : "disabled") << "\n"
+              << "TTL policy (days): global=" << config.storage.ttl_global_days
+              << ", raw=" << config.storage.ttl_raw_days
+              << ", silver=" << config.storage.ttl_silver_days
+              << ", gold=" << config.storage.ttl_gold_days
+              << ", raw.sentiment=" << config.storage.ttl_sentiment_raw_days
+              << "\n";
+
+    for (const auto& ds : datasets) {
+        auto files = metadata.list_dataset_files(ds.dataset_id);
+        for (const auto& f : files) {
+            if (!args.symbol.empty()) {
+                auto file_symbol = symbol_from_file_path(f.file_path);
+                if (file_symbol != args.symbol) continue;
+            }
+            ++files_total;
+
+            const std::filesystem::path abs_path =
+                std::filesystem::path(config.data.data_root) / f.file_path;
+            const bool exists_local = std::filesystem::exists(abs_path);
+
+            bool removed = false;
+            if (!exists_local && !cloud_mode) {
+                ++files_missing_local;
+                if (apply) {
+                    metadata.delete_dataset_file(ds.dataset_id, f.file_path, "missing_local_file");
+                    ++files_removed;
+                    removed = true;
+                }
+            }
+
+            if (!removed) {
+                const int ttl_days = ttl_days_for_dataset(config, ds);
+                if (ttl_days > 0 && f.max_event_date &&
+                    days_old(*f.max_event_date) > ttl_days) {
+                    ++files_ttl_expired;
+                    if (apply) {
+                        if (cloud_mode && !exists_local) {
+                            spdlog::warn("Skip TTL delete for cloud-only file not present locally: {}",
+                                         f.file_path);
+                            continue;
+                        }
+                        if (exists_local) {
+                            std::error_code ec;
+                            std::filesystem::remove(abs_path, ec);
+                            if (ec) {
+                                spdlog::warn("Failed to remove expired file {}: {}",
+                                             abs_path.string(), ec.message());
+                            }
+                        }
+                        metadata.delete_dataset_file(ds.dataset_id,
+                                                     f.file_path,
+                                                     "ttl_expired_" + std::to_string(ttl_days) + "d");
+                        ++files_removed;
+                        removed = true;
+                    }
+                }
+            }
+
+            if (!removed && is_legacy_curated_dataset(ds.dataset_id, ds.layer)) {
+                ++files_legacy_curated;
+                if (apply) {
+                    if (exists_local) {
+                        std::error_code ec;
+                        std::filesystem::remove(abs_path, ec);
+                        if (ec) {
+                            spdlog::warn("Failed to remove legacy curated file {}: {}",
+                                         abs_path.string(), ec.message());
+                        }
+                    }
+                    metadata.delete_dataset_file(ds.dataset_id, f.file_path, "legacy_curated_cleanup");
+                    ++files_removed;
+                    removed = true;
+                }
+            }
+
+            if (removed) continue;
+
+            // Raw cleaning layer: sanitize only market raw bars
+            if (ds.dataset_id == "raw.cn_a.daily" && exists_local) {
+                std::vector<Bar> bars;
+                try {
+                    bars = trade::ParquetReader::read_bars(abs_path.string());
+                } catch (const std::exception& e) {
+                    spdlog::warn("Failed to read raw bars {}: {}", abs_path.string(), e.what());
+                    continue;
+                }
+                auto report = trade::DataValidator::validate(bars);
+                const bool dirty =
+                    report.duplicate_dates > 0 ||
+                    report.price_anomalies > 0 ||
+                    report.volume_anomalies > 0;
+                if (!dirty) continue;
+
+                ++raw_files_dirty;
+                if (!apply) continue;
+
+                int64_t invalid_dropped = 0;
+                int64_t duplicate_dropped = 0;
+                auto cleaned = sanitize_raw_bars(
+                    bars, &invalid_dropped, &duplicate_dropped);
+                raw_rows_removed += invalid_dropped + duplicate_dropped;
+
+                if (cleaned.empty()) {
+                    std::error_code ec;
+                    std::filesystem::remove(abs_path, ec);
+                    metadata.delete_dataset_file(ds.dataset_id, f.file_path, "cleaned_to_empty");
+                    ++files_removed;
+                    continue;
+                }
+
+                Date max_date = cleaned.front().date;
+                for (const auto& b : cleaned) {
+                    if (b.date > max_date) max_date = b.date;
+                }
+                trade::ParquetStore::write_bars(abs_path.string(),
+                                                cleaned,
+                                                trade::ParquetStore::MergeMode::kReplace,
+                                                max_date);
+                ++raw_files_cleaned;
+            }
+        }
+    }
+
+    int datasets_pruned = 0;
+    if (apply) {
+        datasets_pruned = metadata.prune_empty_datasets();
+    }
+
+    std::cout << "[Summary] files_total=" << files_total
+              << " missing_local=" << files_missing_local
+              << " ttl_expired=" << files_ttl_expired
+              << " legacy_curated=" << files_legacy_curated
+              << " raw_dirty=" << raw_files_dirty
+              << "\n";
+    std::cout << "[Action] files_removed=" << files_removed
+              << " raw_cleaned=" << raw_files_cleaned
+              << " raw_rows_removed=" << raw_rows_removed
+              << " datasets_pruned=" << datasets_pruned
+              << "\n";
+
+    if (!apply) {
+        std::cout << "Dry run only. Use: trade_cli cleanup --action apply --config <path>\n";
+    }
+    return 0;
 }
 
 
@@ -374,6 +633,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     }
     std::cout << "  SELECT * FROM meta_dataset_catalog;\n"
               << "  SELECT * FROM meta_dataset_files ORDER BY dataset_id, file_path LIMIT 50;\n"
+              << "  SELECT * FROM meta_dataset_tombstones_recent LIMIT 50;\n"
               << "  SELECT * FROM meta_quality_checks_recent WHERE status <> 'pass';\n"
               << "  SELECT * FROM meta_accounts;\n"
               << "  SELECT * FROM meta_account_positions;\n";

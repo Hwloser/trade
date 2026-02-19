@@ -1,11 +1,13 @@
 #include "trade/app/pipelines/sentiment_pipeline.h"
 
 #include "trade/common/time_utils.h"
+#include "trade/sentiment/jin10_source.h"
 #include "trade/sentiment/rss_source.h"
 #include "trade/sentiment/rule_sentiment.h"
 #include "trade/sentiment/sentiment_factor.h"
 #include "trade/sentiment/symbol_linker.h"
 #include "trade/sentiment/text_cleaner.h"
+#include "trade/sentiment/xueqiu_source.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
@@ -17,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -77,11 +80,6 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
     std::string src = request.source.empty() ? config.sentiment.default_source : request.source;
     spdlog::info("Sentiment (source: {})", src);
 
-    if (src != "rss") {
-        spdlog::error("CLI supports 'rss' source; '{}' requires API credentials", src);
-        return 1;
-    }
-
     StoragePath paths(config.data.data_root);
     MetadataStore metadata(paths.metadata_db());
 
@@ -104,16 +102,55 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
     metadata.begin_ingestion_run(run_id, src, "sentiment_pipeline", src, "incremental");
 
     try {
-        RssSource rss;
-        if (config.sentiment.rss_feeds.empty()) {
-            spdlog::error("sentiment.rss_feeds is empty in config");
+        std::unique_ptr<ITextSource> text_source;
+        if (src == "rss") {
+            auto rss = std::make_unique<RssSource>();
+            if (config.sentiment.rss_feeds.empty()) {
+                spdlog::error("sentiment.rss_feeds is empty in config");
+                return 1;
+            }
+            for (const auto& feed : config.sentiment.rss_feeds) {
+                rss->add_feed(feed.url, feed.name);
+            }
+            text_source = std::move(rss);
+        } else if (src == "xueqiu") {
+            XueqiuSource::Config xcfg;
+            xcfg.cookie = config.sentiment.xueqiu_cookie;
+            xcfg.user_agent = config.sentiment.xueqiu_user_agent;
+            xcfg.timeout_ms = config.sentiment.xueqiu_timeout_ms;
+            xcfg.rate_limit_ms = config.sentiment.xueqiu_rate_limit_ms;
+            xcfg.retry_count = config.sentiment.xueqiu_retry_count;
+            xcfg.max_pages = config.sentiment.xueqiu_max_pages;
+
+            auto xueqiu = std::make_unique<XueqiuSource>(xcfg);
+            if (!xueqiu->is_available()) {
+                if (!xueqiu->refresh_cookie()) {
+                    spdlog::error("xueqiu source unavailable: set sentiment.xueqiu_cookie or env XUEQIU_COOKIE");
+                    return 1;
+                }
+            }
+            text_source = std::move(xueqiu);
+        } else if (src == "jin10") {
+            Jin10Source::Config jcfg;
+            jcfg.api_key = config.sentiment.jin10_api_key;
+            jcfg.base_url = config.sentiment.jin10_base_url;
+            jcfg.timeout_ms = config.sentiment.jin10_timeout_ms;
+            jcfg.rate_limit_ms = config.sentiment.jin10_rate_limit_ms;
+            jcfg.retry_count = config.sentiment.jin10_retry_count;
+            jcfg.max_items_per_request = config.sentiment.jin10_max_items_per_request;
+
+            auto jin10 = std::make_unique<Jin10Source>(jcfg);
+            if (!jin10->is_available()) {
+                spdlog::error("jin10 source unavailable: set sentiment.jin10_api_key or env JIN10_API_KEY");
+                return 1;
+            }
+            text_source = std::move(jin10);
+        } else {
+            spdlog::error("Unsupported sentiment source '{}'. Use rss|xueqiu|jin10", src);
             return 1;
         }
-        for (const auto& feed : config.sentiment.rss_feeds) {
-            rss.add_feed(feed.url, feed.name);
-        }
 
-        auto events = rss.fetch_range(start, end);
+        auto events = text_source->fetch_range(start, end);
         if (events.empty()) {
             MetadataStore::QualityCheckRecord qc;
             qc.run_id = run_id;
