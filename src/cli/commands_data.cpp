@@ -1,6 +1,7 @@
 #include "trade/cli/commands.h"
 
 #include "trade/app/pipelines/download_pipeline.h"
+#include "trade/app/pipelines/sentiment_pipeline.h"
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
 #include "trade/collector/collector.h"
@@ -220,8 +221,39 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 // ============================================================================
 int cmd_collect(const CliArgs& args, const trade::Config& config) {
     const std::string action = args.action.empty() ? "raw" : args.action;
+    if (action == "sentiment") {
+        app::SentimentRequest request;
+        request.symbol = args.symbol;
+        request.source = args.source;
+        if (!args.start_date.empty()) request.start = parse_date(args.start_date);
+        if (!args.end_date.empty()) request.end = parse_date(args.end_date);
+        return app::run_sentiment(request, config);
+    }
+
+    if (action == "all") {
+        trade::Config stage_cfg = config;
+        stage_cfg.ingestion.write_silver_layer = false;
+        stage_cfg.ingestion.write_raw_layer = true;
+
+        app::DownloadRequest market_request;
+        market_request.symbol = args.symbol;
+        market_request.provider = args.provider;
+        market_request.refresh = args.refresh;
+        if (!args.start_date.empty()) market_request.start = parse_date(args.start_date);
+        if (!args.end_date.empty()) market_request.end = parse_date(args.end_date);
+        int rc = app::run_download(market_request, stage_cfg);
+        if (rc != 0) return rc;
+
+        app::SentimentRequest sentiment_request;
+        sentiment_request.symbol = args.symbol;
+        sentiment_request.source = args.source;
+        if (!args.start_date.empty()) sentiment_request.start = parse_date(args.start_date);
+        if (!args.end_date.empty()) sentiment_request.end = parse_date(args.end_date);
+        return app::run_sentiment(sentiment_request, config);
+    }
+
     if (action != "raw") {
-        spdlog::error("collect only supports raw ingestion. Use 'silver' command for raw->silver build.");
+        spdlog::error("Unsupported collect action '{}'. Use raw|sentiment|all", action);
         return 1;
     }
 
@@ -675,7 +707,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         std::cout << "  data   - specific file/symbol data\n";
     }
     if (views.empty() && !data_view_ready) {
-        std::cout << "  (no local parquet found yet; run collect/sentiment first)\n";
+        std::cout << "  (no local parquet found yet; run collect first)\n";
     }
     std::cout << "\nExample queries:\n";
     if (has_dataset("raw.cn_a.daily")) {
@@ -687,7 +719,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     } else if (!views.empty()) {
         std::cout << "  SELECT * FROM " << views.front().view_name << " LIMIT 20;\n";
     } else {
-        std::cout << "  -- no dataset views yet; run collect/sentiment first\n";
+        std::cout << "  -- no dataset views yet; run collect first\n";
     }
     if (data_view_ready) {
         std::cout << "  SELECT * FROM data LIMIT 20;\n";

@@ -25,7 +25,6 @@ Commands:
   predict     Generate predictions
   risk        Assess risk for a position
   backtest    Run backtest
-  sentiment   Analyze sentiment from RSS feeds
   account     Manage brokerage account snapshots in metadata.db
   report      Generate decision report
   info        (Paused) Use sql for querying metadata
@@ -45,6 +44,7 @@ Options:
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
   --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
+                        collect: raw|sentiment|all (default: raw)
                         cleanup: audit|apply
   --account-id <id>     Brokerage account id
   --broker <name>       Broker id/name (e.g., ths)

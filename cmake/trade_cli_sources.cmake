@@ -4,7 +4,6 @@ set(TRADE_CLI_SOURCES
     src/cli/shared.cpp
     src/cli/commands_data.cpp
     src/cli/commands_analysis.cpp
-    src/cli/commands_sentiment.cpp
     src/cli/commands_account.cpp
     src/cli/commands_report.cpp
 )
