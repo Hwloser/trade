@@ -28,6 +28,7 @@ struct PreprocessorConfig {
     double price_upper_pct = 0.995;
     double fund_lower_pct = 0.01;
     double fund_upper_pct = 0.99;
+    bool apply_winsorize = true;
 
     // Feature names whose winsorization uses fundamental bounds.
     // Everything else uses price bounds.
@@ -47,6 +48,7 @@ struct PreprocessorConfig {
         kZScore,        // (x - mean) / std   -- suitable for linear models
         kQuantileRank,  // percentile rank [0, 1] -- suitable for tree models
     };
+    bool apply_standardize = true;
     StandardizeMode mode = StandardizeMode::kZScore;
 };
 

@@ -191,8 +191,10 @@ FeatureSet FeatureEngine::preprocess(
     PreprocessorConfig pp_cfg;
     pp_cfg.forward_fill = config_.fill_missing;
     pp_cfg.add_is_missing_flag = config_.fill_missing;
+    pp_cfg.apply_winsorize = config_.winsorize;
     pp_cfg.neutralize_industry = config_.neutralize;
     pp_cfg.neutralize_market_cap = config_.neutralize;
+    pp_cfg.apply_standardize = config_.standardize;
     pp_cfg.mode = config_.standardize_mode;
 
     Preprocessor pp(pp_cfg);

@@ -15,6 +15,7 @@ struct CliArgs {
     std::string strategy;
     std::string source;
     std::string output;
+    std::string scale = "zscore";
     std::string file;
     std::string action;
     std::string account_id;

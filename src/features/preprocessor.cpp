@@ -230,9 +230,11 @@ Eigen::MatrixXd Preprocessor::run(
     }
 
     // 2. Winsorization
-    for (int c = 0; c < n_cols; ++c) {
-        auto [lo, hi] = winsor_bounds(feature_names[c]);
-        winsorize(mat, c, lo, hi, date_idx);
+    if (config_.apply_winsorize) {
+        for (int c = 0; c < n_cols; ++c) {
+            auto [lo, hi] = winsor_bounds(feature_names[c]);
+            winsorize(mat, c, lo, hi, date_idx);
+        }
     }
 
     // 3. Neutralization
@@ -259,11 +261,13 @@ Eigen::MatrixXd Preprocessor::run(
     }
 
     // 4. Standardization
-    for (int c = 0; c < n_cols; ++c) {
-        if (config_.mode == PreprocessorConfig::StandardizeMode::kZScore) {
-            standardize_zscore(mat, c, date_idx);
-        } else {
-            standardize_quantile_rank(mat, c, date_idx);
+    if (config_.apply_standardize) {
+        for (int c = 0; c < n_cols; ++c) {
+            if (config_.mode == PreprocessorConfig::StandardizeMode::kZScore) {
+                standardize_zscore(mat, c, date_idx);
+            } else {
+                standardize_quantile_rank(mat, c, date_idx);
+            }
         }
     }
 

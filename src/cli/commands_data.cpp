@@ -4,7 +4,6 @@
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
 #include "trade/collector/collector.h"
-#include "trade/provider/provider_factory.h"
 #include "trade/storage/baidu_netdisk_client.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
@@ -21,6 +20,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -104,6 +104,23 @@ std::vector<Bar> sanitize_raw_bars(const std::vector<Bar>& bars,
 std::string symbol_from_file_path(const std::string& rel_path) {
     return std::filesystem::path(rel_path).stem().string();
 }
+
+class RawOnlySilverProvider final : public IDataProvider {
+public:
+    std::string name() const override { return "raw_to_silver"; }
+
+    std::vector<Bar> fetch_daily(const Symbol& /*symbol*/,
+                                 Date /*start*/,
+                                 Date /*end*/) override {
+        throw std::runtime_error("RawOnlySilverProvider does not support fetch_daily");
+    }
+
+    std::vector<Instrument> fetch_instruments() override {
+        return {};
+    }
+
+    bool ping() override { return true; }
+};
 
 } // namespace
 
@@ -203,112 +220,64 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 // ============================================================================
 int cmd_collect(const CliArgs& args, const trade::Config& config) {
     const std::string action = args.action.empty() ? "raw" : args.action;
-    if (action == "raw") {
-        trade::Config stage_cfg = config;
-        stage_cfg.ingestion.write_silver_layer = false;
-        stage_cfg.ingestion.write_raw_layer = true;
-
-        app::DownloadRequest request;
-        request.symbol = args.symbol;
-        request.provider = args.provider;
-        request.refresh = args.refresh;
-        if (!args.start_date.empty()) request.start = parse_date(args.start_date);
-        if (!args.end_date.empty()) request.end = parse_date(args.end_date);
-        return app::run_download(request, stage_cfg);
+    if (action != "raw") {
+        spdlog::error("collect only supports raw ingestion. Use 'silver' command for raw->silver build.");
+        return 1;
     }
 
-    if (action == "full") {
-        trade::Config raw_cfg = config;
-        raw_cfg.ingestion.write_silver_layer = false;
-        raw_cfg.ingestion.write_raw_layer = true;
+    trade::Config stage_cfg = config;
+    stage_cfg.ingestion.write_silver_layer = false;
+    stage_cfg.ingestion.write_raw_layer = true;
 
-        app::DownloadRequest request;
-        request.symbol = args.symbol;
-        request.provider = args.provider;
-        request.refresh = args.refresh;
-        if (!args.start_date.empty()) request.start = parse_date(args.start_date);
-        if (!args.end_date.empty()) request.end = parse_date(args.end_date);
+    app::DownloadRequest request;
+    request.symbol = args.symbol;
+    request.provider = args.provider;
+    request.refresh = args.refresh;
+    if (!args.start_date.empty()) request.start = parse_date(args.start_date);
+    if (!args.end_date.empty()) request.end = parse_date(args.end_date);
+    return app::run_download(request, stage_cfg);
+}
 
-        int rc = app::run_download(request, raw_cfg);
-        if (rc != 0) return rc;
-
-        auto provider = ProviderFactory::create(args.provider, config);
-        if (!provider->ping()) {
-            spdlog::error("Cannot connect to {} provider", args.provider);
-            return 1;
-        }
-
-        trade::Config silver_cfg = config;
-        silver_cfg.ingestion.write_raw_layer = false;
-        silver_cfg.ingestion.write_silver_layer = true;
-        Collector collector(std::move(provider), silver_cfg);
-
-        auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-        Date start = args.start_date.empty()
-            ? parse_date(silver_cfg.ingestion.min_start_date)
-            : parse_date(args.start_date);
-        Date end = args.end_date.empty() ? today : parse_date(args.end_date);
-
-        if (!args.symbol.empty()) {
-            auto report = collector.build_silver_symbol(args.symbol, start, end);
-            std::cout << "Built silver for " << args.symbol
-                      << " (rows=" << report.total_bars
-                      << ", quality=" << std::fixed << std::setprecision(1)
-                      << (report.quality_score() * 100) << "%)"
-                      << std::endl;
-        } else {
-            collector.build_silver_all(start, end,
-                [](const Symbol& sym, int cur, int total) {
-                    std::cout << "\r[full:silver " << cur << "/" << total << "] " << sym
-                              << "                " << std::flush;
-                });
-            std::cout << "\nFull pipeline complete." << std::endl;
-        }
-        return 0;
+// ============================================================================
+// silver
+// ============================================================================
+int cmd_silver(const CliArgs& args, const trade::Config& config) {
+    if (!args.action.empty()) {
+        spdlog::error("silver command does not use --action. Use --symbol/--start/--end.");
+        return 1;
     }
 
-    if (action == "silver") {
-        auto provider = ProviderFactory::create(args.provider, config);
-        if (!provider->ping()) {
-            spdlog::error("Cannot connect to {} provider", args.provider);
-            return 1;
-        }
+    trade::Config stage_cfg = config;
+    stage_cfg.ingestion.write_raw_layer = false;
+    stage_cfg.ingestion.write_silver_layer = true;
+    Collector collector(std::make_unique<RawOnlySilverProvider>(), stage_cfg);
 
-        trade::Config stage_cfg = config;
-        stage_cfg.ingestion.write_raw_layer = false;
-        stage_cfg.ingestion.write_silver_layer = true;
-        Collector collector(std::move(provider), stage_cfg);
-
-        auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-        Date start = args.start_date.empty()
-            ? parse_date(stage_cfg.ingestion.min_start_date)
-            : parse_date(args.start_date);
-        Date end = args.end_date.empty() ? today : parse_date(args.end_date);
-        if (start > end) {
-            spdlog::error("Invalid date range: start > end");
-            return 1;
-        }
-
-        if (!args.symbol.empty()) {
-            auto report = collector.build_silver_symbol(args.symbol, start, end);
-            std::cout << "Built silver for " << args.symbol
-                      << " (rows=" << report.total_bars
-                      << ", quality=" << std::fixed << std::setprecision(1)
-                      << (report.quality_score() * 100) << "%)"
-                      << std::endl;
-        } else {
-            collector.build_silver_all(start, end,
-                [](const Symbol& sym, int cur, int total) {
-                    std::cout << "\r[silver " << cur << "/" << total << "] " << sym
-                              << "                " << std::flush;
-                });
-            std::cout << "\nSilver build complete." << std::endl;
-        }
-        return 0;
+    auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+    Date start = args.start_date.empty()
+        ? parse_date(stage_cfg.ingestion.min_start_date)
+        : parse_date(args.start_date);
+    Date end = args.end_date.empty() ? today : parse_date(args.end_date);
+    if (start > end) {
+        spdlog::error("Invalid date range: start > end");
+        return 1;
     }
 
-    spdlog::error("Unsupported collect action '{}'. Use raw|silver|full", action);
-    return 1;
+    if (!args.symbol.empty()) {
+        auto report = collector.build_silver_symbol(args.symbol, start, end);
+        std::cout << "Built silver for " << args.symbol
+                  << " (rows=" << report.total_bars
+                  << ", quality=" << std::fixed << std::setprecision(1)
+                  << (report.quality_score() * 100) << "%)"
+                  << std::endl;
+    } else {
+        collector.build_silver_all(start, end,
+            [](const Symbol& sym, int cur, int total) {
+                std::cout << "\r[silver " << cur << "/" << total << "] " << sym
+                          << "                " << std::flush;
+            });
+        std::cout << "\nSilver build complete." << std::endl;
+    }
+    return 0;
 }
 
 // ============================================================================

@@ -27,6 +27,7 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -44,6 +45,24 @@ int cmd_features(const CliArgs& args, const trade::Config& config) {
     if (args.symbol.empty()) {
         spdlog::error("--symbol required"); return 1;
     }
+    auto scale = args.scale;
+    std::transform(scale.begin(), scale.end(), scale.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    trade::FeatureEngine::Config feature_cfg;
+    if (scale == "none" || scale == "raw") {
+        feature_cfg.standardize = false;
+    } else if (scale == "zscore") {
+        feature_cfg.standardize = true;
+        feature_cfg.standardize_mode = trade::PreprocessorConfig::StandardizeMode::kZScore;
+    } else if (scale == "rank" || scale == "quantile" || scale == "quantile_rank") {
+        feature_cfg.standardize = true;
+        feature_cfg.standardize_mode = trade::PreprocessorConfig::StandardizeMode::kQuantileRank;
+    } else {
+        spdlog::error("Unsupported --scale '{}'. Use zscore|rank|none", args.scale);
+        return 1;
+    }
+
     auto bars = load_bars(args.symbol, config);
     if (bars.empty()) {
         spdlog::error("No data for {}", args.symbol); return 1;
@@ -53,7 +72,8 @@ int cmd_features(const CliArgs& args, const trade::Config& config) {
     for (const auto& b : bars)
         if (b.date >= start && b.date <= end) filtered.push_back(b);
 
-    spdlog::info("Computing features for {} ({} bars)", args.symbol, filtered.size());
+    spdlog::info("Computing features for {} ({} bars, scale={})",
+                 args.symbol, filtered.size(), scale);
 
     trade::BarSeries series;
     series.symbol = args.symbol;
@@ -62,7 +82,7 @@ int cmd_features(const CliArgs& args, const trade::Config& config) {
     std::unordered_map<trade::Symbol, trade::Instrument> instruments;
     instruments[args.symbol] = trade::Instrument{args.symbol};
 
-    trade::FeatureEngine engine;
+    trade::FeatureEngine engine(feature_cfg);
     engine.register_calculator(std::make_unique<trade::MomentumCalculator>());
     engine.register_calculator(std::make_unique<trade::VolatilityCalculator>());
     engine.register_calculator(std::make_unique<trade::LiquidityCalculator>());

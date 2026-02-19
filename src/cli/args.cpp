@@ -14,7 +14,8 @@ Usage:
   trade_cli <command> [options]
 
 Commands:
-  collect     Layered collection pipeline (raw|silver|full) for market data
+  collect     Collect market data into raw layer
+  silver      Build/clean silver layer from raw layer
   cleanup     Audit/clean data files and metadata lifecycle
   verify      Verify local/cloud/sql data pipeline
   view        (Paused) Use sql for querying data
@@ -36,6 +37,7 @@ Options:
   --end <date>          End date (YYYY-MM-DD)
   --provider <name>     Data provider (default: eastmoney)
   --refresh             Force full refresh (overwrite existing data)
+  --scale <mode>        Feature scaling: zscore|rank|none (features command)
   --file <path>         Parquet file path (for view command)
   --limit <n>           Max rows to display (for view command, default: all)
   --model <name>        Model name (e.g., lgbm)
@@ -43,7 +45,6 @@ Options:
   --source <name>       Sentiment source (rss, xueqiu, jin10)
   --output <path>       Output file path
   --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
-                        collect: raw|silver|full (default: raw)
                         cleanup: audit|apply
   --account-id <id>     Brokerage account id
   --broker <name>       Broker id/name (e.g., ths)
@@ -68,6 +69,7 @@ CliArgs parse_args(int argc, char* argv[]) {
         else if (arg == "--start" && i + 1 < argc) args.start_date = argv[++i];
         else if (arg == "--end" && i + 1 < argc) args.end_date = argv[++i];
         else if (arg == "--provider" && i + 1 < argc) args.provider = argv[++i];
+        else if (arg == "--scale" && i + 1 < argc) args.scale = argv[++i];
         else if (arg == "--model" && i + 1 < argc) args.model = argv[++i];
         else if (arg == "--strategy" && i + 1 < argc) args.strategy = argv[++i];
         else if (arg == "--source" && i + 1 < argc) args.source = argv[++i];

@@ -23,6 +23,7 @@ struct CommandEntry {
 
 constexpr CommandEntry kCommandRegistry[] = {
     {"collect", trade::cli::cmd_collect, false, nullptr},
+    {"silver", trade::cli::cmd_silver, false, nullptr},
     {"cleanup", trade::cli::cmd_cleanup, false, nullptr},
     {"verify", trade::cli::cmd_verify, false, nullptr},
     {"view", nullptr, true, "Command 'view' is paused. Use 'sql' for querying data."},
