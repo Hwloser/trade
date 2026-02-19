@@ -174,6 +174,7 @@ std::optional<Instrument> EastMoneyProvider::fetch_instrument(const Symbol& symb
             else if (suffix == "SZ") inst.market = Market::kSZ;
             else if (suffix == "BJ") inst.market = Market::kBJ;
         }
+        inst.market_name = market_name_from_enum(inst.market);
 
         if (code.starts_with("688")) inst.board = Board::kSTAR;
         else if (code.starts_with("3")) inst.board = Board::kChiNext;
@@ -290,6 +291,7 @@ std::vector<Instrument> EastMoneyProvider::parse_stock_list(
                 inst.market = Market::kSZ;
             }
         }
+        inst.market_name = market_name_from_enum(inst.market);
 
         inst.name = name_val;
 

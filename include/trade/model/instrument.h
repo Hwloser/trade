@@ -6,11 +6,24 @@
 
 namespace trade {
 
+inline const char* market_name_from_enum(Market market) {
+    switch (market) {
+        case Market::kSH: return "Shanghai";
+        case Market::kSZ: return "Shenzhen";
+        case Market::kBJ: return "Beijing";
+        case Market::kHK: return "Hong Kong";
+        case Market::kUS: return "US";
+        case Market::kCrypto: return "Crypto";
+    }
+    return "Unknown";
+}
+
 // Static instrument metadata
 struct Instrument {
     Symbol symbol;                  // "600000.SH"
     std::string name;              // "浦发银行"
     Market market = Market::kSH;
+    std::string market_name;       // human-friendly market label
     Board board = Board::kMain;
     SWIndustry industry = SWIndustry::kUnknown;
     Date list_date;                // 上市日期
@@ -38,6 +51,10 @@ struct Instrument {
     // Is it a new stock (< 120 trading days)?
     bool is_new_stock(Date today) const {
         return days_listed(today) < 120;
+    }
+
+    std::string market_label() const {
+        return market_name.empty() ? market_name_from_enum(market) : market_name;
     }
 };
 

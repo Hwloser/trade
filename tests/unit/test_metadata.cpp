@@ -62,6 +62,8 @@ TEST_F(MetadataStoreTest, UpsertAndGetInstrument) {
     EXPECT_EQ(result->symbol, "600000.SH");
     EXPECT_EQ(result->name, "Pudong Bank");
     EXPECT_EQ(result->market, Market::kSH);
+    EXPECT_EQ(result->market_name, "Shanghai");
+    EXPECT_EQ(result->market_label(), "Shanghai");
     EXPECT_EQ(result->board, Board::kMain);
     EXPECT_EQ(result->industry, SWIndustry::kBanking);
 }

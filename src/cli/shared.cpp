@@ -241,6 +241,7 @@ std::string build_metadata_views_sql(const Config& config) {
     std::vector<std::vector<std::string>> schema_rows;
     std::vector<std::vector<std::string>> quality_rows;
     std::vector<std::vector<std::string>> tombstone_rows;
+    std::vector<std::vector<std::string>> instrument_rows;
     std::vector<std::vector<std::string>> account_rows;
     std::vector<std::vector<std::string>> account_cash_rows;
     std::vector<std::vector<std::string>> account_position_rows;
@@ -340,6 +341,23 @@ std::string build_metadata_views_sql(const Config& config) {
             sql_date_or_null(t.max_event_date),
         });
     }
+    auto instruments = metadata.get_all_instruments();
+    instrument_rows.reserve(instruments.size());
+    for (const auto& i : instruments) {
+        instrument_rows.push_back({
+            sql_string(i.symbol),
+            sql_string(i.name),
+            std::to_string(static_cast<int>(i.market)),
+            sql_string(i.market_label()),
+            std::to_string(static_cast<int>(i.board)),
+            std::to_string(static_cast<int>(i.industry)),
+            sql_string(format_date(i.list_date)),
+            sql_date_or_null(i.delist_date),
+            std::to_string(static_cast<int>(i.status)),
+            std::to_string(i.total_shares),
+            std::to_string(i.float_shares),
+        });
+    }
 
     std::string sql;
     sql += build_values_view_sql(
@@ -364,6 +382,11 @@ std::string build_metadata_views_sql(const Config& config) {
         "meta_dataset_tombstones_recent",
         {"dataset_id", "file_path", "version", "reason", "max_event_date"},
         tombstone_rows);
+    sql += build_values_view_sql(
+        "meta_instruments",
+        {"symbol", "name", "market", "market_name", "board", "industry",
+         "list_date", "delist_date", "status", "total_shares", "float_shares"},
+        instrument_rows);
     sql += build_values_view_sql(
         "meta_accounts",
         {"account_id", "broker", "account_name", "is_active"},

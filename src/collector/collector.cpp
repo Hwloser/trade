@@ -11,6 +11,7 @@
 #include <set>
 #include <spdlog/spdlog.h>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace trade {
 
@@ -399,8 +400,17 @@ void Collector::build_silver_all(Date start, Date end, ProgressCallback progress
 }
 
 void Collector::collect_all(Date start, Date end, ProgressCallback progress) {
+    std::unordered_set<Symbol> cached_symbols;
+    for (const auto& inst : metadata_.get_all_instruments()) {
+        cached_symbols.insert(inst.symbol);
+    }
+    std::unordered_set<Symbol> symbols_needing_update;
+    for (const auto& sym : metadata_.symbols_needing_update(end)) {
+        symbols_needing_update.insert(sym);
+    }
+
     auto instruments = provider_->fetch_instruments();
-    spdlog::info("Found {} instruments, collecting [{}, {}]",
+    spdlog::info("Found {} instruments from provider, collecting [{}, {}]",
                  instruments.size(), format_date(start), format_date(end));
 
     std::unordered_map<Symbol, SWIndustry> industry_map;
@@ -412,9 +422,8 @@ void Collector::collect_all(Date start, Date end, ProgressCallback progress) {
         capital_map = provider_->fetch_share_capital();
     }
 
-    for (size_t i = 0; i < instruments.size(); ++i) {
-        auto& inst = instruments[i];
-
+    // Cache/refresh instrument metadata first.
+    for (auto& inst : instruments) {
         if (!industry_map.empty()) {
             auto it = industry_map.find(inst.symbol);
             if (it != industry_map.end()) {
@@ -431,13 +440,37 @@ void Collector::collect_all(Date start, Date end, ProgressCallback progress) {
         }
 
         metadata_.upsert_instrument(inst);
+    }
 
-        if (progress) {
-            progress(inst.symbol, static_cast<int>(i + 1),
-                     static_cast<int>(instruments.size()));
+    std::vector<Symbol> pending_symbols;
+    pending_symbols.reserve(instruments.size());
+    int skipped_cached_done = 0;
+    for (const auto& inst : instruments) {
+        const bool cached_before = cached_symbols.find(inst.symbol) != cached_symbols.end();
+        const bool needs_update = symbols_needing_update.find(inst.symbol) != symbols_needing_update.end();
+        if (cached_before && !needs_update) {
+            ++skipped_cached_done;
+            continue;
         }
+        pending_symbols.push_back(inst.symbol);
+    }
 
-        collect_symbol(inst.symbol, start, end);
+    spdlog::info("Collect pending symbols: {} (skipped already-complete cached: {})",
+                 pending_symbols.size(),
+                 skipped_cached_done);
+    if (pending_symbols.empty()) {
+        spdlog::info("All cached instruments already downloaded to {}",
+                     format_date(end));
+        return;
+    }
+
+    for (size_t i = 0; i < pending_symbols.size(); ++i) {
+        const auto& symbol = pending_symbols[i];
+        if (progress) {
+            progress(symbol, static_cast<int>(i + 1),
+                     static_cast<int>(pending_symbols.size()));
+        }
+        collect_symbol(symbol, start, end);
     }
 }
 

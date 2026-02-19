@@ -88,7 +88,8 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
             delist_date TEXT,
             status INTEGER,
             total_shares INTEGER DEFAULT 0,
-            float_shares INTEGER DEFAULT 0
+            float_shares INTEGER DEFAULT 0,
+            market_name TEXT NOT NULL DEFAULT ''
         )
     )");
 
@@ -99,6 +100,22 @@ MetadataStore::MetadataStore(const std::string& db_path) : impl_(std::make_uniqu
     sqlite3_exec(impl_->db,
                  "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0",
                  nullptr, nullptr, nullptr);
+    sqlite3_exec(impl_->db,
+                 "ALTER TABLE instruments ADD COLUMN market_name TEXT NOT NULL DEFAULT ''",
+                 nullptr, nullptr, nullptr);
+    impl_->exec(R"(
+        UPDATE instruments
+           SET market_name = CASE market
+                                WHEN 0 THEN 'Shanghai'
+                                WHEN 1 THEN 'Shenzhen'
+                                WHEN 2 THEN 'Beijing'
+                                WHEN 3 THEN 'Hong Kong'
+                                WHEN 4 THEN 'US'
+                                WHEN 5 THEN 'Crypto'
+                                ELSE 'Unknown'
+                             END
+         WHERE market_name = ''
+    )");
 
     impl_->exec(R"(
         CREATE TABLE IF NOT EXISTS downloads (
@@ -376,8 +393,9 @@ MetadataStore::~MetadataStore() = default;
 
 void MetadataStore::upsert_instrument(const Instrument& inst) {
     const char* sql = R"(
-        INSERT OR REPLACE INTO instruments (symbol, name, market, board, industry, list_date, delist_date, status, total_shares, float_shares)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT OR REPLACE INTO instruments
+        (symbol, name, market, board, industry, list_date, delist_date, status, total_shares, float_shares, market_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(impl_->db, sql, -1, &stmt, nullptr);
@@ -404,6 +422,10 @@ void MetadataStore::upsert_instrument(const Instrument& inst) {
     sqlite3_bind_int(stmt, 8, static_cast<int>(inst.status));
     sqlite3_bind_int64(stmt, 9, inst.total_shares);
     sqlite3_bind_int64(stmt, 10, inst.float_shares);
+    const std::string market_name = inst.market_name.empty()
+        ? market_name_from_enum(inst.market)
+        : inst.market_name;
+    sqlite3_bind_text(stmt, 11, market_name.c_str(), -1, SQLITE_TRANSIENT);
 
     rc = sqlite3_step(stmt);
     if (rc != SQLITE_DONE) {
@@ -431,6 +453,9 @@ std::optional<Instrument> MetadataStore::get_instrument(const Symbol& symbol) {
         inst.status = static_cast<TradingStatus>(sqlite3_column_int(stmt, 7));
         inst.total_shares = sqlite3_column_int64(stmt, 8);
         inst.float_shares = sqlite3_column_int64(stmt, 9);
+        if (sqlite3_column_count(stmt) > 10 && sqlite3_column_text(stmt, 10)) {
+            inst.market_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
+        }
         sqlite3_finalize(stmt);
         return inst;
     }
@@ -457,6 +482,9 @@ std::vector<Instrument> MetadataStore::get_all_instruments() {
         inst.status = static_cast<TradingStatus>(sqlite3_column_int(stmt, 7));
         inst.total_shares = sqlite3_column_int64(stmt, 8);
         inst.float_shares = sqlite3_column_int64(stmt, 9);
+        if (sqlite3_column_count(stmt) > 10 && sqlite3_column_text(stmt, 10)) {
+            inst.market_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
+        }
         result.push_back(std::move(inst));
     }
     sqlite3_finalize(stmt);
