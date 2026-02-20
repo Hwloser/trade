@@ -171,6 +171,23 @@ Config Config::load(const std::string& path) {
             if (n["baidu_retry_count"]) {
                 cfg.storage.baidu_retry_count = n["baidu_retry_count"].as<int>();
             }
+            if (n["compaction_bucket_count"]) {
+                cfg.storage.compaction_bucket_count = n["compaction_bucket_count"].as<int>();
+            }
+            if (n["compaction_small_file_rows"]) {
+                cfg.storage.compaction_small_file_rows = n["compaction_small_file_rows"].as<int>();
+            }
+            if (n["compaction_tombstone_retention_days"]) {
+                cfg.storage.compaction_tombstone_retention_days =
+                    n["compaction_tombstone_retention_days"].as<int>();
+            }
+            if (n["auto_compact_on_exit"]) {
+                cfg.storage.auto_compact_on_exit = n["auto_compact_on_exit"].as<bool>();
+            }
+            if (n["auto_major_compaction_on_exit"]) {
+                cfg.storage.auto_major_compaction_on_exit =
+                    n["auto_major_compaction_on_exit"].as<bool>();
+            }
         }
 
         if (auto n = root["security"]) {

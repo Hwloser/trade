@@ -173,6 +173,8 @@ public:
     std::vector<DatasetTombstoneRecord> list_dataset_tombstones(
         const std::string& dataset_id,
         int limit = 100);
+    int purge_dataset_tombstones(const std::string& dataset_id,
+                                 int retention_days = 0);
 
     // Schema registry
     void upsert_schema(const std::string& dataset_id,

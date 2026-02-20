@@ -19,3 +19,8 @@ storage:
   baidu_sign_key: "n*yD8OHUMl$im0tz%x7MIuyw$bQOv$rU"
   baidu_timeout_ms: 30000
   baidu_retry_count: 2
+  compaction_bucket_count: 32
+  compaction_small_file_rows: 4000
+  compaction_tombstone_retention_days: 0   # 0 = major compaction purge all tombstones
+  auto_compact_on_exit: true
+  auto_major_compaction_on_exit: true

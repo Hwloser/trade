@@ -46,7 +46,7 @@ Options:
   --admin-token <tok>   Admin token (or env TRADE_ADMIN_TOKEN)
   --action <name>       Sub-action (e.g., account: bind|list|show|import|sync)
                         collect: raw|sentiment|all|stream (default: raw)
-                        cleanup: audit|apply
+                        cleanup: audit|apply|minor|major
   --account-id <id>     Brokerage account id
   --broker <name>       Broker id/name (e.g., ths)
   --name <name>         Account display name

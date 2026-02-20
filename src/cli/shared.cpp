@@ -1,12 +1,15 @@
 #include "trade/cli/shared.h"
 
 #include "trade/common/time_utils.h"
+#include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/storage_path.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
+#include <map>
+#include <set>
 
 namespace trade::cli {
 
@@ -24,38 +27,79 @@ std::pair<Date, Date> resolve_dates(const CliArgs& args,
 std::vector<Bar> load_bars(const std::string& symbol,
                            const Config& config) {
     StoragePath paths(config.data.data_root);
-    std::vector<Bar> all_bars;
+    MetadataStore metadata(paths.metadata_db());
+    std::map<Date, Bar> by_date;
     const bool cloud_mode = config.storage.enabled &&
         (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+    std::set<std::string> known_files;
+    for (const auto& f : metadata.list_dataset_files("raw.cn_a.daily")) {
+        known_files.insert(f.file_path);
+    }
+    for (const auto& f : metadata.list_dataset_files("silver.cn_a.daily")) {
+        known_files.insert(f.file_path);
+    }
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = parse_date(config.ingestion.min_start_date);
     int start_year = date_year(min_date);
     int end_year = date_year(now);
+    const int bucket_count = std::max(1, config.storage.compaction_bucket_count);
+    const int bucket = StoragePath::bucket_for_symbol(symbol, bucket_count);
+
+    auto merge_symbol_rows = [&](const std::string& path, bool filter_symbol) {
+        const std::filesystem::path p(path);
+        const bool exists_local = std::filesystem::exists(p);
+        const std::string rel = p.lexically_relative(config.data.data_root).generic_string();
+        if (!exists_local) {
+            if (!cloud_mode) return false;
+            if (known_files.find(rel) == known_files.end()) return false;
+        }
+        try {
+            auto bars = ParquetReader::read_bars(path);
+            bool hit = false;
+            for (auto& bar : bars) {
+                if (filter_symbol && bar.symbol != symbol) continue;
+                by_date[bar.date] = std::move(bar);
+                hit = true;
+            }
+            return hit;
+        } catch (...) {
+            return false;
+        }
+    };
+
     for (int year = start_year; year <= end_year; ++year) {
+        bool loaded = false;
         const std::string raw_path = paths.raw_daily(symbol, year);
+        const std::string raw_bucket_path = paths.raw_daily_bucket(year, bucket);
         const std::string silver_path = paths.silver_daily(symbol, year);
+        const std::string silver_bucket_path = paths.silver_daily_bucket(year, bucket);
         std::string legacy_curated_path =
             (std::filesystem::path(config.data.data_root) / "curated" /
              config.data.market_daily_subpath / std::to_string(year) /
              (symbol + ".parquet"))
                 .string();
-        const std::vector<std::string> candidates = {
-            raw_path,
-            silver_path,
-            legacy_curated_path,
-        };
-        for (const auto& path : candidates) {
-            if (!cloud_mode && !std::filesystem::exists(path)) continue;
-            try {
-                auto bars = ParquetReader::read_bars(path);
-                if (!bars.empty()) {
-                    all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-                    break;
-                }
-            } catch (...) {
-            }
-        }
+
+        loaded = merge_symbol_rows(raw_path, false) || loaded;
+        loaded = merge_symbol_rows(raw_bucket_path, true) || loaded;
+        if (loaded) continue;
+
+        loaded = merge_symbol_rows(silver_path, false) || loaded;
+        loaded = merge_symbol_rows(silver_bucket_path, true) || loaded;
+        if (loaded) continue;
+
+        merge_symbol_rows(legacy_curated_path, false);
     }
+
+    std::vector<Bar> all_bars;
+    all_bars.reserve(by_date.size());
+    for (auto& [_, bar] : by_date) {
+        all_bars.push_back(std::move(bar));
+    }
+    std::sort(all_bars.begin(), all_bars.end(),
+              [](const Bar& a, const Bar& b) {
+                  if (a.date != b.date) return a.date < b.date;
+                  return a.symbol < b.symbol;
+              });
     return all_bars;
 }
 

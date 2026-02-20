@@ -268,6 +268,47 @@ bool BaiduNetdiskClient::download_bytes(const std::string& remote_rel_path,
     return false;
 }
 
+bool BaiduNetdiskClient::delete_path(const std::string& remote_rel_path) {
+    return delete_paths({remote_rel_path});
+}
+
+bool BaiduNetdiskClient::delete_paths(const std::vector<std::string>& remote_rel_paths) {
+    if (remote_rel_paths.empty()) return true;
+    if (cfg_.access_token.empty()) {
+        spdlog::error("[baidu] empty access token");
+        return false;
+    }
+
+    std::vector<std::string> full_paths;
+    full_paths.reserve(remote_rel_paths.size());
+    for (const auto& rel : remote_rel_paths) {
+        if (rel.empty()) continue;
+        full_paths.push_back(build_full_path(rel));
+    }
+    if (full_paths.empty()) return true;
+
+    std::string resp_body;
+    const int attempts = std::max(1, cfg_.retry_count + 1);
+    for (int i = 0; i < attempts; ++i) {
+        if (delete_paths_once(full_paths, &resp_body)) {
+            spdlog::info("[baidu] deleted {} path(s)", full_paths.size());
+            return true;
+        }
+
+        const bool token_expired = is_token_expired_json(resp_body);
+        if (token_expired && refresh_access_token()) {
+            spdlog::warn("[baidu] access token refreshed, retrying delete");
+            continue;
+        }
+        if (i + 1 < attempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300 * (i + 1)));
+        }
+    }
+
+    spdlog::warn("[baidu] delete failed after retries ({} paths)", full_paths.size());
+    return false;
+}
+
 bool BaiduNetdiskClient::upload_bytes_once(const std::string& remote_full_path,
                                            const std::vector<uint8_t>& payload,
                                            std::string* response_out) {
@@ -336,6 +377,49 @@ bool BaiduNetdiskClient::download_bytes_once(const std::string& remote_full_path
     }
 
     payload_out->assign(resp.body.begin(), resp.body.end());
+    return true;
+}
+
+bool BaiduNetdiskClient::delete_paths_once(const std::vector<std::string>& remote_full_paths,
+                                           std::string* response_out) {
+    nlohmann::json filelist = nlohmann::json::array();
+    for (const auto& p : remote_full_paths) {
+        filelist.push_back(p);
+    }
+
+    std::string url =
+        "https://pan.baidu.com/rest/2.0/xpan/file?method=filemanager"
+        "&opera=delete&async=0"
+        "&access_token=" + url_encode(cfg_.access_token);
+    if (!cfg_.app_id.empty()) {
+        url += "&app_id=" + url_encode(cfg_.app_id);
+    }
+    std::string body = "filelist=" + url_encode(filelist.dump());
+
+    HttpResponse resp = http_post_form(url, body, cfg_.timeout_ms);
+    if (response_out) *response_out = resp.body;
+
+    if (!resp.error.empty()) {
+        spdlog::warn("[baidu] delete http error: {}", resp.error);
+        return false;
+    }
+    if (resp.status_code != 200) {
+        spdlog::warn("[baidu] delete status {} body: {}", resp.status_code, resp.body);
+        return false;
+    }
+
+    try {
+        auto j = nlohmann::json::parse(resp.body);
+        int err = 0;
+        if (j.contains("errno")) err = j["errno"].get<int>();
+        if (j.contains("error_code")) err = j["error_code"].get<int>();
+        if (err != 0) {
+            spdlog::warn("[baidu] delete api error {}: {}", err, resp.body);
+            return false;
+        }
+    } catch (...) {
+        // Keep HTTP-200 behavior as success fallback.
+    }
     return true;
 }
 

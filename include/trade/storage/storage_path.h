@@ -15,6 +15,9 @@ public:
     // Market data paths
     std::string raw_daily(const Symbol& symbol, int year) const;
     std::string silver_daily(const Symbol& symbol, int year) const;
+    std::string raw_daily_bucket(int year, int bucket) const;
+    std::string silver_daily_bucket(int year, int bucket) const;
+    static int bucket_for_symbol(const Symbol& symbol, int bucket_count);
 
     // Sentiment data paths (Bronze/Silver/Gold)
     std::string sentiment_bronze(int year, int month, const std::string& source, Date date) const;

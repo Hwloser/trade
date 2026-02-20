@@ -31,6 +31,10 @@ public:
     bool download_bytes(const std::string& remote_rel_path,
                         std::vector<uint8_t>* payload_out);
 
+    // Delete one or more files from Netdisk under config.root_path.
+    bool delete_path(const std::string& remote_rel_path);
+    bool delete_paths(const std::vector<std::string>& remote_rel_paths);
+
 private:
     Config cfg_;
 
@@ -40,6 +44,8 @@ private:
     bool download_bytes_once(const std::string& remote_full_path,
                              std::vector<uint8_t>* payload_out,
                              std::string* response_out);
+    bool delete_paths_once(const std::vector<std::string>& remote_full_paths,
+                           std::string* response_out);
     bool refresh_access_token();
     std::string build_full_path(const std::string& remote_rel_path) const;
 };

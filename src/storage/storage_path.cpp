@@ -2,6 +2,7 @@
 #include "trade/common/time_utils.h"
 #include <chrono>
 #include <fmt/format.h>
+#include <functional>
 
 namespace trade {
 
@@ -15,6 +16,22 @@ std::string StoragePath::raw_daily(const Symbol& symbol, int year) const {
 std::string StoragePath::silver_daily(const Symbol& symbol, int year) const {
     return (root_ / "silver" / "cn_a" / "daily" / std::to_string(year) /
             (symbol + ".parquet")).string();
+}
+
+std::string StoragePath::raw_daily_bucket(int year, int bucket) const {
+    return (root_ / "raw" / "cn_a" / "daily" / std::to_string(year) /
+            fmt::format("bucket={:02d}", bucket) / "part-000.parquet").string();
+}
+
+std::string StoragePath::silver_daily_bucket(int year, int bucket) const {
+    return (root_ / "silver" / "cn_a" / "daily" / std::to_string(year) /
+            fmt::format("bucket={:02d}", bucket) / "part-000.parquet").string();
+}
+
+int StoragePath::bucket_for_symbol(const Symbol& symbol, int bucket_count) {
+    if (bucket_count <= 0) return 0;
+    return static_cast<int>(std::hash<std::string>{}(symbol) %
+                            static_cast<size_t>(bucket_count));
 }
 
 std::string StoragePath::sentiment_bronze(int year, int month,

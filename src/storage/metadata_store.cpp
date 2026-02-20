@@ -1131,6 +1131,40 @@ MetadataStore::list_dataset_tombstones(const std::string& dataset_id, int limit)
     return out;
 }
 
+int MetadataStore::purge_dataset_tombstones(const std::string& dataset_id,
+                                            int retention_days) {
+    std::string sql = R"(
+        DELETE FROM dataset_tombstones
+        WHERE (? = '' OR dataset_id = ?)
+    )";
+    if (retention_days > 0) {
+        sql += " AND deleted_at < datetime('now', ?)";
+    }
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(impl_->db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        spdlog::error("Failed to prepare purge_dataset_tombstones: {}",
+                      sqlite3_errmsg(impl_->db));
+        return 0;
+    }
+
+    sqlite3_bind_text(stmt, 1, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, dataset_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (retention_days > 0) {
+        const std::string window = "-" + std::to_string(retention_days) + " days";
+        sqlite3_bind_text(stmt, 3, window.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    const int before = sqlite3_total_changes(impl_->db);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        spdlog::error("Failed to purge dataset tombstones {}: {}",
+                      dataset_id, sqlite3_errmsg(impl_->db));
+    }
+    sqlite3_finalize(stmt);
+    const int after = sqlite3_total_changes(impl_->db);
+    return std::max(0, after - before);
+}
+
 void MetadataStore::upsert_schema(const std::string& dataset_id,
                                   int schema_version,
                                   const std::string& schema_json,

@@ -6,6 +6,7 @@
 #include "trade/common/time_utils.h"
 #include "trade/collector/collector.h"
 #include "trade/storage/baidu_netdisk_client.h"
+#include "trade/storage/data_compactor.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
@@ -128,6 +129,74 @@ std::atomic<bool> g_stream_stop{false};
 
 void on_stream_signal(int) {
     g_stream_stop.store(true);
+}
+
+CompactionOptions default_compaction_options(const trade::Config& config) {
+    CompactionOptions opts;
+    opts.bucket_count = std::max(1, config.storage.compaction_bucket_count);
+    opts.small_file_row_threshold = std::max(1, config.storage.compaction_small_file_rows);
+    opts.tombstone_retention_days = std::max(0, config.storage.compaction_tombstone_retention_days);
+    opts.dry_run = false;
+    return opts;
+}
+
+CompactionMode choose_auto_compaction_mode(const trade::Config& config) {
+    const bool cloud_major = cloud_mode_enabled(config) &&
+        config.storage.auto_major_compaction_on_exit;
+    return cloud_major ? CompactionMode::kMajor : CompactionMode::kMinor;
+}
+
+void print_compaction_progress(const std::string& dataset_id,
+                               const std::string& phase,
+                               int current,
+                               int total,
+                               const std::string& detail) {
+    std::cout << "\r[compact " << dataset_id
+              << "][" << phase << " " << current << "/" << total << "] "
+              << detail << "                      " << std::flush;
+}
+
+int run_compaction_for_dataset(const trade::Config& config,
+                               const std::string& dataset_id,
+                               CompactionMode mode,
+                               bool dry_run) {
+    DataCompactor compactor(config);
+    auto opts = default_compaction_options(config);
+    opts.dry_run = dry_run;
+
+    auto stats = compactor.compact_daily_dataset(
+        dataset_id,
+        mode,
+        opts,
+        [&](const std::string& phase, int current, int total, const std::string& detail) {
+            print_compaction_progress(dataset_id, phase, current, total, detail);
+        });
+    std::cout << "\n";
+
+    std::cout << "[Compaction] dataset=" << dataset_id
+              << " mode=" << (mode == CompactionMode::kMajor ? "major" : "minor")
+              << " dry_run=" << (dry_run ? "yes" : "no")
+              << " groups=" << stats.groups_compacted << "/" << stats.groups_total
+              << " files_deleted=" << stats.source_files_deleted
+              << " files_written=" << stats.target_files_written
+              << " files_uploaded=" << stats.target_files_uploaded
+              << " rows_in=" << stats.rows_in
+              << " rows_out=" << stats.rows_out
+              << " rows_deduped=" << stats.rows_deduped
+              << " tombstones_purged=" << stats.tombstones_purged
+              << "\n";
+    return 0;
+}
+
+int run_auto_compaction_after_collect(const trade::Config& config) {
+    if (!config.storage.auto_compact_on_exit) return 0;
+
+    const auto mode = choose_auto_compaction_mode(config);
+    std::cout << "Auto compaction on exit: mode="
+              << (mode == CompactionMode::kMajor ? "major" : "minor")
+              << ", dataset=raw.cn_a.daily" << std::endl;
+
+    return run_compaction_for_dataset(config, "raw.cn_a.daily", mode, false);
 }
 
 } // namespace
@@ -256,7 +325,10 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         sentiment_request.source = args.source;
         if (!args.start_date.empty()) sentiment_request.start = parse_date(args.start_date);
         if (!args.end_date.empty()) sentiment_request.end = parse_date(args.end_date);
-        return app::run_sentiment(sentiment_request, config);
+        rc = app::run_sentiment(sentiment_request, config);
+        if (rc != 0) return rc;
+
+        return run_auto_compaction_after_collect(config);
     }
 
     if (action == "stream") {
@@ -310,7 +382,8 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
 
         std::signal(SIGINT, prev_handler);
         std::cout << "Stream collection stopped." << std::endl;
-        return rc;
+        if (rc != 0) return rc;
+        return run_auto_compaction_after_collect(config);
     }
 
     if (action != "raw") {
@@ -340,7 +413,9 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         request.start = parse_date(config.ingestion.min_start_date);
     }
     if (!args.end_date.empty()) request.end = parse_date(args.end_date);
-    return app::run_download(request, stage_cfg);
+    const int rc = app::run_download(request, stage_cfg);
+    if (rc != 0) return rc;
+    return run_auto_compaction_after_collect(config);
 }
 
 // ============================================================================
@@ -389,7 +464,23 @@ int cmd_silver(const CliArgs& args, const trade::Config& config) {
 // cleanup
 // ============================================================================
 int cmd_cleanup(const CliArgs& args, const trade::Config& config) {
-    const bool apply = (args.action == "apply");
+    const std::string action = args.action.empty() ? "audit" : args.action;
+    if (action == "minor" || action == "major") {
+        const auto mode = action == "major"
+            ? CompactionMode::kMajor
+            : CompactionMode::kMinor;
+        const bool dry_run = false;
+        int rc = run_compaction_for_dataset(config, "raw.cn_a.daily", mode, dry_run);
+        if (rc != 0) return rc;
+        return run_compaction_for_dataset(config, "silver.cn_a.daily", mode, dry_run);
+    }
+
+    if (action != "audit" && action != "apply") {
+        spdlog::error("Unsupported cleanup action '{}'. Use audit|apply|minor|major", action);
+        return 1;
+    }
+
+    const bool apply = (action == "apply");
     const bool cloud_mode = cloud_mode_enabled(config);
     const std::string mode = apply ? "apply" : "audit";
 
@@ -628,15 +719,17 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         }
     } else if (!args.symbol.empty()) {
         if (!cloud_mode || symbol_hydrated) {
-            std::string layer_dir = has_dataset("raw.cn_a.daily")
-                ? config.data.raw_dir
-                : config.data.silver_dir;
-            std::string pattern = config.data.data_root + "/" + layer_dir + "/" +
-                                  config.data.market_daily_subpath + "/**/" +
-                                  args.symbol + ".parquet";
-            init_sql += "CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet('" +
-                        sql_escape(pattern) + "', union_by_name=true);";
-            data_view_ready = true;
+            if (has_dataset("raw.cn_a.daily")) {
+                init_sql += "CREATE OR REPLACE VIEW data AS "
+                            "SELECT * FROM raw_cn_a_daily WHERE symbol='" +
+                            sql_escape(args.symbol) + "';";
+                data_view_ready = true;
+            } else if (has_dataset("silver.cn_a.daily")) {
+                init_sql += "CREATE OR REPLACE VIEW data AS "
+                            "SELECT * FROM silver_cn_a_daily WHERE symbol='" +
+                            sql_escape(args.symbol) + "';";
+                data_view_ready = true;
+            }
         }
     }
 

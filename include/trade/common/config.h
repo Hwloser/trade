@@ -67,6 +67,13 @@ struct StorageConfig {
     std::string baidu_sign_key = "";
     int baidu_timeout_ms = 30000;
     int baidu_retry_count = 2;
+
+    // Compaction policy for raw/silver market partitions.
+    int compaction_bucket_count = 32;
+    int compaction_small_file_rows = 4000;
+    int compaction_tombstone_retention_days = 0;
+    bool auto_compact_on_exit = true;
+    bool auto_major_compaction_on_exit = true;
 };
 
 struct SecurityConfig {

@@ -411,6 +411,38 @@ TEST_F(MetadataStoreTest, DatasetCatalogSchemaAndVersionLifecycle) {
     EXPECT_EQ(vers[1].version, 1);
 }
 
+TEST_F(MetadataStoreTest, DatasetTombstoneLifecyclePurge) {
+    auto d1 = make_date(2024, 1, 3);
+    store_->upsert_dataset_file("raw.cn_a.daily",
+                                "raw",
+                                "cn_a",
+                                "daily",
+                                "raw/cn_a/daily",
+                                "raw/cn_a/daily/2024/600000.SH.parquet",
+                                100,
+                                d1,
+                                1,
+                                "run-1");
+
+    auto files_before = store_->list_dataset_files("raw.cn_a.daily");
+    ASSERT_EQ(files_before.size(), 1u);
+
+    store_->delete_dataset_file("raw.cn_a.daily",
+                                "raw/cn_a/daily/2024/600000.SH.parquet",
+                                "unit_test_delete");
+    auto files_after = store_->list_dataset_files("raw.cn_a.daily");
+    EXPECT_TRUE(files_after.empty());
+
+    auto tombstones = store_->list_dataset_tombstones("raw.cn_a.daily", 10);
+    ASSERT_EQ(tombstones.size(), 1u);
+    EXPECT_EQ(tombstones[0].reason, "unit_test_delete");
+
+    int purged = store_->purge_dataset_tombstones("raw.cn_a.daily", 0);
+    EXPECT_EQ(purged, 1);
+    auto after_purge = store_->list_dataset_tombstones("raw.cn_a.daily", 10);
+    EXPECT_TRUE(after_purge.empty());
+}
+
 TEST_F(MetadataStoreTest, QualityCheckpointAndTrainingSnapshot) {
     MetadataStore::QualityCheckRecord qc;
     qc.run_id = "run-qc-1";
