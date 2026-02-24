@@ -35,6 +35,12 @@ public:
     // Models directory
     std::string models_dir() const;
 
+    // New monthly kline paths (replaces bucketed raw/silver layout)
+    // Returns: data/kline/YYYY-MM/{symbol}.parquet
+    std::string kline_monthly(const Symbol& symbol, int year, int month) const;
+    // Returns: data/kline/YYYY-MM/ directory
+    std::string kline_dir(int year, int month) const;
+
     // Metadata
     std::string metadata_db() const;
 

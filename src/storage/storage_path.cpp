@@ -91,4 +91,15 @@ void StoragePath::ensure_dir(const std::string& path) {
     }
 }
 
+std::string StoragePath::kline_monthly(const Symbol& symbol, int year, int month) const {
+    return (root_ / "kline" /
+            fmt::format("{:04d}-{:02d}", year, month) /
+            (symbol + ".parquet")).string();
+}
+
+std::string StoragePath::kline_dir(int year, int month) const {
+    return (root_ / "kline" /
+            fmt::format("{:04d}-{:02d}", year, month)).string();
+}
+
 } // namespace trade

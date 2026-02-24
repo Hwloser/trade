@@ -8,7 +8,7 @@ data:
 ingestion:
   default_history_days: 30
   incremental_lookback_days: 5
-  min_start_date: "2020-01-01"
+  min_start_date: "2026-01-01"
   daily_bar_dataset: "cn_a_daily_bar"
   write_raw_layer: true
   write_silver_layer: false

@@ -27,79 +27,32 @@ std::pair<Date, Date> resolve_dates(const CliArgs& args,
 std::vector<Bar> load_bars(const std::string& symbol,
                            const Config& config) {
     StoragePath paths(config.data.data_root);
-    MetadataStore metadata(paths.metadata_db());
     std::map<Date, Bar> by_date;
-    const bool cloud_mode = config.storage.enabled &&
-        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
-    std::set<std::string> known_files;
-    for (const auto& f : metadata.list_dataset_files("raw.cn_a.daily")) {
-        known_files.insert(f.file_path);
-    }
-    for (const auto& f : metadata.list_dataset_files("silver.cn_a.daily")) {
-        known_files.insert(f.file_path);
-    }
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = parse_date(config.ingestion.min_start_date);
     int start_year = date_year(min_date);
     int end_year = date_year(now);
-    const int bucket_count = std::max(1, config.storage.compaction_bucket_count);
-    const int bucket = StoragePath::bucket_for_symbol(symbol, bucket_count);
-
-    auto merge_symbol_rows = [&](const std::string& path, bool filter_symbol) {
-        const std::filesystem::path p(path);
-        const bool exists_local = std::filesystem::exists(p);
-        const std::string rel = p.lexically_relative(config.data.data_root).generic_string();
-        if (!exists_local) {
-            if (!cloud_mode) return false;
-            if (known_files.find(rel) == known_files.end()) return false;
-        }
-        try {
-            auto bars = ParquetReader::read_bars(path);
-            bool hit = false;
-            for (auto& bar : bars) {
-                if (filter_symbol && bar.symbol != symbol) continue;
-                by_date[bar.date] = std::move(bar);
-                hit = true;
-            }
-            return hit;
-        } catch (...) {
-            return false;
-        }
-    };
 
     for (int year = start_year; year <= end_year; ++year) {
-        bool loaded = false;
-        const std::string raw_path = paths.raw_daily(symbol, year);
-        const std::string raw_bucket_path = paths.raw_daily_bucket(year, bucket);
-        const std::string silver_path = paths.silver_daily(symbol, year);
-        const std::string silver_bucket_path = paths.silver_daily_bucket(year, bucket);
-        std::string legacy_curated_path =
-            (std::filesystem::path(config.data.data_root) / "curated" /
-             config.data.market_daily_subpath / std::to_string(year) /
-             (symbol + ".parquet"))
-                .string();
-
-        loaded = merge_symbol_rows(raw_path, false) || loaded;
-        loaded = merge_symbol_rows(raw_bucket_path, true) || loaded;
-        if (loaded) continue;
-
-        loaded = merge_symbol_rows(silver_path, false) || loaded;
-        loaded = merge_symbol_rows(silver_bucket_path, true) || loaded;
-        if (loaded) continue;
-
-        merge_symbol_rows(legacy_curated_path, false);
+        for (int month = 1; month <= 12; ++month) {
+            const std::string path = paths.kline_monthly(symbol, year, month);
+            if (!std::filesystem::exists(path)) continue;
+            try {
+                auto bars = ParquetReader::read_bars(path);
+                for (auto& bar : bars) {
+                    if (bar.symbol == symbol || bar.symbol.empty()) {
+                        by_date[bar.date] = std::move(bar);
+                    }
+                }
+            } catch (...) {}
+        }
     }
 
     std::vector<Bar> all_bars;
     all_bars.reserve(by_date.size());
-    for (auto& [_, bar] : by_date) {
-        all_bars.push_back(std::move(bar));
-    }
+    for (auto& [_, bar] : by_date) all_bars.push_back(std::move(bar));
     std::sort(all_bars.begin(), all_bars.end(),
-              [](const Bar& a, const Bar& b) {
-                  if (a.date != b.date) return a.date < b.date;
-                  return a.symbol < b.symbol;
-              });
+              [](const Bar& a, const Bar& b) { return a.date < b.date; });
     return all_bars;
 }
 
@@ -192,50 +145,34 @@ std::string build_values_view_sql(const std::string& view_name,
 } // namespace
 
 std::vector<SqlViewDef> discover_sql_views(const Config& config) {
-    StoragePath paths(config.data.data_root);
-    MetadataStore metadata(paths.metadata_db());
-    auto datasets = metadata.list_datasets();
-
     std::vector<SqlViewDef> views;
-    views.reserve(datasets.size());
-    for (const auto& ds : datasets) {
-        if (ds.layer == "curated" || ds.dataset_id.rfind("curated.", 0) == 0) {
-            continue;
-        }
-        auto prefix = std::filesystem::path(config.data.data_root) / ds.path_prefix;
-        if (!has_local_parquet(prefix)) continue;
-
-        SqlViewDef def;
-        def.dataset_id = ds.dataset_id;
-        def.view_name = sanitize_view_name(ds.dataset_id);
-        def.glob_path = (prefix / "**/*.parquet").string();
-        views.push_back(std::move(def));
-    }
-
-    auto add_fallback = [&](const std::string& dataset_id, const std::filesystem::path& prefix) {
-        if (!has_local_parquet(prefix)) return;
-        auto it = std::find_if(views.begin(), views.end(),
-                               [&](const SqlViewDef& v) { return v.dataset_id == dataset_id; });
-        if (it != views.end()) return;
+    auto kline_dir = std::filesystem::path(config.data.data_root) / "kline";
+    if (has_local_parquet(kline_dir)) {
         views.push_back(SqlViewDef{
-            .dataset_id = dataset_id,
-            .view_name = sanitize_view_name(dataset_id),
-            .glob_path = (prefix / "**/*.parquet").string(),
+            .dataset_id = "kline",
+            .view_name  = "kline",
+            .glob_path  = (kline_dir / "**/*.parquet").string(),
         });
-    };
-
-    add_fallback("raw.cn_a.daily",
-                 std::filesystem::path(config.data.data_root) /
-                 config.data.raw_dir / config.data.market_daily_subpath);
-    add_fallback("silver.cn_a.daily",
-                 std::filesystem::path(config.data.data_root) /
-                 config.data.silver_dir / config.data.market_daily_subpath);
-    add_fallback("silver.cn_a.daily",
-                 std::filesystem::path(config.data.data_root) /
-                 "curated" / config.data.market_daily_subpath);
-
-    std::sort(views.begin(), views.end(),
-              [](const SqlViewDef& a, const SqlViewDef& b) { return a.view_name < b.view_name; });
+        // Convenience alias
+        views.push_back(SqlViewDef{
+            .dataset_id = "daily",
+            .view_name  = "daily",
+            .glob_path  = (kline_dir / "**/*.parquet").string(),
+        });
+    }
+    // Legacy path fallback
+    auto raw_dir = std::filesystem::path(config.data.data_root) / "raw" / "cn_a" / "daily";
+    if (has_local_parquet(raw_dir)) {
+        auto it = std::find_if(views.begin(), views.end(),
+                               [](const SqlViewDef& v){ return v.dataset_id == "kline"; });
+        if (it == views.end()) {
+            views.push_back(SqlViewDef{
+                .dataset_id = "kline",
+                .view_name  = "kline",
+                .glob_path  = (raw_dir / "**/*.parquet").string(),
+            });
+        }
+    }
     return views;
 }
 
@@ -246,145 +183,14 @@ std::string build_sql_init(const std::vector<SqlViewDef>& views) {
                     " AS SELECT * FROM read_parquet('" + sql_escape(v.glob_path) +
                     "', union_by_name=true);";
     }
-    auto has_dataset = [&](const std::string& dataset_id) {
-        return std::any_of(views.begin(), views.end(), [&](const SqlViewDef& v) {
-            return v.dataset_id == dataset_id;
-        });
-    };
-    if (has_dataset("raw.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM raw_cn_a_daily;";
-    } else if (has_dataset("silver.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW daily AS SELECT * FROM silver_cn_a_daily;";
-    }
-    if (has_dataset("raw.cn_a.daily")) {
-        init_sql += "CREATE OR REPLACE VIEW raw AS SELECT * FROM raw_cn_a_daily;";
-    }
     return init_sql;
 }
 
 std::string build_metadata_views_sql(const Config& config) {
     StoragePath paths(config.data.data_root);
     MetadataStore metadata(paths.metadata_db());
-    auto datasets = metadata.list_datasets();
 
-    std::vector<std::vector<std::string>> dataset_rows;
-    dataset_rows.reserve(datasets.size());
-    for (const auto& ds : datasets) {
-        dataset_rows.push_back({
-            sql_string(ds.dataset_id),
-            sql_string(ds.layer),
-            sql_string(ds.domain),
-            sql_string(ds.data_type),
-            sql_string(ds.path_prefix),
-            std::to_string(ds.schema_version),
-            sql_date_or_null(ds.latest_event_date),
-        });
-    }
-
-    std::vector<std::vector<std::string>> file_rows;
-    std::vector<std::vector<std::string>> schema_rows;
-    std::vector<std::vector<std::string>> quality_rows;
-    std::vector<std::vector<std::string>> tombstone_rows;
     std::vector<std::vector<std::string>> instrument_rows;
-    std::vector<std::vector<std::string>> account_rows;
-    std::vector<std::vector<std::string>> account_cash_rows;
-    std::vector<std::vector<std::string>> account_position_rows;
-    std::vector<std::vector<std::string>> account_trade_rows;
-    for (const auto& ds : datasets) {
-        auto files = metadata.list_dataset_files(ds.dataset_id);
-        for (const auto& f : files) {
-            file_rows.push_back({
-                sql_string(f.dataset_id),
-                sql_string(f.file_path),
-                std::to_string(f.row_count),
-                sql_date_or_null(f.max_event_date),
-                std::to_string(f.current_version),
-            });
-        }
-
-        auto active_schema = metadata.get_active_schema(ds.dataset_id);
-        if (active_schema) {
-            schema_rows.push_back({
-                sql_string(active_schema->dataset_id),
-                std::to_string(active_schema->schema_version),
-                sql_string(active_schema->schema_hash),
-                sql_string(active_schema->schema_json),
-            });
-        }
-    }
-
-    auto accounts = metadata.list_broker_accounts(false);
-    for (const auto& a : accounts) {
-        account_rows.push_back({
-            sql_string(a.account_id),
-            sql_string(a.broker),
-            sql_string(a.account_name),
-            std::to_string(a.is_active ? 1 : 0),
-        });
-        if (auto latest_cash = metadata.latest_account_cash(a.account_id)) {
-            account_cash_rows.push_back({
-                sql_string(latest_cash->account_id),
-                sql_string(format_date(latest_cash->as_of_date)),
-                std::to_string(latest_cash->total_asset),
-                std::to_string(latest_cash->cash),
-                std::to_string(latest_cash->available_cash),
-                std::to_string(latest_cash->frozen_cash),
-                std::to_string(latest_cash->market_value),
-            });
-        }
-        for (const auto& p : metadata.latest_account_positions(a.account_id)) {
-            account_position_rows.push_back({
-                sql_string(p.account_id),
-                sql_string(format_date(p.as_of_date)),
-                sql_string(p.symbol),
-                std::to_string(p.quantity),
-                std::to_string(p.available_quantity),
-                std::to_string(p.cost_price),
-                std::to_string(p.last_price),
-                std::to_string(p.market_value),
-                std::to_string(p.unrealized_pnl),
-                std::to_string(p.unrealized_pnl_ratio),
-            });
-        }
-        for (const auto& t : metadata.list_account_trades(a.account_id, 200)) {
-            account_trade_rows.push_back({
-                sql_string(t.account_id),
-                sql_string(t.trade_id),
-                sql_string(format_date(t.trade_date)),
-                sql_string(t.symbol),
-                sql_string(t.side == Side::kSell ? "sell" : "buy"),
-                std::to_string(t.price),
-                std::to_string(t.quantity),
-                std::to_string(t.amount),
-                std::to_string(t.fee),
-            });
-        }
-    }
-
-    auto checks = metadata.list_quality_checks("", 200);
-    for (const auto& c : checks) {
-        quality_rows.push_back({
-            sql_string(c.dataset_id),
-            sql_string(c.check_name),
-            sql_string(c.status),
-            sql_string(c.severity),
-            std::to_string(c.metric_value),
-            std::to_string(c.threshold_value),
-            sql_string(c.message),
-            sql_date_or_null(c.event_date),
-            sql_string(c.run_id),
-        });
-    }
-    auto tombstones = metadata.list_dataset_tombstones("", 200);
-    for (const auto& t : tombstones) {
-        tombstone_rows.push_back({
-            sql_string(t.dataset_id),
-            sql_string(t.file_path),
-            std::to_string(t.version),
-            sql_string(t.reason),
-            sql_date_or_null(t.max_event_date),
-        });
-    }
     auto instruments = metadata.get_all_instruments();
     instrument_rows.reserve(instruments.size());
     for (const auto& i : instruments) {
@@ -403,83 +209,17 @@ std::string build_metadata_views_sql(const Config& config) {
         });
     }
 
-    std::string sql;
-    sql += build_values_view_sql(
-        "meta_dataset_catalog",
-        {"dataset_id", "layer", "domain", "data_type", "path_prefix", "schema_version",
-         "latest_event_date"},
-        dataset_rows);
-    sql += build_values_view_sql(
-        "meta_dataset_files",
-        {"dataset_id", "file_path", "row_count", "max_event_date", "current_version"},
-        file_rows);
-    sql += build_values_view_sql(
-        "meta_schema_registry",
-        {"dataset_id", "schema_version", "schema_hash", "schema_json"},
-        schema_rows);
-    sql += build_values_view_sql(
-        "meta_quality_checks_recent",
-        {"dataset_id", "check_name", "status", "severity", "metric_value", "threshold_value",
-         "message", "event_date", "run_id"},
-        quality_rows);
-    sql += build_values_view_sql(
-        "meta_dataset_tombstones_recent",
-        {"dataset_id", "file_path", "version", "reason", "max_event_date"},
-        tombstone_rows);
-    sql += build_values_view_sql(
+    return build_values_view_sql(
         "meta_instruments",
         {"symbol", "name", "market", "market_name", "board", "industry",
          "list_date", "delist_date", "status", "total_shares", "float_shares"},
         instrument_rows);
-    sql += build_values_view_sql(
-        "meta_accounts",
-        {"account_id", "broker", "account_name", "is_active"},
-        account_rows);
-    sql += build_values_view_sql(
-        "meta_account_cash",
-        {"account_id", "as_of_date", "total_asset", "cash", "available_cash", "frozen_cash",
-         "market_value"},
-        account_cash_rows);
-    sql += build_values_view_sql(
-        "meta_account_positions",
-        {"account_id", "as_of_date", "symbol", "quantity", "available_quantity", "cost_price",
-         "last_price", "market_value", "unrealized_pnl", "unrealized_pnl_ratio"},
-        account_position_rows);
-    sql += build_values_view_sql(
-        "meta_account_trades",
-        {"account_id", "trade_id", "trade_date", "symbol", "side", "price", "quantity",
-         "amount", "fee"},
-        account_trade_rows);
-    return sql;
 }
 
 MetadataHealth assess_metadata_health(MetadataStore& metadata) {
     MetadataHealth h;
-    auto datasets = metadata.list_datasets();
-    h.dataset_count = datasets.size();
-    for (const auto& ds : datasets) {
-        auto files = metadata.list_dataset_files(ds.dataset_id);
-        if (!files.empty()) ++h.dataset_with_files;
-
-        auto schema = metadata.get_active_schema(ds.dataset_id);
-        if (schema && schema->schema_version == ds.schema_version) {
-            ++h.dataset_schema_match;
-        }
-
-        for (const auto& f : files) {
-            ++h.file_total;
-            auto versions = metadata.list_dataset_file_versions(ds.dataset_id, f.file_path);
-            if (!versions.empty()) {
-                if (versions.front().version == f.current_version) {
-                    ++h.file_version_covered;
-                }
-            }
-        }
-    }
-
-    h.ok = h.dataset_count > 0 &&
-           h.dataset_with_files == h.dataset_count &&
-           h.dataset_schema_match == h.dataset_count;
+    h.instrument_count = metadata.get_all_instruments().size();
+    h.ok = h.instrument_count > 0;
     return h;
 }
 

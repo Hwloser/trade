@@ -6,7 +6,6 @@
 #include "trade/common/time_utils.h"
 #include "trade/collector/collector.h"
 #include "trade/storage/baidu_netdisk_client.h"
-#include "trade/storage/data_compactor.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
@@ -42,30 +41,6 @@ int days_old(Date d) {
     return static_cast<int>(std::chrono::duration_cast<std::chrono::days>(now - d).count());
 }
 
-bool is_legacy_curated_dataset(const std::string& dataset_id, const std::string& layer) {
-    return layer == "curated" || dataset_id.rfind("curated.", 0) == 0;
-}
-
-int ttl_days_for_dataset(const trade::Config& config,
-                         const trade::MetadataStore::DatasetRecord& ds) {
-    if (ds.dataset_id.rfind("raw.sentiment.", 0) == 0 &&
-        config.storage.ttl_sentiment_raw_days > 0) {
-        return config.storage.ttl_sentiment_raw_days;
-    }
-    if (ds.layer == "raw" && config.storage.ttl_raw_days > 0) {
-        return config.storage.ttl_raw_days;
-    }
-    if (ds.layer == "silver" && config.storage.ttl_silver_days > 0) {
-        return config.storage.ttl_silver_days;
-    }
-    if (ds.layer == "gold" && config.storage.ttl_gold_days > 0) {
-        return config.storage.ttl_gold_days;
-    }
-    if (config.storage.ttl_global_days > 0) {
-        return config.storage.ttl_global_days;
-    }
-    return 0;
-}
 
 bool is_valid_raw_bar(const Bar& b) {
     if (b.open <= 0 || b.high <= 0 || b.low <= 0 || b.close <= 0) return false;
@@ -131,73 +106,6 @@ void on_stream_signal(int) {
     g_stream_stop.store(true);
 }
 
-CompactionOptions default_compaction_options(const trade::Config& config) {
-    CompactionOptions opts;
-    opts.bucket_count = std::max(1, config.storage.compaction_bucket_count);
-    opts.small_file_row_threshold = std::max(1, config.storage.compaction_small_file_rows);
-    opts.tombstone_retention_days = std::max(0, config.storage.compaction_tombstone_retention_days);
-    opts.dry_run = false;
-    return opts;
-}
-
-CompactionMode choose_auto_compaction_mode(const trade::Config& config) {
-    const bool cloud_major = cloud_mode_enabled(config) &&
-        config.storage.auto_major_compaction_on_exit;
-    return cloud_major ? CompactionMode::kMajor : CompactionMode::kMinor;
-}
-
-void print_compaction_progress(const std::string& dataset_id,
-                               const std::string& phase,
-                               int current,
-                               int total,
-                               const std::string& detail) {
-    std::cout << "\r[compact " << dataset_id
-              << "][" << phase << " " << current << "/" << total << "] "
-              << detail << "                      " << std::flush;
-}
-
-int run_compaction_for_dataset(const trade::Config& config,
-                               const std::string& dataset_id,
-                               CompactionMode mode,
-                               bool dry_run) {
-    DataCompactor compactor(config);
-    auto opts = default_compaction_options(config);
-    opts.dry_run = dry_run;
-
-    auto stats = compactor.compact_daily_dataset(
-        dataset_id,
-        mode,
-        opts,
-        [&](const std::string& phase, int current, int total, const std::string& detail) {
-            print_compaction_progress(dataset_id, phase, current, total, detail);
-        });
-    std::cout << "\n";
-
-    std::cout << "[Compaction] dataset=" << dataset_id
-              << " mode=" << (mode == CompactionMode::kMajor ? "major" : "minor")
-              << " dry_run=" << (dry_run ? "yes" : "no")
-              << " groups=" << stats.groups_compacted << "/" << stats.groups_total
-              << " files_deleted=" << stats.source_files_deleted
-              << " files_written=" << stats.target_files_written
-              << " files_uploaded=" << stats.target_files_uploaded
-              << " rows_in=" << stats.rows_in
-              << " rows_out=" << stats.rows_out
-              << " rows_deduped=" << stats.rows_deduped
-              << " tombstones_purged=" << stats.tombstones_purged
-              << "\n";
-    return 0;
-}
-
-int run_auto_compaction_after_collect(const trade::Config& config) {
-    if (!config.storage.auto_compact_on_exit) return 0;
-
-    const auto mode = choose_auto_compaction_mode(config);
-    std::cout << "Auto compaction on exit: mode="
-              << (mode == CompactionMode::kMajor ? "major" : "minor")
-              << ", dataset=raw.cn_a.daily" << std::endl;
-
-    return run_compaction_for_dataset(config, "raw.cn_a.daily", mode, false);
-}
 
 } // namespace
 
@@ -212,7 +120,9 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 
     std::cout << "=== Verify Data Pipeline ===\n";
 
-    // 1) Local check
+    // 1) Local check: count instruments
+    auto instruments = metadata.get_all_instruments();
+    ok_local = !instruments.empty() || !args.symbol.empty();
     if (!args.symbol.empty()) {
         auto bars = load_bars(args.symbol, config);
         ok_local = !bars.empty();
@@ -220,9 +130,7 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
                   << " rows=" << bars.size()
                   << " -> " << (ok_local ? "OK" : "FAIL") << "\n";
     } else {
-        auto datasets = metadata.list_datasets();
-        ok_local = !datasets.empty();
-        std::cout << "[Local] catalog datasets=" << datasets.size()
+        std::cout << "[Local] instruments=" << instruments.size()
                   << " -> " << (ok_local ? "OK" : "FAIL") << "\n";
     }
 
@@ -262,10 +170,7 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
     // 3) Metadata check
     auto mh = assess_metadata_health(metadata);
     ok_meta = mh.ok;
-    std::cout << "[Meta] datasets=" << mh.dataset_count
-              << " with_files=" << mh.dataset_with_files
-              << " schema_match=" << mh.dataset_schema_match
-              << " file_versions=" << mh.file_version_covered << "/" << mh.file_total
+    std::cout << "[Meta] instruments=" << mh.instrument_count
               << " -> " << (ok_meta ? "OK" : "FAIL") << "\n";
 
     // 4) SQL check
@@ -326,9 +231,7 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         if (!args.start_date.empty()) sentiment_request.start = parse_date(args.start_date);
         if (!args.end_date.empty()) sentiment_request.end = parse_date(args.end_date);
         rc = app::run_sentiment(sentiment_request, config);
-        if (rc != 0) return rc;
-
-        return run_auto_compaction_after_collect(config);
+        return rc;
     }
 
     if (action == "stream") {
@@ -353,7 +256,6 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         request.provider = args.provider;
         request.refresh = false;
         request.start = parse_date(args.start_date);
-        request.use_checkpoint = true;
 
         const int interval_sec = std::max(1, config.ingestion.stream_poll_interval_sec);
         g_stream_stop.store(false);
@@ -382,8 +284,7 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
 
         std::signal(SIGINT, prev_handler);
         std::cout << "Stream collection stopped." << std::endl;
-        if (rc != 0) return rc;
-        return run_auto_compaction_after_collect(config);
+        return rc;
     }
 
     if (action != "raw") {
@@ -413,9 +314,7 @@ int cmd_collect(const CliArgs& args, const trade::Config& config) {
         request.start = parse_date(config.ingestion.min_start_date);
     }
     if (!args.end_date.empty()) request.end = parse_date(args.end_date);
-    const int rc = app::run_download(request, stage_cfg);
-    if (rc != 0) return rc;
-    return run_auto_compaction_after_collect(config);
+    return app::run_download(request, stage_cfg);
 }
 
 // ============================================================================
@@ -465,180 +364,22 @@ int cmd_silver(const CliArgs& args, const trade::Config& config) {
 // ============================================================================
 int cmd_cleanup(const CliArgs& args, const trade::Config& config) {
     const std::string action = args.action.empty() ? "audit" : args.action;
-    if (action == "minor" || action == "major") {
-        const auto mode = action == "major"
-            ? CompactionMode::kMajor
-            : CompactionMode::kMinor;
-        const bool dry_run = false;
-        int rc = run_compaction_for_dataset(config, "raw.cn_a.daily", mode, dry_run);
-        if (rc != 0) return rc;
-        return run_compaction_for_dataset(config, "silver.cn_a.daily", mode, dry_run);
-    }
 
     if (action != "audit" && action != "apply") {
-        spdlog::error("Unsupported cleanup action '{}'. Use audit|apply|minor|major", action);
+        spdlog::error("Unsupported cleanup action '{}'. Use audit|apply", action);
         return 1;
     }
 
     const bool apply = (action == "apply");
-    const bool cloud_mode = cloud_mode_enabled(config);
     const std::string mode = apply ? "apply" : "audit";
 
     trade::StoragePath paths(config.data.data_root);
     trade::MetadataStore metadata(paths.metadata_db());
-    auto datasets = metadata.list_datasets();
 
-    int files_total = 0;
-    int files_missing_local = 0;
-    int files_ttl_expired = 0;
-    int files_legacy_curated = 0;
-    int files_removed = 0;
-    int raw_files_dirty = 0;
-    int raw_files_cleaned = 0;
-    int64_t raw_rows_removed = 0;
-
+    auto instruments = metadata.get_all_instruments();
     std::cout << "=== Data Cleanup (" << mode << ") ===\n"
               << "Data root: " << config.data.data_root << "\n"
-              << "Cloud mode: " << (cloud_mode ? "enabled" : "disabled") << "\n"
-              << "TTL policy (days): global=" << config.storage.ttl_global_days
-              << ", raw=" << config.storage.ttl_raw_days
-              << ", silver=" << config.storage.ttl_silver_days
-              << ", gold=" << config.storage.ttl_gold_days
-              << ", raw.sentiment=" << config.storage.ttl_sentiment_raw_days
-              << "\n";
-
-    for (const auto& ds : datasets) {
-        auto files = metadata.list_dataset_files(ds.dataset_id);
-        for (const auto& f : files) {
-            if (!args.symbol.empty()) {
-                auto file_symbol = symbol_from_file_path(f.file_path);
-                if (file_symbol != args.symbol) continue;
-            }
-            ++files_total;
-
-            const std::filesystem::path abs_path =
-                std::filesystem::path(config.data.data_root) / f.file_path;
-            const bool exists_local = std::filesystem::exists(abs_path);
-
-            bool removed = false;
-            if (!exists_local && !cloud_mode) {
-                ++files_missing_local;
-                if (apply) {
-                    metadata.delete_dataset_file(ds.dataset_id, f.file_path, "missing_local_file");
-                    ++files_removed;
-                    removed = true;
-                }
-            }
-
-            if (!removed) {
-                const int ttl_days = ttl_days_for_dataset(config, ds);
-                if (ttl_days > 0 && f.max_event_date &&
-                    days_old(*f.max_event_date) > ttl_days) {
-                    ++files_ttl_expired;
-                    if (apply) {
-                        if (cloud_mode && !exists_local) {
-                            spdlog::warn("Skip TTL delete for cloud-only file not present locally: {}",
-                                         f.file_path);
-                            continue;
-                        }
-                        if (exists_local) {
-                            std::error_code ec;
-                            std::filesystem::remove(abs_path, ec);
-                            if (ec) {
-                                spdlog::warn("Failed to remove expired file {}: {}",
-                                             abs_path.string(), ec.message());
-                            }
-                        }
-                        metadata.delete_dataset_file(ds.dataset_id,
-                                                     f.file_path,
-                                                     "ttl_expired_" + std::to_string(ttl_days) + "d");
-                        ++files_removed;
-                        removed = true;
-                    }
-                }
-            }
-
-            if (!removed && is_legacy_curated_dataset(ds.dataset_id, ds.layer)) {
-                ++files_legacy_curated;
-                if (apply) {
-                    if (exists_local) {
-                        std::error_code ec;
-                        std::filesystem::remove(abs_path, ec);
-                        if (ec) {
-                            spdlog::warn("Failed to remove legacy curated file {}: {}",
-                                         abs_path.string(), ec.message());
-                        }
-                    }
-                    metadata.delete_dataset_file(ds.dataset_id, f.file_path, "legacy_curated_cleanup");
-                    ++files_removed;
-                    removed = true;
-                }
-            }
-
-            if (removed) continue;
-
-            // Raw cleaning layer: sanitize only market raw bars
-            if (ds.dataset_id == "raw.cn_a.daily" && exists_local) {
-                std::vector<Bar> bars;
-                try {
-                    bars = trade::ParquetReader::read_bars(abs_path.string());
-                } catch (const std::exception& e) {
-                    spdlog::warn("Failed to read raw bars {}: {}", abs_path.string(), e.what());
-                    continue;
-                }
-                auto report = trade::DataValidator::validate(bars);
-                const bool dirty =
-                    report.duplicate_dates > 0 ||
-                    report.price_anomalies > 0 ||
-                    report.volume_anomalies > 0;
-                if (!dirty) continue;
-
-                ++raw_files_dirty;
-                if (!apply) continue;
-
-                int64_t invalid_dropped = 0;
-                int64_t duplicate_dropped = 0;
-                auto cleaned = sanitize_raw_bars(
-                    bars, &invalid_dropped, &duplicate_dropped);
-                raw_rows_removed += invalid_dropped + duplicate_dropped;
-
-                if (cleaned.empty()) {
-                    std::error_code ec;
-                    std::filesystem::remove(abs_path, ec);
-                    metadata.delete_dataset_file(ds.dataset_id, f.file_path, "cleaned_to_empty");
-                    ++files_removed;
-                    continue;
-                }
-
-                Date max_date = cleaned.front().date;
-                for (const auto& b : cleaned) {
-                    if (b.date > max_date) max_date = b.date;
-                }
-                trade::ParquetStore::write_bars(abs_path.string(),
-                                                cleaned,
-                                                trade::ParquetStore::MergeMode::kReplace,
-                                                max_date);
-                ++raw_files_cleaned;
-            }
-        }
-    }
-
-    int datasets_pruned = 0;
-    if (apply) {
-        datasets_pruned = metadata.prune_empty_datasets();
-    }
-
-    std::cout << "[Summary] files_total=" << files_total
-              << " missing_local=" << files_missing_local
-              << " ttl_expired=" << files_ttl_expired
-              << " legacy_curated=" << files_legacy_curated
-              << " raw_dirty=" << raw_files_dirty
-              << "\n";
-    std::cout << "[Action] files_removed=" << files_removed
-              << " raw_cleaned=" << raw_files_cleaned
-              << " raw_rows_removed=" << raw_rows_removed
-              << " datasets_pruned=" << datasets_pruned
-              << "\n";
+              << "Instruments: " << instruments.size() << "\n";
 
     if (!apply) {
         std::cout << "Dry run only. Use: trade_cli cleanup --action apply --config <path>\n";
@@ -719,14 +460,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         }
     } else if (!args.symbol.empty()) {
         if (!cloud_mode || symbol_hydrated) {
-            if (has_dataset("raw.cn_a.daily")) {
+            if (has_dataset("kline") || has_dataset("daily")) {
                 init_sql += "CREATE OR REPLACE VIEW data AS "
-                            "SELECT * FROM raw_cn_a_daily WHERE symbol='" +
-                            sql_escape(args.symbol) + "';";
-                data_view_ready = true;
-            } else if (has_dataset("silver.cn_a.daily")) {
-                init_sql += "CREATE OR REPLACE VIEW data AS "
-                            "SELECT * FROM silver_cn_a_daily WHERE symbol='" +
+                            "SELECT * FROM kline WHERE symbol='" +
                             sql_escape(args.symbol) + "';";
                 data_view_ready = true;
             }
@@ -738,14 +474,6 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     for (const auto& v : views) {
         std::cout << "  " << v.view_name << "  (" << v.dataset_id << ")\n";
     }
-    if (has_dataset("raw.cn_a.daily")) {
-        std::cout << "  daily  (alias of raw_cn_a_daily)\n";
-    } else if (has_dataset("silver.cn_a.daily")) {
-        std::cout << "  daily  (alias of silver_cn_a_daily)\n";
-    }
-    if (has_dataset("raw.cn_a.daily")) {
-        std::cout << "  raw    (alias of raw_cn_a_daily)\n";
-    }
     if (data_view_ready) {
         std::cout << "  data   - specific file/symbol data\n";
     }
@@ -753,12 +481,9 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
         std::cout << "  (no local parquet found yet; run collect first)\n";
     }
     std::cout << "\nExample queries:\n";
-    if (has_dataset("raw.cn_a.daily")) {
-        std::cout << "  SELECT * FROM raw_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
-                  << "  SELECT symbol, count(*) FROM raw_cn_a_daily GROUP BY symbol;\n";
-    } else if (has_dataset("silver.cn_a.daily")) {
-        std::cout << "  SELECT * FROM silver_cn_a_daily WHERE symbol='600000.SH' ORDER BY date;\n"
-                  << "  SELECT symbol, count(*) FROM silver_cn_a_daily GROUP BY symbol;\n";
+    if (has_dataset("kline") || has_dataset("daily")) {
+        std::cout << "  SELECT * FROM kline WHERE symbol='600000.SH' ORDER BY date;\n"
+                  << "  SELECT symbol, count(*) FROM kline GROUP BY symbol;\n";
     } else if (!views.empty()) {
         std::cout << "  SELECT * FROM " << views.front().view_name << " LIMIT 20;\n";
     } else {
@@ -767,12 +492,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     if (data_view_ready) {
         std::cout << "  SELECT * FROM data LIMIT 20;\n";
     }
-    std::cout << "  SELECT * FROM meta_dataset_catalog;\n"
-              << "  SELECT * FROM meta_dataset_files ORDER BY dataset_id, file_path LIMIT 50;\n"
-              << "  SELECT * FROM meta_dataset_tombstones_recent LIMIT 50;\n"
-              << "  SELECT * FROM meta_quality_checks_recent WHERE status <> 'pass';\n"
-              << "  SELECT * FROM meta_accounts;\n"
-              << "  SELECT * FROM meta_account_positions;\n";
+    std::cout << "  SELECT * FROM meta_instruments;\n";
     std::cout << std::endl;
 
     if (cloud_mode) {

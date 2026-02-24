@@ -13,6 +13,12 @@ set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_PYTHON_BINDINGS "Build nanobind Python bindings" OFF)
 
+# DuckDB (git submodule vendor/duckdb) - embedded SQL analytics engine
+set(BUILD_UNITTESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(DUCKDB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+add_subdirectory(vendor/duckdb EXCLUDE_FROM_ALL)
+
 # Dependencies
 find_package(Arrow REQUIRED)
 find_package(Parquet REQUIRED)
@@ -86,6 +92,13 @@ target_link_libraries(trade_deps INTERFACE
     pugixml::pugixml
     CURL::libcurl
     re2::re2
+    duckdb_static
+    duckdb_generated_extension_loader
+    parquet_extension
+    core_functions_extension
+)
+target_include_directories(trade_deps INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendor/duckdb/src/include
 )
 
 if(HAVE_LIGHTGBM)

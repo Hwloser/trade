@@ -32,35 +32,20 @@ std::vector<Bar> load_bars_for_sentiment(const std::string& symbol,
                                          const Config& config) {
     StoragePath paths(config.data.data_root);
     std::vector<Bar> all_bars;
-    const bool cloud_mode = config.storage.enabled &&
-        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = parse_date(config.ingestion.min_start_date);
     int start_year = date_year(min_date);
     int end_year = date_year(now);
     for (int year = start_year; year <= end_year; ++year) {
-        const std::string raw_path = paths.raw_daily(symbol, year);
-        const std::string silver_path = paths.silver_daily(symbol, year);
-        std::string legacy_curated_path =
-            (std::filesystem::path(config.data.data_root) / "curated" /
-             config.data.market_daily_subpath / std::to_string(year) /
-             (symbol + ".parquet"))
-                .string();
-        const std::vector<std::string> candidates = {
-            raw_path,
-            silver_path,
-            legacy_curated_path,
-        };
-        for (const auto& path : candidates) {
-            if (!cloud_mode && !std::filesystem::exists(path)) continue;
+        for (int month = 1; month <= 12; ++month) {
+            const std::string path = paths.kline_monthly(symbol, year, month);
+            if (!std::filesystem::exists(path)) continue;
             try {
                 auto bars = ParquetReader::read_bars(path);
                 if (!bars.empty()) {
                     all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-                    break;
                 }
-            } catch (...) {
-            }
+            } catch (...) {}
         }
     }
     return all_bars;
@@ -95,11 +80,6 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
             if (next > start) start = next;
         }
     }
-
-    auto run_id = src + "_sent_" +
-        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    metadata.begin_ingestion_run(run_id, src, "sentiment_pipeline", src, "incremental");
 
     try {
         std::unique_ptr<ITextSource> text_source;
@@ -152,18 +132,8 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
 
         auto events = text_source->fetch_range(start, end);
         if (events.empty()) {
-            MetadataStore::QualityCheckRecord qc;
-            qc.run_id = run_id;
-            qc.dataset_id = "raw.sentiment.bronze";
-            qc.check_name = "event_count";
-            qc.status = "warn";
-            qc.severity = "warning";
-            qc.metric_value = 0.0;
-            qc.threshold_value = 1.0;
-            qc.message = "No new sentiment events";
-            qc.event_date = end;
-            metadata.record_quality_check(qc);
-            metadata.finish_ingestion_run(run_id, true, 0, 0);
+            spdlog::info("No new sentiment events in range {} to {}",
+                         format_date(start), format_date(end));
             std::cout << "No new sentiment events in range "
                       << format_date(start) << " to " << format_date(end)
                       << std::endl;
@@ -294,48 +264,10 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
         }
 
         Date max_date = start;
-        for (const auto& [d, _] : bronze_by_date) {
+        for (const auto& [d, dummy] : bronze_by_date) {
             if (d > max_date) max_date = d;
         }
         metadata.upsert_watermark(src, "sentiment_text", src, max_date);
-
-        MetadataStore::QualityCheckRecord event_qc;
-        event_qc.run_id = run_id;
-        event_qc.dataset_id = "raw.sentiment.bronze";
-        event_qc.check_name = "event_count";
-        event_qc.status = events.empty() ? "warn" : "pass";
-        event_qc.severity = events.empty() ? "warning" : "info";
-        event_qc.metric_value = static_cast<double>(events.size());
-        event_qc.threshold_value = 1.0;
-        event_qc.message = "Fetched sentiment events";
-        event_qc.event_date = max_date;
-        metadata.record_quality_check(event_qc);
-
-        MetadataStore::QualityCheckRecord nlp_cov_qc;
-        nlp_cov_qc.run_id = run_id;
-        nlp_cov_qc.dataset_id = "silver.sentiment.nlp";
-        nlp_cov_qc.check_name = "nlp_symbol_coverage";
-        nlp_cov_qc.metric_value = events.empty() ? 0.0
-            : static_cast<double>(nlp_results.size()) / static_cast<double>(events.size());
-        nlp_cov_qc.threshold_value = 0.05;
-        nlp_cov_qc.status = nlp_cov_qc.metric_value >= nlp_cov_qc.threshold_value ? "pass" : "warn";
-        nlp_cov_qc.severity = nlp_cov_qc.status == "pass" ? "info" : "warning";
-        nlp_cov_qc.message = "NLP aggregated rows / events";
-        nlp_cov_qc.event_date = max_date;
-        metadata.record_quality_check(nlp_cov_qc);
-
-        MetadataStore::QualityCheckRecord factor_cov_qc;
-        factor_cov_qc.run_id = run_id;
-        factor_cov_qc.dataset_id = "gold.sentiment.factor";
-        factor_cov_qc.check_name = "factor_row_coverage";
-        factor_cov_qc.metric_value = nlp_results.empty() ? 0.0
-            : static_cast<double>(factors.size()) / static_cast<double>(nlp_results.size());
-        factor_cov_qc.threshold_value = 0.1;
-        factor_cov_qc.status = factor_cov_qc.metric_value >= factor_cov_qc.threshold_value ? "pass" : "warn";
-        factor_cov_qc.severity = factor_cov_qc.status == "pass" ? "info" : "warning";
-        factor_cov_qc.message = "Factor rows / nlp rows";
-        factor_cov_qc.event_date = max_date;
-        metadata.record_quality_check(factor_cov_qc);
 
         int total = pos_cnt + neg_cnt + neu_cnt;
         std::cout << "=== Sentiment Incremental ===\n"
@@ -349,12 +281,8 @@ int run_sentiment(const SentimentRequest& request, const Config& config) {
                       << (double(pos_cnt - neg_cnt) / total) << std::noshowpos << "\n";
         }
 
-        metadata.finish_ingestion_run(run_id, true,
-                                      static_cast<int64_t>(events.size()),
-                                      static_cast<int64_t>(nlp_results.size() + factors.size()));
         return 0;
     } catch (const std::exception& e) {
-        metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
         spdlog::error("Sentiment pipeline failed: {}", e.what());
         return 1;
     }

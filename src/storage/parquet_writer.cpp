@@ -2,9 +2,7 @@
 
 #include "trade/common/time_utils.h"
 #include "trade/storage/baidu_netdisk_client.h"
-#include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
-#include "trade/storage/storage_path.h"
 #include "trade/normalizer/bar_normalizer.h"
 
 #include <arrow/builder.h>
@@ -15,8 +13,6 @@
 #include <fstream>
 #include <parquet/arrow/writer.h>
 #include <spdlog/spdlog.h>
-#include <sstream>
-#include <string_view>
 #include <unordered_map>
 
 namespace trade {
@@ -149,86 +145,6 @@ bool write_local_bytes(const std::string& path, const std::vector<uint8_t>& byte
         return false;
     }
     return true;
-}
-
-std::string to_hex_hash(size_t v) {
-    std::ostringstream oss;
-    oss << std::hex << v;
-    return oss.str();
-}
-
-std::string hash_text(const std::string& text) {
-    return to_hex_hash(std::hash<std::string_view>{}(std::string_view(text)));
-}
-
-std::string hash_bytes(const std::vector<uint8_t>& bytes) {
-    const auto* ptr = reinterpret_cast<const char*>(bytes.data());
-    std::string_view sv(ptr, bytes.size());
-    return to_hex_hash(std::hash<std::string_view>{}(sv));
-}
-
-void update_catalog_if_possible(const std::string& abs_path,
-                                const std::shared_ptr<arrow::Table>& table,
-                                const std::string& file_content_hash,
-                                int64_t row_count,
-                                const std::optional<Date>& max_event_date) {
-    const auto& rt = runtime_storage();
-    if (!rt.configured) return;
-
-    const std::string rel = to_rel_data_path(abs_path, rt.data.data_root);
-    std::filesystem::path rp(rel);
-    std::vector<std::string> segs;
-    for (const auto& part : rp) {
-        segs.push_back(part.string());
-    }
-    if (segs.size() < 4) return;
-    if (rp.extension() != ".parquet") return;
-
-    const std::string layer = segs[0];
-    const std::string domain = segs[1];
-    const std::string data_type = segs[2];
-    const std::string dataset_id = layer + "." + domain + "." + data_type;
-    const std::string path_prefix =
-        (std::filesystem::path(layer) / domain / data_type).generic_string();
-
-    try {
-        StoragePath paths(rt.data.data_root);
-        MetadataStore metadata(paths.metadata_db());
-        const std::string schema_json = table && table->schema()
-            ? table->schema()->ToString()
-            : "";
-        const std::string schema_hash = hash_text(schema_json);
-
-        int schema_version = 1;
-        auto existing = metadata.find_schema_version_by_hash(dataset_id, schema_hash);
-        if (existing) {
-            schema_version = *existing;
-        } else {
-            auto active = metadata.get_active_schema(dataset_id);
-            if (active) schema_version = active->schema_version + 1;
-        }
-
-        metadata.upsert_schema(dataset_id,
-                               schema_version,
-                               schema_json,
-                               schema_hash,
-                               true);
-
-        metadata.upsert_dataset_file(dataset_id,
-                                     layer,
-                                     domain,
-                                     data_type,
-                                     path_prefix,
-                                     rel,
-                                     row_count,
-                                     max_event_date,
-                                     schema_version,
-                                     "",
-                                     std::nullopt,
-                                     file_content_hash);
-    } catch (const std::exception& e) {
-        spdlog::warn("Failed to update dataset catalog for {}: {}", rel, e.what());
-    }
 }
 
 int64_t to_epoch_ms(Timestamp ts) {
@@ -665,7 +581,6 @@ void ParquetStore::write_table(const std::string& path,
         spdlog::error("Failed to serialize parquet: {}", path);
         return;
     }
-    const std::string content_hash = hash_bytes(bytes);
 
     WriteDecision decision = decide_write(partition_max_date);
     bool local_ok = true;
@@ -708,12 +623,6 @@ void ParquetStore::write_table(const std::string& path,
                       path, local_ok, cloud_ok);
         return;
     }
-
-    update_catalog_if_possible(path,
-                               table,
-                               content_hash,
-                               table->num_rows(),
-                               partition_max_date);
 }
 
 void ParquetStore::configure_runtime(const DataConfig& data_cfg,

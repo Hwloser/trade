@@ -13,7 +13,6 @@ struct DownloadRequest {
     std::optional<Date> end;
     std::string provider = "eastmoney";
     bool refresh = false;
-    bool use_checkpoint = false; // when true, resume from stream checkpoint (Flink-like)
 };
 
 int run_download(const DownloadRequest& request, const Config& config);

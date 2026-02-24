@@ -58,11 +58,6 @@ std::vector<Symbol> parse_symbol_list(const std::string& raw) {
     return out;
 }
 
-std::string build_stream_checkpoint_payload(Date resume_from) {
-    return std::string{"{\"mode\":\"stream\",\"resume_from\":\""} +
-        format_date(resume_from) + "\"}";
-}
-
 struct DownloadRuntime {
     const DownloadRequest& request;
     const Config& config;
@@ -74,15 +69,12 @@ struct DownloadRuntime {
     std::string default_start_str;
     bool full_refresh;
     bool incremental_mode;
-    bool stream_resume_mode;
 };
 
 struct SymbolPlan {
     Date start;
     Date end;
     std::optional<Date> current_wm;
-    std::optional<MetadataStore::StreamCheckpointRecord> current_cp;
-    bool has_stream_checkpoint = false;
     bool up_to_date = false;
 };
 
@@ -112,7 +104,6 @@ DownloadRuntime make_runtime(const DownloadRequest& request,
         format_date(default_start),
         request.refresh,
         !request.refresh,
-        request.use_checkpoint,
     };
 }
 
@@ -141,25 +132,14 @@ bool validate_request(const DownloadRuntime& rt,
 
 int run_full_refresh_all_symbols(const DownloadRuntime& rt,
                                  Collector& collector,
-                                 MetadataStore& metadata) {
-    // Keep full-refresh all-symbol backfill behavior.
-    std::string run_id = rt.request.provider + "_dl_all_" +
-        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    metadata.begin_ingestion_run(run_id, rt.request.provider, rt.dataset, "*", "full");
-    try {
-        auto [start_all, end_all] = resolve_request_dates(rt.request, rt.default_start_str);
-        collector.collect_all(start_all, end_all,
-            [](const Symbol& sym, int cur, int total) {
-                std::cout << "\r[" << cur << "/" << total << "] " << sym
-                          << "                " << std::flush;
-            });
-        metadata.finish_ingestion_run(run_id, true, 0, 0);
-        std::cout << "\nDownload complete." << std::endl;
-    } catch (const std::exception& e) {
-        metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
-        throw;
-    }
+                                 MetadataStore& /*metadata*/) {
+    auto [start_all, end_all] = resolve_request_dates(rt.request, rt.default_start_str);
+    collector.collect_all(start_all, end_all,
+        [](const Symbol& sym, int cur, int total) {
+            std::cout << "\r[" << cur << "/" << total << "] " << sym
+                      << "                " << std::flush;
+        });
+    std::cout << "\nDownload complete." << std::endl;
     return 0;
 }
 
@@ -171,44 +151,18 @@ SymbolPlan plan_symbol_download(const DownloadRuntime& rt,
     plan.start = rt.request.start.value_or(rt.default_start);
     plan.current_wm = metadata.last_watermark_date(rt.request.provider, rt.dataset, symbol);
 
-    if (rt.stream_resume_mode) {
-        plan.current_cp = metadata.get_stream_checkpoint(rt.request.provider, rt.dataset, symbol);
-        plan.has_stream_checkpoint = plan.current_cp.has_value() &&
-            plan.current_cp->last_event_date.has_value() &&
-            plan.current_cp->cursor_payload.find("\"mode\":\"stream\"") != std::string::npos;
-    }
-
     if (rt.incremental_mode) {
         const int lookback_days = std::max(0, rt.config.ingestion.incremental_lookback_days);
         Date bootstrap_start = *rt.request.start;
         if (bootstrap_start < rt.min_start) bootstrap_start = rt.min_start;
 
-        if (rt.stream_resume_mode && plan.has_stream_checkpoint) {
-            plan.start = next_trading_day(*plan.current_cp->last_event_date);
-            if (plan.start < bootstrap_start) plan.start = bootstrap_start;
-            if (plan.start < rt.min_start) plan.start = rt.min_start;
-            spdlog::info("Incremental {} from checkpoint {} (stream={}, shard={})",
-                         symbol,
-                         format_date(*plan.current_cp->last_event_date),
-                         plan.current_cp->stream,
-                         plan.current_cp->shard);
-        } else if (plan.current_wm) {
+        if (plan.current_wm) {
             plan.start = *plan.current_wm - std::chrono::days{lookback_days};
             if (plan.start < bootstrap_start) plan.start = bootstrap_start;
             if (plan.start < rt.min_start) plan.start = rt.min_start;
-            spdlog::info("Incremental {} from watermark {} (lookback {}d => {}, bootstrap {})",
-                         symbol,
-                         format_date(*plan.current_wm),
-                         lookback_days,
-                         format_date(plan.start),
-                         format_date(bootstrap_start));
         } else {
             plan.start = bootstrap_start;
-            spdlog::info("Incremental {} bootstrap from start {} (no watermark)",
-                         symbol,
-                         format_date(plan.start));
         }
-
         plan.up_to_date = plan.start > plan.end;
     } else if (plan.start < rt.min_start) {
         plan.start = rt.min_start;
@@ -222,101 +176,30 @@ bool has_local_raw_partition(const StoragePath& paths,
                              Date start,
                              Date end) {
     for (int y = date_year(start); y <= date_year(end); ++y) {
-        if (std::filesystem::exists(paths.raw_daily(symbol, y))) {
-            return true;
+        for (int m = 1; m <= 12; ++m) {
+            if (std::filesystem::exists(paths.kline_monthly(symbol, y, m))) {
+                return true;
+            }
         }
     }
     return false;
 }
 
-std::string run_mode(const DownloadRuntime& rt) {
-    if (rt.full_refresh) return "full";
-    if (rt.stream_resume_mode) return "stream_incremental";
-    return "incremental";
-}
-
-void update_stream_checkpoint(const DownloadRuntime& rt,
-                              MetadataStore& metadata,
-                              const Symbol& symbol) {
-    if (!rt.stream_resume_mode) return;
-    auto committed_wm = metadata.last_watermark_date(rt.request.provider, rt.dataset, symbol);
-    if (!committed_wm.has_value()) return;
-
-    metadata.upsert_stream_checkpoint(rt.request.provider,
-                                      rt.dataset,
-                                      symbol,
-                                      build_stream_checkpoint_payload(*committed_wm),
-                                      *committed_wm);
-}
-
 SymbolRunResult run_symbol_download(const DownloadRuntime& rt,
                                     Collector& collector,
-                                    MetadataStore& metadata,
+                                    MetadataStore& /*metadata*/,
                                     const Symbol& symbol,
                                     const SymbolPlan& plan) {
     SymbolRunResult result;
-    const bool cloud_mode = rt.config.storage.enabled &&
-        (rt.config.storage.backend == "baidu_netdisk" || rt.config.storage.backend == "baidu");
-    const bool local_raw_exists = has_local_raw_partition(rt.paths, symbol, plan.start, plan.end);
-    const int dedup_hours = std::max(0, rt.config.ingestion.request_dedup_hours);
-    const bool explicit_window_request = rt.request.start.has_value() || rt.request.end.has_value();
-    const bool watermark_covers_end = plan.current_wm.has_value() && (*plan.current_wm >= plan.end);
-    const bool checkpoint_covers_end = plan.has_stream_checkpoint &&
-        (*plan.current_cp->last_event_date >= plan.end);
-    const bool dedup_eligible = explicit_window_request || watermark_covers_end || checkpoint_covers_end;
-
-    if (rt.incremental_mode && !rt.stream_resume_mode && dedup_hours > 0 &&
-        dedup_eligible && (local_raw_exists || cloud_mode) &&
-        metadata.has_recent_successful_request(rt.request.provider,
-                                               rt.dataset,
-                                               symbol,
-                                               plan.start,
-                                               plan.end,
-                                               dedup_hours)) {
-        std::cout << "Skip duplicate request for " << symbol
-                  << " [" << format_date(plan.start) << ", " << format_date(plan.end)
-                  << "] within " << dedup_hours << "h window." << std::endl;
-        result.skipped = true;
-        return result;
-    }
-
-    std::string run_id = rt.request.provider + "_dl_" + symbol + "_" +
-        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    metadata.begin_ingestion_run(run_id, rt.request.provider, rt.dataset, symbol, run_mode(rt));
-
     try {
         auto report = collector.collect_symbol(symbol, plan.start, plan.end);
-        metadata.finish_ingestion_run(run_id, true,
-                                      static_cast<int64_t>(report.total_bars),
-                                      static_cast<int64_t>(report.valid_bars));
-        metadata.record_request_fingerprint(rt.request.provider,
-                                            rt.dataset,
-                                            symbol,
-                                            plan.start,
-                                            plan.end,
-                                            "success",
-                                            run_id,
-                                            static_cast<int64_t>(report.total_bars));
-        update_stream_checkpoint(rt, metadata, symbol);
-
         std::cout << "Downloaded " << report.total_bars << " bars for " << symbol
                   << " (quality: " << std::fixed << std::setprecision(1)
                   << (report.quality_score() * 100) << "%)" << std::endl;
         result.success = true;
     } catch (const std::exception& e) {
-        metadata.finish_ingestion_run(run_id, false, 0, 0, e.what());
-        metadata.record_request_fingerprint(rt.request.provider,
-                                            rt.dataset,
-                                            symbol,
-                                            plan.start,
-                                            plan.end,
-                                            "failed",
-                                            run_id,
-                                            0);
-        throw;
+        spdlog::error("Failed to download {}: {}", symbol, e.what());
     }
-
     return result;
 }
 

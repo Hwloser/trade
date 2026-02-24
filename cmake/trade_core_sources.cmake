@@ -12,7 +12,7 @@ set(TRADE_DATA_SOURCES
     src/storage/parquet_reader.cpp
     src/storage/metadata_store.cpp
     src/storage/storage_path.cpp
-    src/storage/data_compactor.cpp
+    src/storage/duck_store.cpp
     src/storage/baidu_netdisk_client.cpp
     src/provider/provider_factory.cpp
     src/provider/http_client.cpp

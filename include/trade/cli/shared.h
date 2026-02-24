@@ -19,11 +19,7 @@ struct SqlViewDef {
 
 struct MetadataHealth {
     bool ok = false;
-    size_t dataset_count = 0;
-    size_t dataset_with_files = 0;
-    size_t dataset_schema_match = 0;
-    size_t file_version_covered = 0;
-    size_t file_total = 0;
+    size_t instrument_count = 0;
 };
 
 std::pair<Date, Date> resolve_dates(const CliArgs& args,

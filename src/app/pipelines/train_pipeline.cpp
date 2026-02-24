@@ -31,35 +31,20 @@ std::vector<Bar> load_bars_for_train(const std::string& symbol,
                                      const Config& config) {
     StoragePath paths(config.data.data_root);
     std::vector<Bar> all_bars;
-    const bool cloud_mode = config.storage.enabled &&
-        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = parse_date(config.ingestion.min_start_date);
     int start_year = date_year(min_date);
     int end_year = date_year(now);
     for (int year = start_year; year <= end_year; ++year) {
-        const std::string raw_path = paths.raw_daily(symbol, year);
-        const std::string silver_path = paths.silver_daily(symbol, year);
-        std::string legacy_curated_path =
-            (std::filesystem::path(config.data.data_root) / "curated" /
-             config.data.market_daily_subpath / std::to_string(year) /
-             (symbol + ".parquet"))
-                .string();
-        const std::vector<std::string> candidates = {
-            raw_path,
-            silver_path,
-            legacy_curated_path,
-        };
-        for (const auto& path : candidates) {
-            if (!cloud_mode && !std::filesystem::exists(path)) continue;
+        for (int month = 1; month <= 12; ++month) {
+            const std::string path = paths.kline_monthly(symbol, year, month);
+            if (!std::filesystem::exists(path)) continue;
             try {
                 auto bars = ParquetReader::read_bars(path);
                 if (!bars.empty()) {
                     all_bars.insert(all_bars.end(), bars.begin(), bars.end());
-                    break;
                 }
-            } catch (...) {
-            }
+            } catch (...) {}
         }
     }
     return all_bars;
@@ -117,42 +102,7 @@ int run_train(const TrainRequest& request, const Config& config) {
     model.save(mpath);
     spdlog::info("Saved to {}", mpath);
 
-    try {
-        MetadataStore metadata(paths.metadata_db());
-        std::string snapshot_dataset_id = "raw.cn_a.daily";
-        int schema_version = 1;
-        auto datasets = metadata.list_datasets();
-        auto it = std::find_if(datasets.begin(), datasets.end(), [](const auto& ds) {
-            return ds.dataset_id == "raw.cn_a.daily";
-        });
-        if (it == datasets.end()) {
-            it = std::find_if(datasets.begin(), datasets.end(), [](const auto& ds) {
-                return ds.dataset_id == "silver.cn_a.daily";
-            });
-        }
-        if (it != datasets.end()) {
-            snapshot_dataset_id = it->dataset_id;
-            schema_version = it->schema_version;
-        }
-
-        MetadataStore::TrainingSnapshotRecord snap;
-        snap.snapshot_id = "lgbm_" +
-            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
-        snap.dataset_id = snapshot_dataset_id;
-        snap.query_spec = "symbol=" + request.symbol +
-                          ",start=" + format_date(bars.front().date) +
-                          ",end=" + format_date(bars.back().date);
-        snap.snapshot_path = mpath;
-        snap.start_date = bars.front().date;
-        snap.end_date = bars.back().date;
-        snap.row_count = features.num_observations();
-        snap.schema_version = schema_version;
-        snap.model_name = "lgbm_factor_v1";
-        metadata.record_training_snapshot(snap);
-    } catch (const std::exception& e) {
-        spdlog::warn("Failed to record training snapshot metadata: {}", e.what());
-    }
+    spdlog::info("Model saved to {}", mpath);
 
     auto imp = model.feature_importance_named(features.names, "gain");
     std::cout << "\nTop features:" << std::endl;

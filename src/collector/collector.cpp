@@ -145,47 +145,6 @@ bool merge_and_write_silver_bars(const std::string& path,
     return true;
 }
 
-void record_market_quality(MetadataStore& metadata,
-                           const std::string& run_id,
-                           const std::string& dataset_id,
-                           const Symbol& symbol,
-                           const QualityReport& report,
-                           std::optional<Date> event_date) {
-    MetadataStore::QualityCheckRecord qc;
-    qc.run_id = run_id;
-    qc.dataset_id = dataset_id;
-    qc.check_name = "quality_score";
-    qc.metric_value = report.quality_score();
-    qc.threshold_value = 0.95;
-    qc.status = qc.metric_value >= qc.threshold_value ? "pass" : "warn";
-    qc.severity = qc.metric_value >= qc.threshold_value ? "info" : "warning";
-    qc.message = symbol + " quality=" + std::to_string(qc.metric_value);
-    qc.event_date = event_date;
-    metadata.record_quality_check(qc);
-
-    MetadataStore::QualityCheckRecord dup = qc;
-    dup.check_name = "duplicate_dates";
-    dup.metric_value = static_cast<double>(report.duplicate_dates);
-    dup.threshold_value = 0.0;
-    dup.status = report.duplicate_dates == 0 ? "pass" : "warn";
-    dup.severity = report.duplicate_dates == 0 ? "info" : "warning";
-    dup.message = symbol + " duplicates=" + std::to_string(report.duplicate_dates);
-    metadata.record_quality_check(dup);
-
-    MetadataStore::QualityCheckRecord pa = qc;
-    pa.check_name = "price_anomalies";
-    pa.metric_value = static_cast<double>(report.price_anomalies);
-    pa.threshold_value = 0.0;
-    pa.status = report.price_anomalies == 0 ? "pass" : "warn";
-    pa.severity = report.price_anomalies == 0 ? "info" : "warning";
-    pa.message = symbol + " anomalies=" + std::to_string(report.price_anomalies);
-    metadata.record_quality_check(pa);
-}
-
-Symbol symbol_from_dataset_file(const std::string& file_path) {
-    return std::filesystem::path(file_path).stem().string();
-}
-
 } // namespace
 
 Collector::Collector(std::unique_ptr<IDataProvider> provider,
@@ -202,9 +161,6 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
     if (config_.ingestion.write_silver_layer) {
         spdlog::debug("write_silver_layer is ignored in collect; use build_silver_* from raw");
     }
-    const std::string run_id = provider_->name() + "_collect_" + symbol + "_" +
-        std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
 
     // 1. Fetch from provider
     auto raw_bars = provider_->fetch_daily(symbol, start, end);
@@ -221,34 +177,38 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
         }
     }
 
-    // 3. Partition by year and write raw only.
+    // 3. Partition by year+month and write raw only.
     if (!config_.ingestion.write_raw_layer) {
         spdlog::warn("write_raw_layer=false ignored: collect always writes raw");
     }
     bool raw_changed = false;
-    std::map<int, std::vector<Bar>> raw_by_year;
+    std::map<std::pair<int,int>, std::vector<Bar>> raw_by_month;
     for (const auto& bar : raw_bars) {
-        raw_by_year[date_year(bar.date)].push_back(bar);
+        auto ymd = std::chrono::year_month_day{bar.date};
+        int y = static_cast<int>(ymd.year());
+        int m = static_cast<int>(static_cast<unsigned>(ymd.month()));
+        raw_by_month[{y, m}].push_back(bar);
     }
-    for (auto& [year, year_raw] : raw_by_year) {
-        auto raw_path = paths_.raw_daily(symbol, year);
+    for (auto& [ym, month_bars] : raw_by_month) {
+        auto [year, month] = ym;
+        auto raw_path = paths_.kline_monthly(symbol, year, month);
         Date max_date = start;
-        for (const auto& b : year_raw) {
+        for (const auto& b : month_bars) {
             if (b.date > max_date) max_date = b.date;
         }
-        raw_changed = merge_and_write_raw_bars(raw_path, std::move(year_raw), max_date) || raw_changed;
+        raw_changed = merge_and_write_raw_bars(raw_path, std::move(month_bars), max_date) || raw_changed;
     }
     if (!raw_changed) {
         spdlog::info("{} raw layer unchanged (skip rewrite)", symbol);
     }
 
-    // 8. Upsert instrument record
+    // 4. Upsert instrument record
     auto inst_opt = provider_->fetch_instrument(symbol);
     if (inst_opt) {
         metadata_.upsert_instrument(*inst_opt);
     }
 
-    // 9. Record download and advance watermark
+    // 5. Record download and advance watermark
     auto minmax_date = std::minmax_element(
         raw_bars.begin(), raw_bars.end(),
         [](const Bar& a, const Bar& b) { return a.date < b.date; });
@@ -263,11 +223,6 @@ QualityReport Collector::collect_symbol(const Symbol& symbol, Date start, Date e
                                config_.ingestion.daily_bar_dataset,
                                symbol,
                                batch_end);
-    if (raw_changed) {
-        record_market_quality(metadata_, run_id, "raw.cn_a.daily", symbol, report, batch_end);
-    } else {
-        spdlog::debug("{} no partition changed, skip quality check insert", symbol);
-    }
 
     spdlog::info("Collected {} raw bars for {} (quality: {:.1f}%)",
                  raw_bars.size(),
@@ -282,15 +237,17 @@ QualityReport Collector::build_silver_symbol(const Symbol& symbol, Date start, D
 
     std::vector<Bar> raw_bars;
     for (int year = date_year(start); year <= date_year(end); ++year) {
-        auto raw_path = paths_.raw_daily(symbol, year);
-        if (!std::filesystem::exists(raw_path)) continue;
-        try {
-            auto ybars = ParquetReader::read_bars(raw_path, start, end);
-            raw_bars.insert(raw_bars.end(),
-                            std::make_move_iterator(ybars.begin()),
-                            std::make_move_iterator(ybars.end()));
-        } catch (const std::exception& e) {
-            spdlog::warn("Failed to read raw partition {}: {}", raw_path, e.what());
+        for (int month = 1; month <= 12; ++month) {
+            auto raw_path = paths_.kline_monthly(symbol, year, month);
+            if (!std::filesystem::exists(raw_path)) continue;
+            try {
+                auto ybars = ParquetReader::read_bars(raw_path, start, end);
+                raw_bars.insert(raw_bars.end(),
+                                std::make_move_iterator(ybars.begin()),
+                                std::make_move_iterator(ybars.end()));
+            } catch (const std::exception& e) {
+                spdlog::warn("Failed to read raw partition {}: {}", raw_path, e.what());
+            }
         }
     }
     if (raw_bars.empty()) {
@@ -345,31 +302,27 @@ QualityReport Collector::build_silver_symbol(const Symbol& symbol, Date start, D
         }
     }
 
-    std::map<int, std::vector<Bar>> silver_by_year;
+    std::map<std::pair<int,int>, std::vector<Bar>> silver_by_month;
     for (const auto& bar : silver_bars) {
-        silver_by_year[date_year(bar.date)].push_back(bar);
+        auto ymd = std::chrono::year_month_day{bar.date};
+        int y = static_cast<int>(ymd.year());
+        int m = static_cast<int>(static_cast<unsigned>(ymd.month()));
+        silver_by_month[{y, m}].push_back(bar);
     }
 
     bool silver_changed = false;
-    for (auto& [year, year_silver] : silver_by_year) {
+    for (auto& [ym, month_silver] : silver_by_month) {
+        auto [year, month] = ym;
         auto silver_path = paths_.silver_daily(symbol, year);
         Date max_date = start;
-        for (const auto& b : year_silver) {
+        for (const auto& b : month_silver) {
             if (b.date > max_date) max_date = b.date;
         }
         silver_changed = merge_and_write_silver_bars(
-            silver_path, std::move(year_silver), board, max_date) || silver_changed;
+            silver_path, std::move(month_silver), board, max_date) || silver_changed;
     }
 
-    auto minmax_date = std::minmax_element(
-        silver_bars.begin(), silver_bars.end(),
-        [](const Bar& a, const Bar& b) { return a.date < b.date; });
-    const Date batch_end = minmax_date.second->date;
     if (silver_changed) {
-        const std::string run_id = provider_->name() + "_silver_" + symbol + "_" +
-            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
-        record_market_quality(metadata_, run_id, "silver.cn_a.daily", symbol, report, batch_end);
         spdlog::info("Built {} silver bars for {} (quality: {:.1f}%)",
                      silver_bars.size(), symbol, report.quality_score() * 100);
     } else {
@@ -380,13 +333,12 @@ QualityReport Collector::build_silver_symbol(const Symbol& symbol, Date start, D
 
 void Collector::build_silver_all(Date start, Date end, ProgressCallback progress) {
     std::set<Symbol> symbols;
-    for (const auto& f : metadata_.list_dataset_files("raw.cn_a.daily")) {
-        auto sym = symbol_from_dataset_file(f.file_path);
-        if (!sym.empty()) symbols.insert(sym);
+    for (const auto& inst : metadata_.get_all_instruments()) {
+        symbols.insert(inst.symbol);
     }
 
     if (symbols.empty()) {
-        spdlog::warn("No raw.cn_a.daily files found in metadata; nothing to build for silver");
+        spdlog::warn("No instruments found in metadata; nothing to build for silver");
         return;
     }
 
