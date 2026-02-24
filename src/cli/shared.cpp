@@ -1,6 +1,7 @@
 #include "trade/cli/shared.h"
 
 #include "trade/common/time_utils.h"
+#include "trade/storage/duck_store.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/storage_path.h"
@@ -27,6 +28,25 @@ std::pair<Date, Date> resolve_dates(const CliArgs& args,
 std::vector<Bar> load_bars(const std::string& symbol,
                            const Config& config) {
     StoragePath paths(config.data.data_root);
+
+    // Fast path: use DuckStore to scan all kline parquet files in one query.
+    const std::string kline_dir =
+        (std::filesystem::path(config.data.data_root) / "kline").string();
+    if (std::filesystem::exists(kline_dir)) {
+        const std::string glob =
+            (std::filesystem::path(kline_dir) / "**" / "*.parquet").string();
+        try {
+            DuckStore db;
+            auto bars = db.read_bars(glob, symbol);
+            if (!bars.empty()) {
+                return bars;
+            }
+        } catch (...) {
+            // Fall through to year-loop below on any DuckStore failure.
+        }
+    }
+
+    // Fallback: year/month file loop via ParquetReader.
     std::map<Date, Bar> by_date;
     auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
     auto min_date = parse_date(config.ingestion.min_start_date);

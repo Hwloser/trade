@@ -7,6 +7,11 @@ dependencies = [
     "numpy",
     "plotly",
     "matplotlib",
+    "anthropic>=0.40.0",
+    "feedparser>=6.0",
+    "pandas>=2.0",
+    "duckdb>=1.0",
+    "pyarrow>=14.0",
 ]
 
 [project.optional-dependencies]
@@ -14,6 +19,7 @@ dev = [
     "pytest",
     "ipython",
     "jupyter",
+    "nbformat",
 ]
 nlp = [
     "torch",
