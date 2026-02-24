@@ -35,6 +35,7 @@ set(TRADE_FEATURE_SOURCES
     src/features/calendar.cpp
     src/features/fundamental.cpp
     src/features/feature_monitor.cpp
+    src/features/technical_signals.cpp
 )
 
 set(TRADE_STATS_SOURCES
