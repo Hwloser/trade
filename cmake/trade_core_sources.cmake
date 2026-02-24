@@ -18,6 +18,7 @@ set(TRADE_DATA_SOURCES
     src/provider/provider_factory.cpp
     src/provider/http_client.cpp
     src/provider/eastmoney_provider.cpp
+    src/provider/eastmoney_fundamental.cpp
     src/normalizer/bar_normalizer.cpp
     src/validator/data_validator.cpp
     src/collector/collector.cpp
@@ -37,6 +38,7 @@ set(TRADE_FEATURE_SOURCES
     src/features/fundamental.cpp
     src/features/feature_monitor.cpp
     src/features/technical_signals.cpp
+    src/features/fundamental_features.cpp
 )
 
 set(TRADE_STATS_SOURCES
