@@ -127,6 +127,7 @@ trade_add_object_module(trade_obj_regime ${TRADE_REGIME_SOURCES})
 trade_add_object_module(trade_obj_backtest ${TRADE_BACKTEST_SOURCES})
 trade_add_object_module(trade_obj_sentiment ${TRADE_SENTIMENT_SOURCES})
 trade_add_object_module(trade_obj_decision ${TRADE_DECISION_SOURCES})
+trade_add_object_module(trade_obj_signal ${TRADE_SIGNAL_SOURCES})
 trade_add_object_module(trade_obj_app ${TRADE_APP_SOURCES})
 
 add_library(trade_core STATIC
@@ -140,6 +141,7 @@ add_library(trade_core STATIC
     $<TARGET_OBJECTS:trade_obj_backtest>
     $<TARGET_OBJECTS:trade_obj_sentiment>
     $<TARGET_OBJECTS:trade_obj_decision>
+    $<TARGET_OBJECTS:trade_obj_signal>
     $<TARGET_OBJECTS:trade_obj_app>
 )
 
@@ -167,6 +169,7 @@ file(CREATE_LINK ${CMAKE_CURRENT_SOURCE_DIR}/data
 
 # Tests
 if(BUILD_TESTING)
+    enable_testing()
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests.cmake)
     trade_configure_tests()
 endif()

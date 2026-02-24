@@ -43,6 +43,7 @@ function(trade_configure_tests)
     add_trade_test(test_decision tests/unit/test_decision.cpp)
     add_trade_test(test_regime tests/unit/test_regime.cpp)
     add_trade_test(test_duck_store tests/unit/test_duck_store.cpp)
+    add_trade_test(test_propagation tests/unit/test_propagation.cpp)
 
     add_trade_test(test_pipeline tests/integration/test_pipeline.cpp)
 endfunction()

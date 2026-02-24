@@ -94,6 +94,10 @@ set(TRADE_DECISION_SOURCES
     src/decision/decision_report.cpp
 )
 
+set(TRADE_SIGNAL_SOURCES
+    src/signal/propagation.cpp
+)
+
 set(TRADE_APP_SOURCES
     src/app/pipelines/download_pipeline.cpp
     src/app/pipelines/sentiment_pipeline.cpp
