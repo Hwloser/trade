@@ -21,9 +21,22 @@ dev = [
     "jupyter",
     "nbformat",
 ]
+ml = [
+    "lightgbm>=4.0",
+    "scikit-learn>=1.4",
+    "scipy>=1.12",
+    "shap>=0.45",
+    "joblib>=1.3",
+    "networkx>=3.0",
+]
 nlp = [
     "torch",
     "transformers",
     "onnx",
     "onnxruntime",
 ]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
