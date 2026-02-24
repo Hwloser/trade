@@ -13,7 +13,8 @@ set(TRADE_DATA_SOURCES
     src/storage/metadata_store.cpp
     src/storage/storage_path.cpp
     src/storage/duck_store.cpp
-    src/storage/baidu_netdisk_client.cpp
+    src/storage/cloud_sync.cpp
+    src/storage/google_drive_sync.cpp
     src/provider/provider_factory.cpp
     src/provider/http_client.cpp
     src/provider/eastmoney_provider.cpp

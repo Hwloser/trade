@@ -3,13 +3,13 @@
 includes:
   - modules/data_ingestion.yaml
   - modules/provider_eastmoney.yaml
-  - modules/storage_baidu.yaml
+  - modules/storage_google_drive.yaml
   - modules/security.yaml
   - modules/sentiment.yaml
 
 # Optional local overrides can be added below, for example:
 # storage:
 #   enabled: true
-#   backend: "baidu_netdisk"
+#   backend: "google_drive"
 #   write_mode: "hybrid"
 #   hot_days: 30

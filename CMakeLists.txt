@@ -32,6 +32,7 @@ find_package(yaml-cpp CONFIG REQUIRED)
 find_package(pugixml CONFIG REQUIRED)
 find_package(CURL REQUIRED)
 find_package(re2 CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # LightGBM - optional
 find_package(LightGBM CONFIG QUIET)
@@ -92,6 +93,7 @@ target_link_libraries(trade_deps INTERFACE
     pugixml::pugixml
     CURL::libcurl
     re2::re2
+    OpenSSL::Crypto
     duckdb_static
     duckdb_generated_extension_loader
     parquet_extension

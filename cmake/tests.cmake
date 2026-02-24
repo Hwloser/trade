@@ -46,5 +46,7 @@ function(trade_configure_tests)
     add_trade_test(test_propagation tests/unit/test_propagation.cpp)
     add_trade_test(test_technical_signals tests/unit/test_technical_signals.cpp)
 
+    add_trade_test(test_google_drive_sync tests/unit/test_google_drive_sync.cpp)
+
     add_trade_test(test_pipeline tests/integration/test_pipeline.cpp)
 endfunction()

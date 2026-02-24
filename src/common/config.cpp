@@ -154,22 +154,17 @@ Config Config::load(const std::string& path) {
             if (n["ttl_sentiment_raw_days"]) {
                 cfg.storage.ttl_sentiment_raw_days = n["ttl_sentiment_raw_days"].as<int>();
             }
-            if (n["baidu_app_id"]) cfg.storage.baidu_app_id = n["baidu_app_id"].as<std::string>();
-            if (n["baidu_root"]) cfg.storage.baidu_root = n["baidu_root"].as<std::string>();
-            if (n["baidu_access_token"]) {
-                cfg.storage.baidu_access_token = n["baidu_access_token"].as<std::string>();
+            if (n["google_drive_key_file"]) {
+                cfg.storage.google_drive_key_file = n["google_drive_key_file"].as<std::string>();
             }
-            if (n["baidu_refresh_token"]) {
-                cfg.storage.baidu_refresh_token = n["baidu_refresh_token"].as<std::string>();
+            if (n["google_drive_folder_id"]) {
+                cfg.storage.google_drive_folder_id = n["google_drive_folder_id"].as<std::string>();
             }
-            if (n["baidu_app_key"]) cfg.storage.baidu_app_key = n["baidu_app_key"].as<std::string>();
-            if (n["baidu_app_secret"]) {
-                cfg.storage.baidu_app_secret = n["baidu_app_secret"].as<std::string>();
+            if (n["google_drive_timeout_ms"]) {
+                cfg.storage.google_drive_timeout_ms = n["google_drive_timeout_ms"].as<int>();
             }
-            if (n["baidu_sign_key"]) cfg.storage.baidu_sign_key = n["baidu_sign_key"].as<std::string>();
-            if (n["baidu_timeout_ms"]) cfg.storage.baidu_timeout_ms = n["baidu_timeout_ms"].as<int>();
-            if (n["baidu_retry_count"]) {
-                cfg.storage.baidu_retry_count = n["baidu_retry_count"].as<int>();
+            if (n["google_drive_retry_count"]) {
+                cfg.storage.google_drive_retry_count = n["google_drive_retry_count"].as<int>();
             }
             if (n["compaction_bucket_count"]) {
                 cfg.storage.compaction_bucket_count = n["compaction_bucket_count"].as<int>();
@@ -196,34 +191,14 @@ Config Config::load(const std::string& path) {
         }
 
         // Environment variable fallback for secrets
-        if (cfg.storage.baidu_access_token.empty()) {
-            if (const char* v = std::getenv("BAIDU_ACCESS_TOKEN")) {
-                cfg.storage.baidu_access_token = v;
+        if (cfg.storage.google_drive_key_file.empty()) {
+            if (const char* v = std::getenv("GOOGLE_DRIVE_KEY_FILE")) {
+                cfg.storage.google_drive_key_file = v;
             }
         }
-        if (cfg.storage.baidu_refresh_token.empty()) {
-            if (const char* v = std::getenv("BAIDU_REFRESH_TOKEN")) {
-                cfg.storage.baidu_refresh_token = v;
-            }
-        }
-        if (cfg.storage.baidu_app_key.empty()) {
-            if (const char* v = std::getenv("BAIDU_APP_KEY")) {
-                cfg.storage.baidu_app_key = v;
-            }
-        }
-        if (cfg.storage.baidu_app_secret.empty()) {
-            if (const char* v = std::getenv("BAIDU_APP_SECRET")) {
-                cfg.storage.baidu_app_secret = v;
-            }
-        }
-        if (cfg.storage.baidu_app_id.empty()) {
-            if (const char* v = std::getenv("BAIDU_APP_ID")) {
-                cfg.storage.baidu_app_id = v;
-            }
-        }
-        if (cfg.storage.baidu_sign_key.empty()) {
-            if (const char* v = std::getenv("BAIDU_SIGN_KEY")) {
-                cfg.storage.baidu_sign_key = v;
+        if (cfg.storage.google_drive_folder_id.empty()) {
+            if (const char* v = std::getenv("GOOGLE_DRIVE_FOLDER_ID")) {
+                cfg.storage.google_drive_folder_id = v;
             }
         }
         if (cfg.security.default_role.empty()) {

@@ -36,7 +36,7 @@ struct EastMoneyConfig {
 
 struct StorageConfig {
     bool enabled = false;
-    std::string backend = "local";  // local, baidu_netdisk
+    std::string backend = "local";  // local, google_drive
 
     // Write policy:
     // - local_only: write to local disk only
@@ -57,16 +57,11 @@ struct StorageConfig {
     int ttl_gold_days = 0;
     int ttl_sentiment_raw_days = 7;
 
-    // Baidu Netdisk OpenAPI credentials
-    std::string baidu_app_id = "";
-    std::string baidu_root = "/apps/trade";
-    std::string baidu_access_token = "";
-    std::string baidu_refresh_token = "";
-    std::string baidu_app_key = "";
-    std::string baidu_app_secret = "";
-    std::string baidu_sign_key = "";
-    int baidu_timeout_ms = 30000;
-    int baidu_retry_count = 2;
+    // Google Drive service account credentials
+    std::string google_drive_key_file = "";      // path to service account JSON key file
+    std::string google_drive_folder_id = "";     // root Google Drive folder ID
+    int google_drive_timeout_ms = 30000;
+    int google_drive_retry_count = 2;
 
     // Compaction policy for raw/silver market partitions.
     int compaction_bucket_count = 32;

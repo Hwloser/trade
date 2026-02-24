@@ -1,0 +1,21 @@
+storage:
+  enabled: false
+  backend: "local"
+  write_mode: "local_only"         # local_only | hybrid | cloud_only
+  hot_days: 30
+  keep_local_cold_copy: false
+  mirror_hot_to_cloud: false
+  ttl_global_days: 0               # 0 = disabled
+  ttl_raw_days: 0
+  ttl_silver_days: 0
+  ttl_gold_days: 0
+  ttl_sentiment_raw_days: 7
+  google_drive_key_file: ""        # path to service account JSON key file
+  google_drive_folder_id: ""       # Google Drive root folder ID
+  google_drive_timeout_ms: 30000
+  google_drive_retry_count: 2
+  compaction_bucket_count: 32
+  compaction_small_file_rows: 4000
+  compaction_tombstone_retention_days: 0   # 0 = major compaction purge all tombstones
+  auto_compact_on_exit: true
+  auto_major_compaction_on_exit: true

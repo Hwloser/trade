@@ -5,7 +5,7 @@
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
 #include "trade/collector/collector.h"
-#include "trade/storage/baidu_netdisk_client.h"
+#include "trade/storage/google_drive_sync.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/storage/parquet_writer.h"
@@ -32,8 +32,7 @@ namespace trade::cli {
 namespace {
 
 bool cloud_mode_enabled(const trade::Config& config) {
-    return config.storage.enabled &&
-        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+    return config.storage.enabled && config.storage.backend == "google_drive";
 }
 
 int days_old(Date d) {
@@ -136,18 +135,13 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 
     // 2) Cloud check (optional)
     const bool cloud_mode = config.storage.enabled &&
-        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+        config.storage.backend == "google_drive";
     if (cloud_mode) {
-        trade::BaiduNetdiskClient client({
-            .access_token = config.storage.baidu_access_token,
-            .refresh_token = config.storage.baidu_refresh_token,
-            .app_key = config.storage.baidu_app_key,
-            .app_secret = config.storage.baidu_app_secret,
-            .app_id = config.storage.baidu_app_id,
-            .sign_key = config.storage.baidu_sign_key,
-            .root_path = config.storage.baidu_root,
-            .timeout_ms = config.storage.baidu_timeout_ms,
-            .retry_count = config.storage.baidu_retry_count,
+        trade::GoogleDriveSync client({
+            .service_account_json_path = config.storage.google_drive_key_file,
+            .root_folder_id = config.storage.google_drive_folder_id,
+            .timeout_ms = config.storage.google_drive_timeout_ms,
+            .retry_count = config.storage.google_drive_retry_count,
         });
         auto ts = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
@@ -419,7 +413,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
     }
 
     const bool cloud_mode = config.storage.enabled &&
-        (config.storage.backend == "baidu_netdisk" || config.storage.backend == "baidu");
+        config.storage.backend == "google_drive";
 
     // Cloud backflow: hydrate requested file/symbol into local cache before DuckDB starts.
     bool symbol_hydrated = false;
@@ -497,7 +491,7 @@ int cmd_sql(const CliArgs& args, const trade::Config& config) {
 
     if (cloud_mode) {
         std::cout << "Cloud mode enabled: DuckDB sees local + hydrated cache partitions.\n"
-                  << "Tip: use --symbol to pre-hydrate one symbol from Baidu cloud.\n"
+                  << "Tip: use --symbol to pre-hydrate one symbol from Google Drive cloud.\n"
                   << std::endl;
     }
 

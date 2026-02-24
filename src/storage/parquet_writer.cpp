@@ -1,7 +1,7 @@
 #include "trade/storage/parquet_writer.h"
 
 #include "trade/common/time_utils.h"
-#include "trade/storage/baidu_netdisk_client.h"
+#include "trade/storage/google_drive_sync.h"
 #include "trade/storage/parquet_reader.h"
 #include "trade/normalizer/bar_normalizer.h"
 
@@ -46,7 +46,7 @@ WriteDecision decide_write(const std::optional<Date>& partition_max_date) {
         return {};
     }
 
-    if (rt.storage.backend != "baidu_netdisk" && rt.storage.backend != "baidu") {
+    if (rt.storage.backend != "google_drive") {
         return {};
     }
 
@@ -595,16 +595,11 @@ void ParquetStore::write_table(const std::string& path,
 
     if (decision.write_cloud) {
         const auto& rt = runtime_storage();
-        BaiduNetdiskClient client({
-            .access_token = rt.storage.baidu_access_token,
-            .refresh_token = rt.storage.baidu_refresh_token,
-            .app_key = rt.storage.baidu_app_key,
-            .app_secret = rt.storage.baidu_app_secret,
-            .app_id = rt.storage.baidu_app_id,
-            .sign_key = rt.storage.baidu_sign_key,
-            .root_path = rt.storage.baidu_root,
-            .timeout_ms = rt.storage.baidu_timeout_ms,
-            .retry_count = rt.storage.baidu_retry_count,
+        GoogleDriveSync client({
+            .service_account_json_path = rt.storage.google_drive_key_file,
+            .root_folder_id = rt.storage.google_drive_folder_id,
+            .timeout_ms = rt.storage.google_drive_timeout_ms,
+            .retry_count = rt.storage.google_drive_retry_count,
         });
         const std::string rel_path = to_rel_data_path(path, rt.data.data_root);
         cloud_ok = client.upload_bytes(rel_path, bytes);
