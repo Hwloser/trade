@@ -46,6 +46,7 @@ function(trade_configure_tests)
     add_trade_test(test_propagation tests/unit/test_propagation.cpp)
     add_trade_test(test_technical_signals tests/unit/test_technical_signals.cpp)
     add_trade_test(test_fundamental_features tests/unit/test_fundamental_features.cpp)
+    add_trade_test(test_smart_money tests/unit/test_smart_money.cpp)
 
     add_trade_test(test_google_drive_sync tests/unit/test_google_drive_sync.cpp)
 

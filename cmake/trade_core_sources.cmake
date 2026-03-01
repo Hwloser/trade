@@ -40,6 +40,7 @@ set(TRADE_FEATURE_SOURCES
     src/features/feature_monitor.cpp
     src/features/technical_signals.cpp
     src/features/fundamental_features.cpp
+    src/features/smart_money_signal.cpp
 )
 
 set(TRADE_STATS_SOURCES
