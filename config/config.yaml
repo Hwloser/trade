@@ -1,15 +1,11 @@
-# Minimal entry config. Keep this file small.
-# Add new modules under config/modules and include them here.
-includes:
-  - modules/data_ingestion.yaml
-  - modules/provider_eastmoney.yaml
-  - modules/storage_google_drive.yaml
-  - modules/security.yaml
-  - modules/sentiment.yaml
+# Trade 系统基础设施配置
+# 仅存放很少变动的基础设施参数（路径、凭证、API keys）
+# 用户参数（风险、回测、信号阈值）在 Web UI 的"设置"页面修改，存储于 data/.metadata/trade.db
 
-# Optional local overrides can be added below, for example:
-# storage:
-#   enabled: true
-#   backend: "google_drive"
-#   write_mode: "hybrid"
-#   hot_days: 30
+includes:
+  - modules/storage.yaml    # 云存储（Google Drive，默认关闭）
+  - modules/security.yaml   # Admin token
+  - modules/sentiment.yaml  # RSS feeds / 第三方 API keys
+
+data:
+  data_root: "data"

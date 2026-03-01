@@ -287,9 +287,11 @@ std::string LGBMModel::to_string() const {
     if (!booster_) return "";
     int64_t buf_len = 0;
     int64_t out_len = 0;
-    LGBM_BoosterSaveModelToString(booster_, 0, -1, 0, buf_len, &out_len);
-    std::string buf(out_len, '\0');
-    LGBM_BoosterSaveModelToString(booster_, 0, -1, 0, out_len, &out_len);
+    // First call: query required buffer size (pass nullptr for out_str)
+    LGBM_BoosterSaveModelToString(booster_, 0, -1, 0, buf_len, &out_len, nullptr);
+    std::string buf(static_cast<size_t>(out_len), '\0');
+    // Second call: fill the buffer
+    LGBM_BoosterSaveModelToString(booster_, 0, -1, 0, out_len, &out_len, buf.data());
     return buf;
 }
 

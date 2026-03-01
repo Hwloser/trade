@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from trade_py.knowledge_graph import SectorGraph
+from trade_py.analysis.knowledge_graph import SectorGraph
 
 
 def print_propagation(results, event_type: str, max_rows: int = 15):

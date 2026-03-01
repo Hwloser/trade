@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from trade_py.knowledge_graph import SectorGraph, SW, SW_NAMES_ZH
+from trade_py.analysis.knowledge_graph import SectorGraph, SW, SW_NAMES_ZH
 
 
 def main():

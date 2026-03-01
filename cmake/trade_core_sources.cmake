@@ -15,13 +15,14 @@ set(TRADE_DATA_SOURCES
     src/storage/duck_store.cpp
     src/storage/cloud_sync.cpp
     src/storage/google_drive_sync.cpp
-    src/provider/provider_factory.cpp
-    src/provider/http_client.cpp
-    src/provider/eastmoney_provider.cpp
-    src/provider/eastmoney_fundamental.cpp
+    # provider/collector sources removed: data ingestion migrated to Python/akshare
+    # src/provider/provider_factory.cpp
+    # src/provider/http_client.cpp
+    # src/provider/eastmoney_provider.cpp
+    # src/provider/eastmoney_fundamental.cpp
+    # src/collector/collector.cpp
     src/normalizer/bar_normalizer.cpp
     src/validator/data_validator.cpp
-    src/collector/collector.cpp
 )
 
 set(TRADE_FEATURE_SOURCES
@@ -103,7 +104,8 @@ set(TRADE_SIGNAL_SOURCES
 )
 
 set(TRADE_APP_SOURCES
-    src/app/pipelines/download_pipeline.cpp
+    # download_pipeline.cpp removed: data ingestion migrated to Python/akshare
+    # src/app/pipelines/download_pipeline.cpp
     src/app/pipelines/sentiment_pipeline.cpp
     src/app/pipelines/train_pipeline.cpp
 )

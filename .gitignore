@@ -22,12 +22,8 @@ dist/
 *.so
 *.dylib
 
-# Data (too large for git)
-data/raw/
-data/curated/
-data/silver/
-data/models/*.model
-data/models/sentiment/*.onnx
+# Data (generated, too large for git)
+data/
 
 # Notebooks checkpoints
 .ipynb_checkpoints/
@@ -39,5 +35,17 @@ data/models/sentiment/*.onnx
 
 # Claude
 .claude/
+
+# AI agent / LLM tool directories
+.agents/
+.cache/
+.gemini/
+
+# BMAD workflow framework (dev tooling, not project code)
+_bmad/
+_bmad-output/
+
+# CTest output
+Testing/
 
 .venv

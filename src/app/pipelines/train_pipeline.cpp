@@ -104,7 +104,7 @@ int run_train(const TrainRequest& request, const Config& config) {
 
     spdlog::info("Model saved to {}", mpath);
 
-    auto imp = model.feature_importance_named(features.names, "gain");
+    auto imp = model.feature_importance_named(features.names, 1);
     std::cout << "\nTop features:" << std::endl;
     for (int i = 0; i < std::min(20, static_cast<int>(imp.size())); ++i) {
         std::cout << "  " << std::left << std::setw(30) << imp[i].first

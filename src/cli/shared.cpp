@@ -10,7 +10,6 @@
 #include <chrono>
 #include <filesystem>
 #include <map>
-#include <set>
 
 namespace trade::cli {
 
@@ -179,19 +178,6 @@ std::vector<SqlViewDef> discover_sql_views(const Config& config) {
             .view_name  = "daily",
             .glob_path  = (kline_dir / "**/*.parquet").string(),
         });
-    }
-    // Legacy path fallback
-    auto raw_dir = std::filesystem::path(config.data.data_root) / "raw" / "cn_a" / "daily";
-    if (has_local_parquet(raw_dir)) {
-        auto it = std::find_if(views.begin(), views.end(),
-                               [](const SqlViewDef& v){ return v.dataset_id == "kline"; });
-        if (it == views.end()) {
-            views.push_back(SqlViewDef{
-                .dataset_id = "kline",
-                .view_name  = "kline",
-                .glob_path  = (raw_dir / "**/*.parquet").string(),
-            });
-        }
     }
     return views;
 }

@@ -1,0 +1,9 @@
+storage:
+  enabled: false
+  backend: "local"           # local | google_drive
+  write_mode: "local_only"   # local_only | hybrid | cloud_only
+  hot_days: 30
+  google_drive_key_file: ""  # path to service account JSON key file
+  google_drive_folder_id: "" # Google Drive root folder ID
+  google_drive_timeout_ms: 30000
+  google_drive_retry_count: 2

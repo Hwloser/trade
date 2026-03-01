@@ -1,112 +1,22 @@
 #include "trade/cli/commands.h"
 
-#include "trade/app/pipelines/download_pipeline.h"
-#include "trade/app/pipelines/sentiment_pipeline.h"
 #include "trade/cli/shared.h"
 #include "trade/common/time_utils.h"
-#include "trade/collector/collector.h"
 #include "trade/storage/google_drive_sync.h"
 #include "trade/storage/metadata_store.h"
 #include "trade/storage/parquet_reader.h"
-#include "trade/storage/parquet_writer.h"
 #include "trade/storage/storage_path.h"
-#include "trade/validator/data_validator.h"
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
-#include <map>
-#include <set>
-#include <stdexcept>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <vector>
 #include <spdlog/spdlog.h>
 
 namespace trade::cli {
-namespace {
-
-bool cloud_mode_enabled(const trade::Config& config) {
-    return config.storage.enabled && config.storage.backend == "google_drive";
-}
-
-int days_old(Date d) {
-    auto now = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-    return static_cast<int>(std::chrono::duration_cast<std::chrono::days>(now - d).count());
-}
-
-
-bool is_valid_raw_bar(const Bar& b) {
-    if (b.open <= 0 || b.high <= 0 || b.low <= 0 || b.close <= 0) return false;
-    if (b.high < b.low) return false;
-    if (b.high < b.open || b.high < b.close) return false;
-    if (b.low > b.open || b.low > b.close) return false;
-    if (b.volume < 0 || b.amount < 0) return false;
-    if (b.volume > 0 && b.amount <= 0) return false;
-    if (b.volume == 0 && b.amount > 0) return false;
-    return true;
-}
-
-std::vector<Bar> sanitize_raw_bars(const std::vector<Bar>& bars,
-                                   int64_t* invalid_dropped,
-                                   int64_t* duplicate_dropped) {
-    int64_t bad = 0;
-    std::map<Date, Bar> by_date;
-    int64_t valid_rows = 0;
-    for (const auto& b : bars) {
-        if (!is_valid_raw_bar(b)) {
-            ++bad;
-            continue;
-        }
-        ++valid_rows;
-        by_date[b.date] = b;  // latest wins on duplicate dates
-    }
-
-    std::vector<Bar> cleaned;
-    cleaned.reserve(by_date.size());
-    for (const auto& [_, b] : by_date) {
-        cleaned.push_back(b);
-    }
-
-    if (invalid_dropped) *invalid_dropped = bad;
-    if (duplicate_dropped) *duplicate_dropped = std::max<int64_t>(0, valid_rows - cleaned.size());
-    return cleaned;
-}
-
-std::string symbol_from_file_path(const std::string& rel_path) {
-    return std::filesystem::path(rel_path).stem().string();
-}
-
-class RawOnlySilverProvider final : public IDataProvider {
-public:
-    std::string name() const override { return "raw_to_silver"; }
-
-    std::vector<Bar> fetch_daily(const Symbol& /*symbol*/,
-                                 Date /*start*/,
-                                 Date /*end*/) override {
-        throw std::runtime_error("RawOnlySilverProvider does not support fetch_daily");
-    }
-
-    std::vector<Instrument> fetch_instruments() override {
-        return {};
-    }
-
-    bool ping() override { return true; }
-};
-
-std::atomic<bool> g_stream_stop{false};
-
-void on_stream_signal(int) {
-    g_stream_stop.store(true);
-}
-
-
-} // namespace
 
 int cmd_verify(const CliArgs& args, const trade::Config& config) {
     bool ok_local = false;
@@ -192,165 +102,23 @@ int cmd_verify(const CliArgs& args, const trade::Config& config) {
 }
 
 // ============================================================================
-// collect
+// collect — DEPRECATED: use Python/akshare pipeline instead
 // ============================================================================
-int cmd_collect(const CliArgs& args, const trade::Config& config) {
-    const std::string action = args.action.empty() ? "raw" : args.action;
-    if (action == "sentiment") {
-        app::SentimentRequest request;
-        request.symbol = args.symbol;
-        request.source = args.source;
-        if (!args.start_date.empty()) request.start = parse_date(args.start_date);
-        if (!args.end_date.empty()) request.end = parse_date(args.end_date);
-        return app::run_sentiment(request, config);
-    }
-
-    if (action == "all") {
-        trade::Config stage_cfg = config;
-        stage_cfg.ingestion.write_silver_layer = false;
-        stage_cfg.ingestion.write_raw_layer = true;
-
-        app::DownloadRequest market_request;
-        market_request.symbol = args.symbol;
-        market_request.provider = args.provider;
-        market_request.refresh = args.refresh;
-        if (!args.start_date.empty()) market_request.start = parse_date(args.start_date);
-        if (!args.end_date.empty()) market_request.end = parse_date(args.end_date);
-        int rc = app::run_download(market_request, stage_cfg);
-        if (rc != 0) return rc;
-
-        app::SentimentRequest sentiment_request;
-        sentiment_request.symbol = args.symbol;
-        sentiment_request.source = args.source;
-        if (!args.start_date.empty()) sentiment_request.start = parse_date(args.start_date);
-        if (!args.end_date.empty()) sentiment_request.end = parse_date(args.end_date);
-        rc = app::run_sentiment(sentiment_request, config);
-        return rc;
-    }
-
-    if (action == "stream") {
-        if (args.symbol.empty()) {
-            spdlog::error("collect --action stream requires --symbol list (comma-separated).");
-            return 1;
-        }
-        if (args.start_date.empty()) {
-            spdlog::error("collect --action stream requires --start.");
-            return 1;
-        }
-        if (!args.end_date.empty()) {
-            spdlog::warn("--end is ignored in stream mode; end is always current time.");
-        }
-
-        trade::Config stage_cfg = config;
-        stage_cfg.ingestion.write_silver_layer = false;
-        stage_cfg.ingestion.write_raw_layer = true;
-
-        app::DownloadRequest request;
-        request.symbol = args.symbol;
-        request.provider = args.provider;
-        request.refresh = false;
-        request.start = parse_date(args.start_date);
-
-        const int interval_sec = std::max(1, config.ingestion.stream_poll_interval_sec);
-        g_stream_stop.store(false);
-        auto prev_handler = std::signal(SIGINT, on_stream_signal);
-
-        std::cout << "Stream collection started (provider=" << request.provider
-                  << ", symbols=" << request.symbol
-                  << ", poll=" << interval_sec << "s). Press Ctrl+C to stop."
-                  << std::endl;
-
-        int cycle = 0;
-        int rc = 0;
-        while (!g_stream_stop.load()) {
-            ++cycle;
-            spdlog::info("stream cycle {}", cycle);
-            rc = app::run_download(request, stage_cfg);
-            if (rc != 0) {
-                std::signal(SIGINT, prev_handler);
-                return rc;
-            }
-
-            for (int i = 0; i < interval_sec && !g_stream_stop.load(); ++i) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            }
-        }
-
-        std::signal(SIGINT, prev_handler);
-        std::cout << "Stream collection stopped." << std::endl;
-        return rc;
-    }
-
-    if (action != "raw") {
-        spdlog::error("Unsupported collect action '{}'. Use raw|sentiment|all|stream", action);
-        return 1;
-    }
-
-    const bool no_pull_args = args.symbol.empty() &&
-                              args.start_date.empty() &&
-                              args.end_date.empty() &&
-                              !args.refresh;
-    if (no_pull_args) {
-        spdlog::info("collect without explicit args -> full refresh all symbols from min_start_date");
-    }
-
-    trade::Config stage_cfg = config;
-    stage_cfg.ingestion.write_silver_layer = false;
-    stage_cfg.ingestion.write_raw_layer = true;
-
-    app::DownloadRequest request;
-    request.symbol = args.symbol;
-    request.provider = args.provider;
-    request.refresh = args.refresh || no_pull_args;
-    if (!args.start_date.empty()) {
-        request.start = parse_date(args.start_date);
-    } else if (no_pull_args) {
-        request.start = parse_date(config.ingestion.min_start_date);
-    }
-    if (!args.end_date.empty()) request.end = parse_date(args.end_date);
-    return app::run_download(request, stage_cfg);
+int cmd_collect(const CliArgs& /*args*/, const trade::Config& /*config*/) {
+    std::cerr << "[DEPRECATED] The C++ collect command has been removed.\n"
+              << "Use: uv run python python/scripts/run_collector.py collect --symbol CODE --start YYYY-MM-DD\n"
+              << "Or:  uv run python python/scripts/run_collector.py update-all\n";
+    return 1;
 }
 
 // ============================================================================
-// silver
+// silver — DEPRECATED: data normalisation is now handled by the Python pipeline
 // ============================================================================
-int cmd_silver(const CliArgs& args, const trade::Config& config) {
-    if (!args.action.empty()) {
-        spdlog::error("silver command does not use --action. Use --symbol/--start/--end.");
-        return 1;
-    }
-
-    trade::Config stage_cfg = config;
-    stage_cfg.ingestion.write_raw_layer = false;
-    stage_cfg.ingestion.write_silver_layer = true;
-    Collector collector(std::make_unique<RawOnlySilverProvider>(), stage_cfg);
-
-    auto today = std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
-    Date start = args.start_date.empty()
-        ? parse_date(stage_cfg.ingestion.min_start_date)
-        : parse_date(args.start_date);
-    Date end = args.end_date.empty() ? today : parse_date(args.end_date);
-    if (start > end) {
-        spdlog::error("Invalid date range: start > end");
-        return 1;
-    }
-
-    if (!args.symbol.empty()) {
-        auto report = collector.build_silver_symbol(args.symbol, start, end);
-        std::cout << "Built silver for " << args.symbol
-                  << " (rows=" << report.total_bars
-                  << ", quality=" << std::fixed << std::setprecision(1)
-                  << (report.quality_score() * 100) << "%)"
-                  << std::endl;
-    } else {
-        collector.build_silver_all(start, end,
-            [](const Symbol& sym, int cur, int total) {
-                std::cout << "\r[silver " << cur << "/" << total << "] " << sym
-                          << "                " << std::flush;
-            });
-        std::cout << "\nSilver build complete." << std::endl;
-    }
-    return 0;
+int cmd_silver(const CliArgs& /*args*/, const trade::Config& /*config*/) {
+    std::cerr << "[DEPRECATED] The C++ silver command has been removed.\n"
+              << "Data ingestion (raw + normalisation) is now handled by:\n"
+              << "  uv run python python/scripts/run_collector.py update-all\n";
+    return 1;
 }
 
 // ============================================================================

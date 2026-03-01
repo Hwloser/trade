@@ -53,7 +53,7 @@ def main() -> int:
     project_root = Path(__file__).parent.parent.parent
     sys.path.insert(0, str(project_root / "python"))
 
-    from trade_py.sentiment_pipeline import run
+    from trade_py.intelligence.sentiment_pipeline import run
 
     total_stats = []
     for target_date in dates:

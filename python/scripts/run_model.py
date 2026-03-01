@@ -39,8 +39,8 @@ logger = logging.getLogger("run_model")
 # ── build-features ─────────────────────────────────────────────────────────────
 
 def cmd_build_features(args: argparse.Namespace) -> int:
-    from trade_py.event_db import EventDatabase
-    from trade_py.feature_builder import FeatureBuilder
+    from trade_py.db.event_db import EventDatabase
+    from trade_py.analysis.feature_builder import FeatureBuilder
     import duckdb, pandas as pd
 
     data_root = Path(args.data)
@@ -102,8 +102,8 @@ def cmd_build_features(args: argparse.Namespace) -> int:
 # ── build-labels ───────────────────────────────────────────────────────────────
 
 def cmd_build_labels(args: argparse.Namespace) -> int:
-    from trade_py.event_db import EventDatabase
-    from trade_py.label_builder import LabelBuilder
+    from trade_py.db.event_db import EventDatabase
+    from trade_py.analysis.label_builder import LabelBuilder
     import duckdb
 
     data_root = Path(args.data)
@@ -142,7 +142,7 @@ def cmd_build_labels(args: argparse.Namespace) -> int:
 # ── train ──────────────────────────────────────────────────────────────────────
 
 def cmd_train(args: argparse.Namespace) -> int:
-    from trade_py.model_trainer import PropagationModel
+    from trade_py.analysis.model_trainer import PropagationModel
 
     data_root = Path(args.data)
     model = PropagationModel(data_root)
@@ -161,9 +161,9 @@ def cmd_train(args: argparse.Namespace) -> int:
 # ── predict ────────────────────────────────────────────────────────────────────
 
 def cmd_predict(args: argparse.Namespace) -> int:
-    from trade_py.event_db import HistoricalEvent, EventType, ActorType
-    from trade_py.feature_builder import FeatureBuilder
-    from trade_py.model_trainer import PropagationModel
+    from trade_py.db.event_db import HistoricalEvent, EventType, ActorType
+    from trade_py.analysis.feature_builder import FeatureBuilder
+    from trade_py.analysis.model_trainer import PropagationModel
 
     data_root = Path(args.data)
 
@@ -199,10 +199,10 @@ def cmd_predict(args: argparse.Namespace) -> int:
 # ── report ─────────────────────────────────────────────────────────────────────
 
 def cmd_report(args: argparse.Namespace) -> int:
-    from trade_py.event_db import HistoricalEvent, EventType, ActorType
-    from trade_py.feature_builder import FeatureBuilder
-    from trade_py.model_trainer import PropagationModel
-    from trade_py.report_generator import ReportGenerator
+    from trade_py.db.event_db import HistoricalEvent, EventType, ActorType
+    from trade_py.analysis.feature_builder import FeatureBuilder
+    from trade_py.analysis.model_trainer import PropagationModel
+    from trade_py.journal.report_generator import ReportGenerator
 
     data_root = Path(args.data)
     sector = args.sector or "SW_Unknown"

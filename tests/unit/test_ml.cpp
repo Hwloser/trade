@@ -10,11 +10,14 @@
 
 TEST(MLTest, LightGBMLibraryLinked) {
     // Verify we can call a LightGBM C API function without crashing.
-    // LGBM_GetLastError returns a const char* (empty string if no error).
+    // LGBM_GetLastError returns a const char* describing the last error.
+    // Older LightGBM returns "" on no error; newer versions return
+    // "Everything is fine". Either is acceptable.
     const char* last_error = LGBM_GetLastError();
     ASSERT_NE(last_error, nullptr);
-    // On a fresh start, there should be no error
-    EXPECT_EQ(std::strlen(last_error), 0u);
+    const bool no_error = (std::strlen(last_error) == 0u ||
+                           std::strcmp(last_error, "Everything is fine") == 0);
+    EXPECT_TRUE(no_error) << "Unexpected error on init: " << last_error;
 }
 
 TEST(MLTest, LightGBMCreateDatasetFromMat) {

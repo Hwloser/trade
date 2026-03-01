@@ -1,7 +1,6 @@
 #include "trade/common/config.h"
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <set>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
@@ -88,53 +87,12 @@ Config Config::load(const std::string& path) {
 
         if (auto n = root["data"]) {
             if (n["data_root"]) cfg.data.data_root = n["data_root"].as<std::string>();
-            if (n["raw_dir"]) cfg.data.raw_dir = n["raw_dir"].as<std::string>();
-            if (n["silver_dir"]) cfg.data.silver_dir = n["silver_dir"].as<std::string>();
-            // Backward compatibility: old key curated_dir now maps to silver_dir.
-            if (n["curated_dir"]) cfg.data.silver_dir = n["curated_dir"].as<std::string>();
             if (n["models_dir"]) cfg.data.models_dir = n["models_dir"].as<std::string>();
-            if (n["market_daily_subpath"]) {
-                cfg.data.market_daily_subpath = n["market_daily_subpath"].as<std::string>();
-            }
         }
 
         if (auto n = root["ingestion"]) {
-            if (n["default_history_days"]) {
-                cfg.ingestion.default_history_days = n["default_history_days"].as<int>();
-            }
-            if (n["incremental_lookback_days"]) {
-                cfg.ingestion.incremental_lookback_days = n["incremental_lookback_days"].as<int>();
-            }
             if (n["min_start_date"]) cfg.ingestion.min_start_date = n["min_start_date"].as<std::string>();
-            if (n["daily_bar_dataset"]) {
-                cfg.ingestion.daily_bar_dataset = n["daily_bar_dataset"].as<std::string>();
-            }
-            if (n["write_raw_layer"]) {
-                cfg.ingestion.write_raw_layer = n["write_raw_layer"].as<bool>();
-            }
-            if (n["write_silver_layer"]) {
-                cfg.ingestion.write_silver_layer = n["write_silver_layer"].as<bool>();
-            }
-            if (n["request_dedup_hours"]) {
-                cfg.ingestion.request_dedup_hours = n["request_dedup_hours"].as<int>();
-            }
-            if (n["stream_poll_interval_sec"]) {
-                cfg.ingestion.stream_poll_interval_sec = n["stream_poll_interval_sec"].as<int>();
-            }
-            // Backward compatibility: old curated naming maps to silver layer.
-            if (n["write_curated_layer"]) {
-                cfg.ingestion.write_silver_layer = n["write_curated_layer"].as<bool>();
-            }
         }
-
-        if (auto n = root["eastmoney"]) {
-            if (n["timeout_ms"]) cfg.eastmoney.timeout_ms = n["timeout_ms"].as<int>();
-            if (n["retry_count"]) cfg.eastmoney.retry_count = n["retry_count"].as<int>();
-            if (n["retry_delay_ms"]) cfg.eastmoney.retry_delay_ms = n["retry_delay_ms"].as<int>();
-            if (n["rate_limit_ms"]) cfg.eastmoney.rate_limit_ms = n["rate_limit_ms"].as<int>();
-            if (n["forward_adjust"]) cfg.eastmoney.forward_adjust = n["forward_adjust"].as<bool>();
-        }
-
 
         if (auto n = root["storage"]) {
             if (n["enabled"]) cfg.storage.enabled = n["enabled"].as<bool>();
@@ -146,13 +104,6 @@ Config Config::load(const std::string& path) {
             }
             if (n["mirror_hot_to_cloud"]) {
                 cfg.storage.mirror_hot_to_cloud = n["mirror_hot_to_cloud"].as<bool>();
-            }
-            if (n["ttl_global_days"]) cfg.storage.ttl_global_days = n["ttl_global_days"].as<int>();
-            if (n["ttl_raw_days"]) cfg.storage.ttl_raw_days = n["ttl_raw_days"].as<int>();
-            if (n["ttl_silver_days"]) cfg.storage.ttl_silver_days = n["ttl_silver_days"].as<int>();
-            if (n["ttl_gold_days"]) cfg.storage.ttl_gold_days = n["ttl_gold_days"].as<int>();
-            if (n["ttl_sentiment_raw_days"]) {
-                cfg.storage.ttl_sentiment_raw_days = n["ttl_sentiment_raw_days"].as<int>();
             }
             if (n["google_drive_key_file"]) {
                 cfg.storage.google_drive_key_file = n["google_drive_key_file"].as<std::string>();
@@ -166,64 +117,11 @@ Config Config::load(const std::string& path) {
             if (n["google_drive_retry_count"]) {
                 cfg.storage.google_drive_retry_count = n["google_drive_retry_count"].as<int>();
             }
-            if (n["compaction_bucket_count"]) {
-                cfg.storage.compaction_bucket_count = n["compaction_bucket_count"].as<int>();
-            }
-            if (n["compaction_small_file_rows"]) {
-                cfg.storage.compaction_small_file_rows = n["compaction_small_file_rows"].as<int>();
-            }
-            if (n["compaction_tombstone_retention_days"]) {
-                cfg.storage.compaction_tombstone_retention_days =
-                    n["compaction_tombstone_retention_days"].as<int>();
-            }
-            if (n["auto_compact_on_exit"]) {
-                cfg.storage.auto_compact_on_exit = n["auto_compact_on_exit"].as<bool>();
-            }
-            if (n["auto_major_compaction_on_exit"]) {
-                cfg.storage.auto_major_compaction_on_exit =
-                    n["auto_major_compaction_on_exit"].as<bool>();
-            }
         }
 
         if (auto n = root["security"]) {
             if (n["default_role"]) cfg.security.default_role = n["default_role"].as<std::string>();
             if (n["admin_token"]) cfg.security.admin_token = n["admin_token"].as<std::string>();
-        }
-
-        // Environment variable fallback for secrets
-        if (cfg.storage.google_drive_key_file.empty()) {
-            if (const char* v = std::getenv("GOOGLE_DRIVE_KEY_FILE")) {
-                cfg.storage.google_drive_key_file = v;
-            }
-        }
-        if (cfg.storage.google_drive_folder_id.empty()) {
-            if (const char* v = std::getenv("GOOGLE_DRIVE_FOLDER_ID")) {
-                cfg.storage.google_drive_folder_id = v;
-            }
-        }
-        if (cfg.security.default_role.empty()) {
-            if (const char* v = std::getenv("TRADE_CLI_ROLE")) {
-                cfg.security.default_role = v;
-            }
-        }
-        if (cfg.security.admin_token.empty()) {
-            if (const char* v = std::getenv("TRADE_ADMIN_TOKEN")) {
-                cfg.security.admin_token = v;
-            }
-        }
-
-        if (auto n = root["cost"]) {
-            if (n["stamp_tax_rate"]) cfg.cost.stamp_tax_rate = n["stamp_tax_rate"].as<double>();
-            if (n["commission_rate"]) cfg.cost.commission_rate = n["commission_rate"].as<double>();
-            if (n["commission_min_yuan"]) cfg.cost.commission_min_yuan = n["commission_min_yuan"].as<double>();
-            if (n["transfer_fee_rate"]) cfg.cost.transfer_fee_rate = n["transfer_fee_rate"].as<double>();
-        }
-
-        if (auto n = root["risk"]) {
-            if (n["target_annual_vol"]) cfg.risk.target_annual_vol = n["target_annual_vol"].as<double>();
-            if (n["max_single_weight"]) cfg.risk.max_single_weight = n["max_single_weight"].as<double>();
-            if (n["max_industry_weight"]) cfg.risk.max_industry_weight = n["max_industry_weight"].as<double>();
-            if (n["base_cash_pct"]) cfg.risk.base_cash_pct = n["base_cash_pct"].as<double>();
         }
 
         if (auto n = root["backtest"]) {
@@ -290,15 +188,26 @@ Config Config::load(const std::string& path) {
             }
         }
 
+        // Environment variable fallbacks for secrets
+        if (cfg.storage.google_drive_key_file.empty()) {
+            if (const char* v = std::getenv("GOOGLE_DRIVE_KEY_FILE"))
+                cfg.storage.google_drive_key_file = v;
+        }
+        if (cfg.storage.google_drive_folder_id.empty()) {
+            if (const char* v = std::getenv("GOOGLE_DRIVE_FOLDER_ID"))
+                cfg.storage.google_drive_folder_id = v;
+        }
+        if (cfg.security.admin_token.empty()) {
+            if (const char* v = std::getenv("TRADE_ADMIN_TOKEN"))
+                cfg.security.admin_token = v;
+        }
         if (cfg.sentiment.xueqiu_cookie.empty()) {
-            if (const char* v = std::getenv("XUEQIU_COOKIE")) {
+            if (const char* v = std::getenv("XUEQIU_COOKIE"))
                 cfg.sentiment.xueqiu_cookie = v;
-            }
         }
         if (cfg.sentiment.jin10_api_key.empty()) {
-            if (const char* v = std::getenv("JIN10_API_KEY")) {
+            if (const char* v = std::getenv("JIN10_API_KEY"))
                 cfg.sentiment.jin10_api_key = v;
-            }
         }
 
         spdlog::info("Config loaded from {}", path);

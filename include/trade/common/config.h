@@ -8,105 +8,53 @@ namespace trade {
 
 struct DataConfig {
     std::string data_root = "data";
-    std::string raw_dir = "raw";
-    std::string silver_dir = "silver";
-    std::string models_dir = "models";
-    std::string market_daily_subpath = "cn_a/daily";
+    std::string models_dir = "models";  // relative to data_root
 };
 
+// min_start_date is the only actively-used ingestion parameter in C++.
+// All other ingestion settings (rate limits, dedup, streaming) are Python-side only.
 struct IngestionConfig {
-    int default_history_days = 30;             // default backfill window
-    int incremental_lookback_days = 5;         // overlap window for correction
-    std::string min_start_date = "2020-01-01"; // lower bound for historical pulls
-    std::string daily_bar_dataset = "cn_a_daily_bar";
-    bool write_raw_layer = true;               // persist provider output to raw layer
-    bool write_silver_layer = false;           // optional normalized/enriched copy
-    int request_dedup_hours = 24;              // skip identical successful requests within window
-    int stream_poll_interval_sec = 60;         // polling interval for collect --action stream
+    std::string min_start_date = "2020-01-01";
 };
-
-struct EastMoneyConfig {
-    int timeout_ms = 30000;
-    int retry_count = 3;
-    int retry_delay_ms = 1000;
-    int rate_limit_ms = 200;
-    bool forward_adjust = true;
-};
-
 
 struct StorageConfig {
     bool enabled = false;
-    std::string backend = "local";  // local, google_drive
-
-    // Write policy:
-    // - local_only: write to local disk only
-    // - hybrid: keep hot partitions local, write cold partitions to cloud
-    // - cloud_only: write directly to cloud, no local persistence
-    std::string write_mode = "local_only";
-
-    // Hot/cold partitioning
+    std::string backend = "local";       // local | google_drive
+    std::string write_mode = "local_only"; // local_only | hybrid | cloud_only
     int hot_days = 30;
     bool keep_local_cold_copy = false;
     bool mirror_hot_to_cloud = false;
-
-    // Retention/TTL policy (0 = disabled)
-    // Priority: dataset-specific (future) > layer-specific > global.
-    int ttl_global_days = 0;
-    int ttl_raw_days = 0;
-    int ttl_silver_days = 0;
-    int ttl_gold_days = 0;
-    int ttl_sentiment_raw_days = 7;
-
-    // Google Drive service account credentials
-    std::string google_drive_key_file = "";      // path to service account JSON key file
-    std::string google_drive_folder_id = "";     // root Google Drive folder ID
+    // Google Drive credentials
+    std::string google_drive_key_file = "";
+    std::string google_drive_folder_id = "";
     int google_drive_timeout_ms = 30000;
     int google_drive_retry_count = 2;
-
-    // Compaction policy for raw/silver market partitions.
-    int compaction_bucket_count = 32;
-    int compaction_small_file_rows = 4000;
-    int compaction_tombstone_retention_days = 0;
-    bool auto_compact_on_exit = true;
-    bool auto_major_compaction_on_exit = true;
 };
 
 struct SecurityConfig {
-    std::string default_role = "user"; // user | admin
-    std::string admin_token = "";      // optional extra gate for admin commands
+    std::string default_role = "user";
+    std::string admin_token = "";
 };
 
+// Kept as standalone struct — used by BacktestEngine / BrokerSim as a parameter type.
+// Runtime values come from the settings table in data/.metadata/trade.db (via Python).
 struct TradingCostConfig {
-    double stamp_tax_rate = 0.0005;        // 印花税 0.05% (卖出)
-    double commission_rate = 0.00025;       // 佣金 0.025% (双向)
-    double commission_min_yuan = 5.0;       // 最低佣金 5元
-    double transfer_fee_rate = 0.00001;     // 过户费 0.001% (沪市)
+    double stamp_tax_rate = 0.0005;       // 印花税 0.05% (卖出)
+    double commission_rate = 0.00025;     // 佣金 0.025% (双向)
+    double commission_min_yuan = 5.0;     // 最低佣金 5元
+    double transfer_fee_rate = 0.00001;   // 过户费 0.001% (沪市)
 };
 
-struct RiskConfig {
-    double target_annual_vol = 0.11;       // 目标年化波动率 11%
-    double max_single_weight = 0.10;       // 单股硬限 10%
-    double soft_single_weight = 0.08;      // 单股软限 8%
-    double max_industry_weight = 0.35;     // 行业硬限 35%
-    double soft_industry_weight = 0.30;    // 行业软限 30%
-    double max_top3_weight = 0.22;         // 前3大持仓上限 22%
-    double max_style_z = 1.0;             // 风格因子z暴露上限
-    double beta_low = 0.6;                // Beta下限
-    double beta_high = 1.2;              // Beta上限
-    double max_liquidation_days = 2.5;    // 最大清算天数
-    double base_cash_pct = 0.10;          // 基础现金比例
-    double drawdown_cash_level2 = 0.20;   // 二级回撤现金
-    double drawdown_cash_shock = 0.35;    // 冲击市现金
-};
-
+// Kept as standalone struct — used by BacktestEngine.
+// Runtime values come from the settings table (via Python).
 struct BacktestConfig {
     double initial_capital = 1000000.0;
     int max_positions = 25;
     int min_positions = 15;
     double min_adv_participation = 0.08;
     double max_adv_participation = 0.12;
-    double rebalance_threshold = 0.01;     // 权重偏差<1%不调
-    double alpha_cost_multiple = 1.5;      // alpha > 1.5*cost才交易
+    double rebalance_threshold = 0.01;
+    double alpha_cost_multiple = 1.5;
 };
 
 struct SentimentFeedConfig {
@@ -118,22 +66,20 @@ struct SentimentConfig {
     std::string dict_path = "config/sentiment_dict.txt";
     std::string onnx_model_path = "";
     std::string tokenizer_path = "";
-    bool use_onnx = false;                 // false = rule engine only
+    bool use_onnx = false;
     int rss_fetch_interval_min = 15;
     std::string default_source = "rss";
     int default_history_days = 30;
     int incremental_lookback_days = 1;
     std::vector<SentimentFeedConfig> rss_feeds;
-
-    // Xueqiu source
+    // Xueqiu
     std::string xueqiu_cookie = "";
     std::string xueqiu_user_agent = "Mozilla/5.0";
     int xueqiu_timeout_ms = 15000;
     int xueqiu_rate_limit_ms = 3000;
     int xueqiu_retry_count = 2;
     int xueqiu_max_pages = 5;
-
-    // Jin10 source
+    // Jin10
     std::string jin10_api_key = "";
     std::string jin10_base_url = "https://open.jin10.com";
     int jin10_timeout_ms = 10000;
@@ -144,14 +90,13 @@ struct SentimentConfig {
 
 struct Config {
     DataConfig data;
-    IngestionConfig ingestion;
-    EastMoneyConfig eastmoney;
+    IngestionConfig ingestion;  // only min_start_date
     StorageConfig storage;
     SecurityConfig security;
-    TradingCostConfig cost;
-    RiskConfig risk;
-    BacktestConfig backtest;
     SentimentConfig sentiment;
+    // BacktestConfig and TradingCostConfig are standalone structs (not in Config).
+    // Their runtime values come from the settings table in data/.metadata/trade.db.
+    BacktestConfig backtest;    // kept for CLI commands_analysis backtest command
 
     static Config load(const std::string& path);
     static Config defaults();

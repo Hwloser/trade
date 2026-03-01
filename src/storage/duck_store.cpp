@@ -97,10 +97,12 @@ std::vector<Bar> DuckStore::read_bars(const std::string& glob_pattern,
         if (c == '\'') safe_symbol.push_back('\'');
     }
 
+    // Select only guaranteed columns (Python-written parquets may lack extended
+    // fields: limit_up, bar_status, board). Derived price-limit fields are
+    // computed below from prev_close using the standard 10 % A-share rule.
     std::string sql =
         "SELECT date, open, high, low, close, volume, amount, turnover_rate,"
-        " prev_close, vwap, limit_up, limit_down, hit_limit_up, hit_limit_down,"
-        " bar_status, board"
+        " prev_close, vwap"
         " FROM read_parquet('" + glob_pattern + "', union_by_name=true)"
         " WHERE symbol = '" + safe_symbol + "'";
 
@@ -116,8 +118,7 @@ std::vector<Bar> DuckStore::read_bars(const std::string& glob_pattern,
 
     // Column indices in SELECT list:
     // 0:date  1:open  2:high  3:low  4:close  5:volume  6:amount
-    // 7:turnover_rate  8:prev_close  9:vwap  10:limit_up  11:limit_down
-    // 12:hit_limit_up  13:hit_limit_down  14:bar_status  15:board
+    // 7:turnover_rate  8:prev_close  9:vwap
     auto safe_double = [](const std::string& s) -> double {
         if (s.empty()) return 0.0;
         try { return std::stod(s); } catch (...) { return 0.0; }
@@ -126,18 +127,11 @@ std::vector<Bar> DuckStore::read_bars(const std::string& glob_pattern,
         if (s.empty()) return 0;
         try { return std::stoll(s); } catch (...) { return 0; }
     };
-    auto safe_bool = [](const std::string& s) -> bool {
-        return s == "true" || s == "1" || s == "True" || s == "TRUE";
-    };
-    auto safe_uint8 = [](const std::string& s) -> uint8_t {
-        if (s.empty()) return 0;
-        try { return static_cast<uint8_t>(std::stoul(s)); } catch (...) { return 0; }
-    };
 
     std::vector<Bar> bars;
     bars.reserve(rows.size());
     for (const auto& row : rows) {
-        if (row.size() < 16) continue;
+        if (row.size() < 10) continue;
         Bar bar;
         bar.symbol        = symbol;
         bar.date          = parse_date(row[0]);
@@ -150,12 +144,16 @@ std::vector<Bar> DuckStore::read_bars(const std::string& glob_pattern,
         bar.turnover_rate = safe_double(row[7]);
         bar.prev_close    = safe_double(row[8]);
         bar.vwap          = safe_double(row[9]);
-        bar.limit_up      = safe_double(row[10]);
-        bar.limit_down    = safe_double(row[11]);
-        bar.hit_limit_up  = safe_bool(row[12]);
-        bar.hit_limit_down = safe_bool(row[13]);
-        bar.bar_status    = static_cast<TradingStatus>(safe_uint8(row[14]));
-        bar.board         = static_cast<Board>(safe_uint8(row[15]));
+        // Compute price-limit fields from prev_close (default 10 % A-share rule).
+        // Board-specific limits (20 % for STAR/ChiNext) are recalculated by
+        // BarNormalizer when instrument metadata is available.
+        if (bar.prev_close > 0.0) {
+            bar.limit_up   = static_cast<int>(bar.prev_close * 1.10 * 100 + 0.5) / 100.0;
+            bar.limit_down = static_cast<int>(bar.prev_close * 0.90 * 100 + 0.5) / 100.0;
+            bar.hit_limit_up   = (bar.close >= bar.limit_up   - 0.005);
+            bar.hit_limit_down = (bar.close <= bar.limit_down + 0.005);
+        }
+        // board defaults to Board::kMain, bar_status to TradingStatus::kNormal.
         bars.push_back(std::move(bar));
     }
     return bars;

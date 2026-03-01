@@ -1,6 +1,0 @@
-eastmoney:
-  timeout_ms: 30000
-  retry_count: 3
-  retry_delay_ms: 1000
-  rate_limit_ms: 200
-  forward_adjust: true
