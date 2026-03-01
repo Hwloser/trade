@@ -1,7 +1,7 @@
 """Feature builder for the event propagation prediction model.
 
 Assembles feature vectors for (event, asset, date) triples used in training
-and inference. Five feature groups follow the plan (Section 4.3) plus Group F:
+and inference. Six feature groups follow the plan plus Groups F and G:
 
   Group A – Event features:      event_type, magnitude, actor_risk_score, ...
   Group B – KG relationship:     kg_hop_distance, kg_edge_weight, ...
@@ -9,6 +9,7 @@ and inference. Five feature groups follow the plan (Section 4.3) plus Group F:
   Group D – Market environment:  sector rank, northbound flow, fund flow ...
   Group E – Fundamental:         ROE, profit growth, cash flow quality, ...
   Group F – Sentiment quality:   news silence signal, entropy, narrative density
+  Group G – Smart money (CMF):   smart_money_flow_5d, smart_money_flow_20d
 
 All computation is in Python (cold training path). Decision-time inference
 uses the C++ FeatureExtractor + ONNX runtime instead.
@@ -111,11 +112,17 @@ GROUP_F_COLS = [
     "narrative_density_trend", # 5-day trend: +1/0/-1
 ]
 
+# Group G: Smart money Chaikin Money Flow (2 fields, Phase 8)
+GROUP_G_COLS = [
+    "smart_money_flow_5d",   # 5-day Chaikin Money Flow [-1, +1] (positive = accumulation)
+    "smart_money_flow_20d",  # 20-day Chaikin Money Flow [-1, +1]
+]
+
 ALL_FEATURE_COLS = (
     GROUP_A_COLS + GROUP_B_COLS + GROUP_C_COLS +
-    GROUP_D_COLS + GROUP_E_COLS + GROUP_F_COLS
+    GROUP_D_COLS + GROUP_E_COLS + GROUP_F_COLS + GROUP_G_COLS
 )
-N_FEATURES = len(ALL_FEATURE_COLS)  # 7+5+25+6+8+4 = 55
+N_FEATURES = len(ALL_FEATURE_COLS)  # 7+5+25+6+8+4+2 = 57
 
 
 # ── Technical signal computation (Python mirror of C++ TechnicalSignal) ───────
@@ -709,6 +716,43 @@ class FeatureBuilder:
             logger.debug("Fundamental features unavailable for %s: %s", symbol, exc)
             return defaults
 
+    # ── Smart money / Chaikin Money Flow (Phase 8, Group G) ──────────────────
+
+    @staticmethod
+    def _cmf(bars: pd.DataFrame, window: int) -> float:
+        """Compute Chaikin Money Flow over the last `window` bars.
+
+        CMF = sum(MFM * volume, window) / sum(volume, window)
+        MFM = (2*close - high - low) / (high - low)
+
+        Returns 0.0 when insufficient data or zero-range bars dominate.
+        """
+        n = len(bars)
+        if n < window:
+            return 0.0
+        tail = bars.tail(window)
+        high  = tail["high"].to_numpy(dtype=float)
+        low   = tail["low"].to_numpy(dtype=float)
+        close = tail["close"].to_numpy(dtype=float)
+        vol   = tail["volume"].to_numpy(dtype=float)
+
+        ranges = high - low
+        mfm = np.where(ranges > 1e-8,
+                       (2.0 * close - high - low) / ranges,
+                       0.0)
+        mfv_sum = float(np.dot(mfm, vol))
+        vol_sum = float(vol.sum())
+        return float(mfv_sum / vol_sum) if vol_sum > 1e-8 else 0.0
+
+    def _smart_money_features(self, bars: pd.DataFrame) -> dict[str, float]:
+        """Compute Group G smart money signals from OHLCV data."""
+        defaults: dict[str, float] = {col: 0.0 for col in GROUP_G_COLS}
+        if bars is None or bars.empty:
+            return defaults
+        defaults["smart_money_flow_5d"]  = self._cmf(bars, 5)
+        defaults["smart_money_flow_20d"] = self._cmf(bars, 20)
+        return defaults
+
     # ── Fund flow (Phase 6-E) ─────────────────────────────────────────────────
 
     def _fund_flow_features(self, symbol: str,
@@ -795,7 +839,10 @@ class FeatureBuilder:
         group_f_narr = self._narrative_density(symbol, sector, target_date)
         group_f = {**group_f_sent, **group_f_narr}
 
-        features = {**group_a, **group_b, **group_c, **group_d, **group_e, **group_f}
+        # ── Group G: Smart money (Chaikin Money Flow) ─────────────────────
+        group_g = self._smart_money_features(bars)
+
+        features = {**group_a, **group_b, **group_c, **group_d, **group_e, **group_f, **group_g}
 
         return FeatureRow(
             event_id=event.event_id,

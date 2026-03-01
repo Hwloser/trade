@@ -41,9 +41,9 @@ data/
 .cache/
 .gemini/
 
-# BMAD workflow framework (dev tooling, not project code)
+# BMAD workflow framework internals (dev tooling, not project code)
 _bmad/
-_bmad-output/
+# Keep _bmad-output/ tracked — contains project planning artifacts
 
 # CTest output
 Testing/
