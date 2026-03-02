@@ -1,3 +1,42 @@
 [submodule "vendor/duckdb"]
 	path = vendor/duckdb
 	url = https://github.com/duckdb/duckdb.git
+[submodule "vendor/lightgbm"]
+	path = vendor/lightgbm
+	url = https://github.com/microsoft/LightGBM.git
+[submodule "vendor/spdlog"]
+	path = vendor/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "vendor/fmt"]
+	path = vendor/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "vendor/nlohmann_json"]
+	path = vendor/nlohmann_json
+	url = https://github.com/nlohmann/json.git
+[submodule "vendor/yaml-cpp"]
+	path = vendor/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git
+[submodule "vendor/pugixml"]
+	path = vendor/pugixml
+	url = https://github.com/zeux/pugixml.git
+[submodule "vendor/cpp-httplib"]
+	path = vendor/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib.git
+[submodule "vendor/googletest"]
+	path = vendor/googletest
+	url = https://github.com/google/googletest.git
+[submodule "vendor/eigen"]
+	path = vendor/eigen
+	url = https://gitlab.com/libeigen/eigen.git
+[submodule "vendor/abseil-cpp"]
+	path = vendor/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "vendor/re2"]
+	path = vendor/re2
+	url = https://github.com/google/re2.git
+[submodule "vendor/curl"]
+	path = vendor/curl
+	url = https://github.com/curl/curl.git
+[submodule "vendor/arrow"]
+	path = vendor/arrow
+	url = https://github.com/apache/arrow.git

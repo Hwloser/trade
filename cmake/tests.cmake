@@ -1,6 +1,8 @@
 function(trade_configure_tests)
     enable_testing()
-    find_package(GTest CONFIG REQUIRED)
+    if(NOT TARGET GTest::gtest)
+        find_package(GTest CONFIG REQUIRED)
+    endif()
     include(GoogleTest)
 
     # Fix GTest include: convert SYSTEM include to normal include

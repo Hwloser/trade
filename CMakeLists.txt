@@ -13,64 +13,12 @@ set(CMAKE_NO_SYSTEM_FROM_IMPORTED ON)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_PYTHON_BINDINGS "Build nanobind Python bindings" OFF)
 
-# DuckDB (git submodule vendor/duckdb) - embedded SQL analytics engine
-set(BUILD_UNITTESTS OFF CACHE BOOL "" FORCE)
-set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-set(DUCKDB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-add_subdirectory(vendor/duckdb EXCLUDE_FROM_ALL)
+# ── Git submodule auto-init ───────────────────────────────────────────────────
+include(cmake/submodule_check.cmake)
+trade_ensure_submodules()
 
-# Dependencies
-find_package(Arrow REQUIRED)
-find_package(Parquet REQUIRED)
-find_package(SQLite3 REQUIRED)
-find_package(Eigen3 CONFIG REQUIRED)
-find_package(spdlog CONFIG REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
-find_package(httplib CONFIG REQUIRED)
-find_package(fmt CONFIG REQUIRED)
-find_package(yaml-cpp CONFIG REQUIRED)
-find_package(pugixml CONFIG REQUIRED)
-find_package(CURL REQUIRED)
-find_package(re2 CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
-
-# LightGBM - optional
-find_package(LightGBM CONFIG QUIET)
-if(NOT LightGBM_FOUND)
-    find_library(LIGHTGBM_LIB NAMES lightgbm _lightgbm lib_lightgbm
-                 PATHS /opt/homebrew/lib /usr/local/lib)
-    find_path(LIGHTGBM_INCLUDE NAMES LightGBM/c_api.h
-              PATHS /opt/homebrew/include /usr/local/include)
-    if(LIGHTGBM_LIB AND LIGHTGBM_INCLUDE)
-        set(HAVE_LIGHTGBM ON)
-        add_library(LightGBM::lightgbm UNKNOWN IMPORTED)
-        set_target_properties(LightGBM::lightgbm PROPERTIES
-            IMPORTED_LOCATION "${LIGHTGBM_LIB}"
-            INTERFACE_INCLUDE_DIRECTORIES "${LIGHTGBM_INCLUDE}")
-        message(STATUS "LightGBM found at ${LIGHTGBM_LIB}")
-    else()
-        set(HAVE_LIGHTGBM OFF)
-        message(STATUS "LightGBM not found - ML module disabled. Install: brew install lightgbm")
-    endif()
-else()
-    set(HAVE_LIGHTGBM ON)
-    message(STATUS "LightGBM found via CMake config")
-endif()
-
-if(HAVE_LIGHTGBM)
-    add_compile_definitions(HAVE_LIGHTGBM)
-endif()
-
-# ONNX Runtime - optional
-find_package(onnxruntime CONFIG QUIET)
-if(onnxruntime_FOUND)
-    set(HAVE_ONNXRUNTIME ON)
-    add_compile_definitions(HAVE_ONNXRUNTIME)
-    message(STATUS "ONNX Runtime found - sentiment ONNX inference enabled")
-else()
-    set(HAVE_ONNXRUNTIME OFF)
-    message(STATUS "ONNX Runtime not found - using rule-based sentiment only")
-endif()
+# ── Dependencies (vendor submodules → system package fallback) ────────────────
+include(cmake/deps.cmake)
 
 # Core library sources
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/trade_core_sources.cmake)

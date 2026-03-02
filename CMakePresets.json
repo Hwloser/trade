@@ -36,6 +36,36 @@
       "cacheVariables": {
         "BUILD_PYTHON_BINDINGS": "ON"
       }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (system packages)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON",
+        "BUILD_PYTHON_BINDINGS": "OFF"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "linux",
+      "displayName": "Linux Debug",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-python",
+      "inherits": "linux",
+      "displayName": "Linux with Python bindings",
+      "cacheVariables": {
+        "BUILD_PYTHON_BINDINGS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -46,12 +76,27 @@
     {
       "name": "debug",
       "configurePreset": "debug"
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
     }
   ],
   "testPresets": [
     {
       "name": "default",
       "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux",
+      "configurePreset": "linux",
       "output": {
         "outputOnFailure": true
       }
