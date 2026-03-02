@@ -39,7 +39,7 @@
     },
     {
       "name": "linux",
-      "displayName": "Linux (system packages)",
+      "displayName": "Linux GCC-13 (system packages)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
@@ -47,7 +47,9 @@
         "CMAKE_CXX_STANDARD": "20",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "BUILD_TESTING": "ON",
-        "BUILD_PYTHON_BINDINGS": "OFF"
+        "BUILD_PYTHON_BINDINGS": "OFF",
+        "CMAKE_C_COMPILER": "gcc-13",
+        "CMAKE_CXX_COMPILER": "g++-13"
       }
     },
     {
