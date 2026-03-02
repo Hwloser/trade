@@ -222,14 +222,23 @@ endif()
 if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/abseil-cpp/CMakeLists.txt")
     set(ABSL_PROPAGATE_CXX_STD ON  CACHE BOOL "" FORCE)
     set(ABSL_ENABLE_INSTALL    OFF CACHE BOOL "" FORCE)
+    # Suppress install() calls so they don't pollute the install manifest or
+    # trigger "target not in export set" validation errors downstream.
+    set(CMAKE_SKIP_INSTALL_RULES ON)
     add_subdirectory(vendor/abseil-cpp EXCLUDE_FROM_ALL)
+    set(CMAKE_SKIP_INSTALL_RULES OFF)
     message(STATUS "Abseil: vendor submodule")
 endif()
 
 # ── re2 ──────────────────────────────────────────────────────────────────────
 if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/re2/CMakeLists.txt")
     set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    # re2's install(EXPORT "re2Targets") references absl:: targets which are
+    # not in any export set (absl has ABSL_ENABLE_INSTALL=OFF).  Suppress all
+    # install rules inside re2 to avoid the validation error.
+    set(CMAKE_SKIP_INSTALL_RULES ON)
     add_subdirectory(vendor/re2 EXCLUDE_FROM_ALL)
+    set(CMAKE_SKIP_INSTALL_RULES OFF)
     if(TARGET re2 AND NOT TARGET re2::re2)
         add_library(re2::re2 ALIAS re2)
     endif()
@@ -298,8 +307,15 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/arrow/cpp/CMakeLists.txt")
     # Arrow isolates these internally; they do not conflict with our absl/re2.
     set(ARROW_DEPENDENCY_SOURCE  "BUNDLED" CACHE STRING "" FORCE)
     add_subdirectory(vendor/arrow/cpp EXCLUDE_FROM_ALL)
-    # Arrow::arrow_shared and Parquet::parquet_shared are created directly
-    # by Arrow's cmake when ARROW_BUILD_SHARED=ON.
+    # Arrow creates 'arrow_shared' / 'parquet_shared' as the real build targets.
+    # The Arrow:: namespace aliases only exist in the installed CMake config
+    # (ArrowConfig.cmake), NOT when using add_subdirectory – create them here.
+    if(TARGET arrow_shared AND NOT TARGET Arrow::arrow_shared)
+        add_library(Arrow::arrow_shared ALIAS arrow_shared)
+    endif()
+    if(TARGET parquet_shared AND NOT TARGET Parquet::parquet_shared)
+        add_library(Parquet::parquet_shared ALIAS parquet_shared)
+    endif()
 else()
     find_package(Arrow   REQUIRED)
     find_package(Parquet REQUIRED)
