@@ -132,7 +132,24 @@ trade_add_object_module(trade_obj_decision ${TRADE_DECISION_SOURCES})
 trade_add_object_module(trade_obj_signal ${TRADE_SIGNAL_SOURCES})
 trade_add_object_module(trade_obj_app ${TRADE_APP_SOURCES})
 
+# Collect all headers for IDE visibility (CLion / VS Code).
+# CONFIGURE_DEPENDS re-runs cmake when new .h files are added.
+# These files are NOT compiled — they're metadata for the IDE project tree.
+file(GLOB_RECURSE TRADE_HEADERS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/trade/*.h"
+)
+
+# Organise headers into virtual folders mirroring include/trade/<module>/
+foreach(_hdr IN LISTS TRADE_HEADERS)
+    # Strip the include/ prefix to get the relative path
+    file(RELATIVE_PATH _rel "${CMAKE_CURRENT_SOURCE_DIR}/include" "${_hdr}")
+    # Take the first directory component as the group name
+    get_filename_component(_grp "${_rel}" DIRECTORY)
+    source_group("Headers\\${_grp}" FILES "${_hdr}")
+endforeach()
+
 add_library(trade_core STATIC
+    ${TRADE_HEADERS}                           # IDE visibility only
     $<TARGET_OBJECTS:trade_obj_base>
     $<TARGET_OBJECTS:trade_obj_data>
     $<TARGET_OBJECTS:trade_obj_feature>
