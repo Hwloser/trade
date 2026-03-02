@@ -103,13 +103,15 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/vendor/lightgbm/CMakeLists.txt")
     set(USE_GPU    OFF CACHE BOOL "" FORCE)
     set(USE_CUDA   OFF CACHE BOOL "" FORCE)
     add_subdirectory(vendor/lightgbm EXCLUDE_FROM_ALL)
-    # LightGBM creates target 'lightgbm' (shared) or 'lightgbm_static' (static).
+    # LightGBM's actual build target is '_lightgbm' (STATIC or SHARED depending
+    # on BUILD_SHARED_LIBS).  Older releases used 'lightgbm' / 'lightgbm_static'.
     # Expose whichever exists under the canonical namespaced name.
-    if(TARGET lightgbm_static AND NOT TARGET LightGBM::lightgbm)
-        add_library(LightGBM::lightgbm ALIAS lightgbm_static)
-    elseif(TARGET lightgbm AND NOT TARGET LightGBM::lightgbm)
-        add_library(LightGBM::lightgbm ALIAS lightgbm)
-    endif()
+    foreach(_lgbm_tgt IN ITEMS _lightgbm lightgbm_static lightgbm)
+        if(TARGET ${_lgbm_tgt} AND NOT TARGET LightGBM::lightgbm)
+            add_library(LightGBM::lightgbm ALIAS ${_lgbm_tgt})
+            break()
+        endif()
+    endforeach()
     set(HAVE_LIGHTGBM ON)
     message(STATUS "LightGBM: vendor submodule")
 else()
