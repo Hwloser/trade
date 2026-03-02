@@ -64,6 +64,7 @@ def main() -> None:
     ])
 
     with tab1:
+
         tab_brief.render()
 
     with tab2:
@@ -79,5 +80,4 @@ def main() -> None:
         tab_settings.render()
 
 
-if __name__ == "__main__":
-    main()
+main()
