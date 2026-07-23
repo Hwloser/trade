@@ -1,0 +1,619 @@
+schema_version = 1
+target_source_root = "src/trade"
+target_import_root = "trade"
+legacy_package_roots = ["trade_py", "trade_web"]
+target_contexts = [
+  "kernel",
+  "capture",
+  "datasets",
+  "studies",
+  "decision_support",
+  "processes",
+  "platform",
+  "interfaces",
+  "bootstrap",
+]
+
+[[source_facts]]
+id = "legacy-trade-db"
+source = "trade_py/db/trade_db.py"
+literal = "class TradeDB"
+current_owner = "trade_py.db"
+required_child = "dataset-product-boundary"
+
+[[source_facts]]
+id = "legacy-migrations"
+source = "trade_py/db/migrations.py"
+literal = "def run_migrations"
+current_owner = "trade_py.db"
+required_child = "process-manager-and-platform-boundary"
+
+[[source_facts]]
+id = "pipeline-state-db"
+source = "trade_py/db/pipeline_db.py"
+literal = "class PipelineDb"
+current_owner = "trade_py.db"
+required_child = "process-manager-and-platform-boundary"
+
+[[tables]]
+logical_name = "event_log"
+current_owner = "trade_py.db"
+semantic_kind = "event-delivery-log"
+classification = "candidate"
+target_context = "platform"
+reason = "The legacy event log is a current shared operational record, not an approved target binding."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_log", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "bus_events → event_log", role = "migration" },
+]
+
+[[tables]]
+logical_name = "event_handler_runs"
+current_owner = "trade_py.db"
+semantic_kind = "event-delivery-state"
+classification = "candidate"
+target_context = "platform"
+reason = "Legacy idempotency state requires an owned outbox and delivery migration."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "def _migrate_v21", role = "migration" },
+]
+
+[[tables]]
+logical_name = "pipeline_dag"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-workflow-definition"
+classification = "deferred"
+target_context = "deferred"
+reason = "The legacy DAG mixes scheduling and business orchestration."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS pipeline_dag", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "def _migrate_v11", role = "migration" },
+]
+
+[[tables]]
+logical_name = "asset_registry"
+current_owner = "trade_py.db"
+semantic_kind = "source-configuration"
+classification = "candidate"
+target_context = "capture"
+reason = "The source registry is a migration input for future SourceManifest ownership."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS asset_registry", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "def _migrate_v18", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "def _migrate_v22", role = "alter" },
+]
+
+[[tables]]
+logical_name = "feed_scores"
+current_owner = "trade_py.intelligence"
+semantic_kind = "independent-metadata-projection"
+classification = "deferred"
+target_context = "deferred"
+reason = "The current independent feed database mixes scoring and configuration concerns."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/intelligence/schema.py", literal = "CREATE TABLE IF NOT EXISTS feed_scores", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "source_configs"
+current_owner = "trade_py.intelligence"
+semantic_kind = "independent-source-configuration"
+classification = "candidate"
+target_context = "capture"
+reason = "Current configuration facts require SourceManifest rights and ownership proof."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/intelligence/schema.py", literal = "CREATE TABLE IF NOT EXISTS source_configs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "catalog_meta"
+current_owner = "trade_py.observatory.catalog"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "The catalog is explicitly rebuildable and therefore not a second source of truth."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE catalog_meta", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "catalog_runs"
+current_owner = "trade_py.observatory.catalog"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog runs are projection facts that need DatasetVersion lineage migration."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE runs", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "catalog_releases"
+current_owner = "trade_py.observatory.catalog"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog releases are a current projection of immutable facts."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE releases", role = "data_transform" },
+]
+
+[[artifacts]]
+id = "warehouse-parquet"
+source = "trade_py/data/warehouse/io.py"
+literal = 'f"{table}.parquet"'
+current_owner = "trade_py.data.warehouse"
+role = "legacy-warehouse-artifact-family"
+classification = "candidate"
+target_context = "datasets"
+reason = "Warehouse Parquet artifacts require DatasetVersion ownership and immutable references."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "crypto-ads-current-pointer"
+source = "trade_py/data/warehouse/crypto_store.py"
+literal = 'CRYPTO_VALIDATION_CURRENT = "_crypto_validation_current.json"'
+current_owner = "trade_py.data.warehouse.crypto_store"
+role = "legacy-current-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The current pointer is a compatibility and rollback input, not an approved Dataset release."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "crypto-ads-validation-receipt"
+source = "trade_py/data/warehouse/crypto_store.py"
+literal = 'receipt_root = ads_root / "_validation_receipts"'
+current_owner = "trade_py.data.warehouse.crypto_store"
+role = "completion-receipt"
+classification = "candidate"
+target_context = "datasets"
+reason = "The completion receipt must migrate with atomic Dataset release evidence."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "btc-compatibility-pointer"
+source = "trade_py/data/market/crypto/store.py"
+literal = 'self.current_path = self.crypto_root / "btc_current.json"'
+current_owner = "trade_py.data.market.crypto"
+role = "legacy-current-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "BTC compatibility remains a required reader and rollback source during Dataset migration."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "kline-reconciliation-pointer"
+source = "trade_py/utils/data_inspector.py"
+literal = 'return KLINE_DIR(data_root) / "reconciliation" / "current.json"'
+current_owner = "trade_py.utils.data_inspector"
+role = "legacy-reconciliation-pointer"
+classification = "deferred"
+target_context = "deferred"
+reason = "Kline reconciliation must be separated from legacy global data inspection."
+required_child = "dataset-product-boundary"
+
+[[capture_risks]]
+id = "raw-record-single-publication-clock"
+source = "trade_py/intelligence/raw_record.py"
+literal = "published_at: datetime"
+current_owner = "trade_py.intelligence"
+required_child = "capture-boundary"
+risk_kind = "provider-observed-received-available-revision-clocks-collapsed"
+current_behavior = "RawRecord exposes one published_at field for all temporal semantics."
+required_migration_proof = "Independent provider, observed, received, available, revision, and finality clocks."
+
+[[capture_risks]]
+id = "cctv-date-only-publication-time"
+source = "trade_py/data/news/akshare_news.py"
+literal = "CCTV API only gives date; set published_at to noon CST"
+current_owner = "trade_py.data.news"
+required_child = "capture-boundary"
+risk_kind = "date-only-inferred-precision"
+current_behavior = "A date-only provider value is converted to a synthetic noon timestamp."
+required_migration_proof = "Preserve source precision and prohibit unproven point-in-time publication claims."
+
+[[capture_risks]]
+id = "warehouse-rss-fetched-time-substitution"
+source = "trade_py/data/warehouse/fetch.py"
+literal = '"published_at": published_at or fetched_at'
+current_owner = "trade_py.data.warehouse"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Missing provider publication time falls back to fetch time."
+required_migration_proof = "Record provider time and received time separately in CaptureArtifact metadata."
+
+[[capture_risks]]
+id = "archive-date-only-publication-time"
+source = "trade_py/data/news/rss/archive.py"
+literal = "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)"
+current_owner = "trade_py.data.news.rss"
+required_child = "capture-boundary"
+risk_kind = "date-only-inferred-precision"
+current_behavior = "Archive day values become synthetic UTC noon timestamps."
+required_migration_proof = "Retain date-only precision and use an explicit availability policy."
+
+[[capture_risks]]
+id = "rss-catalog-environment-override"
+source = "trade_py/data/news/rss/catalog.py"
+literal = 'override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")'
+current_owner = "trade_py.data.news.rss"
+required_child = "capture-boundary"
+risk_kind = "catalog-environment-override-and-absent-rights-evidence"
+current_behavior = "An environment variable can replace the feed index without an immutable SourceManifest."
+required_migration_proof = "Versioned SourceManifest with source rights, credentials, and override audit evidence."
+
+[[capture_risks]]
+id = "ingest-wal-replay"
+source = "trade_py/data/ingest/batch.py"
+literal = "Replay any leftover WAL segments into main parquet at startup."
+current_owner = "trade_py.data.ingest"
+required_child = "capture-boundary"
+risk_kind = "provider-refetch-versus-local-artifact-replay-versus-wal-recovery"
+current_behavior = "WAL recovery writes legacy parquet before a formal Capture receipt exists."
+required_migration_proof = "Provider-free replay from immutable CaptureArtifact references and explicit replay receipts."
+
+[[capture_risks]]
+id = "warehouse-semantic-quarantine"
+source = "trade_py/data/warehouse/articles.py"
+literal = 'quality_status = "quarantined"'
+current_owner = "trade_py.data.warehouse"
+required_child = "dataset-product-boundary"
+risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
+current_behavior = "Article semantic quality marks rows quarantined in the warehouse transform."
+required_migration_proof = "Capture transport failures remain distinct from Datasets semantic quality quarantine."
+
+[[interfaces]]
+id = "root-trade-facade"
+source = "trade"
+literal = 'uv run python -m trade_py.cli.main'
+current_owner = "trade"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-facade"
+current_behavior = "Root script delegates public commands to the legacy Python CLI."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "canonical-cli-domains"
+source = "trade_py/cli/main.py"
+literal = '("research", "research"'
+current_owner = "trade_py.cli"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-domain"
+current_behavior = "Canonical CLI domains dispatch from the legacy namespace."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "legacy-cli-domains"
+source = "trade_py/cli/main.py"
+literal = "legacy_domains = ["
+current_owner = "trade_py.cli"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-compatibility"
+current_behavior = "Hidden legacy domains remain dispatchable."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "fastapi-app-factory"
+source = "trade_web/backend/app.py"
+literal = "def create_app():"
+current_owner = "trade_web.backend"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-app"
+current_behavior = "The FastAPI factory exposes legacy HTTP routes and serves the Web application."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "observatory-router"
+source = "trade_web/backend/observatory/router.py"
+literal = 'APIRouter(prefix="/api/v1/observatory"'
+current_owner = "trade_web.backend.observatory"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-router"
+current_behavior = "Observatory routes are a current HTTP surface and not a bounded context."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "runtime-sse"
+source = "trade_web/backend/runtime/router.py"
+literal = 'media_type="text/event-stream"'
+current_owner = "trade_web.backend.runtime"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "sse"
+current_behavior = "Runtime event and capacity streams use SSE."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "runtime-router-contract-tests"
+source = "tests/test_runtime_router.py"
+literal = '"/api/events/stream"'
+current_owner = "tests"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-contract-test"
+current_behavior = "Focused tests exercise the legacy SSE route contract."
+compatibility_owner = "interfaces.http.compat"
+
+[[native_bindings]]
+id = "legacy-trade-py-native-binding"
+source = "engine/cmake/python_bindings.cmake"
+literal = "nanobind_add_module(trade_py"
+current_owner = "engine"
+required_child = "python-package-and-web-layout"
+current_binding = "trade_py"
+reserved_binding = "_trade_native"
+
+[[warehouse_producers]]
+id = "materialize-dim-sector"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dim", "dim_sector"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_sector"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dim-topic"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dim", "dim_topic"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_topic"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dim-position"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dim", "dim_position"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_position"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dim-data-source"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dim", "dim_data_source"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_data_source"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ods-rss-entry-raw"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ods", "ods_rss_entry_raw"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ods"
+table = "ods_rss_entry_raw"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dwd", "dwd_article"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article-quality-check"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dwd", "dwd_article_quality_check"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article_quality_check"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article-semantic-check"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dwd", "dwd_article_semantic_check"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article_semantic_check"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article-sector-relevance"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dwd", "dwd_article_sector_relevance"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article_sector_relevance"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dws-sector-topic-daily"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "dws", "dws_sector_topic_daily"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dws"
+table = "dws_sector_topic_daily"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-data-signal-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_data_signal_report"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_data_signal_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-source-value-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_source_value_report"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_source_value_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-feature-value-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_feature_value_report"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_feature_value_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-association-result"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_association_result"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_association_result"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-hypothesis-validation-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_hypothesis_validation_report"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_hypothesis_validation_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-position-risk-signal"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_position_risk_signal"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_position_risk_signal"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-warehouse-validation-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = 'layout, "ads", "ads_warehouse_validation_report"'
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_warehouse_validation_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "The producer exists even though the legacy required-table list omits it."
+
+[[warehouse_producers]]
+id = "cli-fetch-dim-data-source"
+source = "trade_py/cli/data.py"
+literal = 'write_table(layout, "dim", "dim_data_source", dim_data_source)'
+current_owner = "trade_py.cli.data"
+required_child = "cli-http-sdk-compatibility"
+layer = "dim"
+table = "dim_data_source"
+path_role = "compatibility-cli-fetch"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "CLI compatibility surface currently writes the DIM source catalog."
+
+[[warehouse_producers]]
+id = "cli-fetch-ods-fetch-attempt"
+source = "trade_py/cli/data.py"
+literal = '"ods.ods_fetch_attempt": upsert_table('
+current_owner = "trade_py.cli.data"
+required_child = "cli-http-sdk-compatibility"
+layer = "ods"
+table = "ods_fetch_attempt"
+path_role = "compatibility-cli-fetch"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "CLI compatibility surface currently writes RSS fetch-attempt evidence."
