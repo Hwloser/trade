@@ -9,9 +9,13 @@ inventory.  It must not import inspected application modules or inspect data.
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
+import select
 import stat
 import subprocess
+import threading
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -38,6 +42,9 @@ PRODUCER_UNDECLARED_WRITER = "architecture.producer_discovery_undeclared_writer"
 PRODUCER_PATH_BUDGET = "architecture.producer_discovery_path_budget_exceeded"
 PRODUCER_SOURCE_BUDGET = "architecture.producer_discovery_budget_exceeded"
 PRODUCER_UNSAFE_SOURCE = "architecture.producer_discovery_unsafe_source"
+PRODUCER_RESULT_BUDGET = "architecture.producer_discovery_result_budget_exceeded"
+PRODUCER_TIMEOUT = "architecture.producer_discovery_tool_timeout"
+PRODUCER_TOOL_FAILURE = "architecture.producer_discovery_tool_failed"
 
 _BASELINE_MALFORMED = "architecture.baseline_malformed"
 _BASELINE_DUPLICATE = "architecture.baseline_duplicate_declaration"
@@ -49,11 +56,32 @@ _BASELINE_CLASSIFICATION = "architecture.baseline_invalid_classification"
 _BASELINE_NONAUTHORIZING = "architecture.baseline_non_authorizing_binding"
 _BASELINE_MISSING_ARTIFACT = "architecture.baseline_missing_producer_artifact"
 _BASELINE_INVALID_SOURCE = "architecture.baseline_invalid_source"
+_BASELINE_STALE_PRODUCER = "architecture.baseline_stale_producer_declaration"
+_RESULT_TRUNCATED = "architecture.guard_result_truncated"
 
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
 _CLASSIFICATIONS = frozenset({"candidate", "deferred", "approved_binding"})
 _EXCLUDED_SOURCE_SEGMENTS = frozenset(
     {"vendor", "third_party", "generated", "cache", "__pycache__"}
+)
+_EVIDENCE_ROOTS = frozenset({"trade_py", "trade_web", "tests", "engine"})
+_EVIDENCE_SOURCE_SUFFIXES = frozenset(
+    {".py", ".pyi", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".cmake", ".txt"}
+)
+_FORBIDDEN_EVIDENCE_ROOTS = frozenset({"data", "warehouse", "market"})
+_FORBIDDEN_EVIDENCE_SUFFIXES = frozenset(
+    {".db", ".sqlite", ".duckdb", ".parquet", ".json", ".jsonl", ".avro", ".orc"}
+)
+_FORBIDDEN_EVIDENCE_TOKENS = frozenset({"manifest", "pointer", "receipt"})
+_GIT_ENVIRONMENT_OVERRIDES = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
 )
 
 
@@ -68,6 +96,13 @@ class DiscoveryLimits:
     max_source_bytes: int = 32 * 1024 * 1024
     max_file_bytes: int = 1 * 1024 * 1024
     max_evidence_bytes: int = 1 * 1024 * 1024
+    max_baseline_entries: int = 512
+    max_discovered_producers: int = 1_024
+    max_ast_nodes_per_file: int = 250_000
+    max_findings: int = 64
+    max_diagnostic_field_bytes: int = 1_024
+    max_git_stderr_bytes: int = 4 * 1024
+    git_timeout_seconds: float = 30.0
 
 
 DEFAULT_LIMITS = DiscoveryLimits()
@@ -86,23 +121,40 @@ class ArchitectureFinding:
 class WarehouseProducer:
     source: str
     line: int
+    column: int
     writer: str
     layer: str
     table: str
+    literal: str
+    call_digest: str
 
     @property
     def artifact_key(self) -> str:
         return f"{self.layer}.{self.table}"
+
+    @property
+    def declaration_key(self) -> tuple[str, int, int, str, str, str, str, str]:
+        return (
+            self.source,
+            self.line,
+            self.column,
+            self.writer,
+            self.layer,
+            self.table,
+            self.literal,
+            self.call_digest,
+        )
 
 
 @dataclass(frozen=True)
 class ArchitectureReport:
     findings: tuple[ArchitectureFinding, ...]
     producers: tuple[WarehouseProducer, ...]
+    omitted_findings_count: int = 0
 
     @property
     def ok(self) -> bool:
-        return not self.findings
+        return not self.findings and self.omitted_findings_count == 0
 
 
 @dataclass(frozen=True)
@@ -129,6 +181,7 @@ class _GuardError(RuntimeError):
 
 @dataclass(frozen=True)
 class _Baseline:
+    target_contexts: frozenset[str]
     source_facts: tuple[Mapping[str, Any], ...]
     tables: tuple[Mapping[str, Any], ...]
     artifacts: tuple[Mapping[str, Any], ...]
@@ -155,23 +208,23 @@ def validate_architecture_baseline(
     try:
         baseline = _load_baseline(root, baseline_name, limits)
     except _GuardError as exc:
-        return ArchitectureReport((exc.finding,), ())
+        return _report((exc.finding,), (), limits)
 
     findings.extend(_validate_baseline_facts(root, baseline, limits))
     if findings:
-        return ArchitectureReport(_ordered_findings(findings), ())
+        return _report(findings, (), limits)
 
     findings.extend(_declared_producer_source_missing(root, baseline, limits))
     if findings:
-        return ArchitectureReport(_ordered_findings(findings), ())
+        return _report(findings, (), limits)
 
     try:
         producers = discover_warehouse_producers(root, limits=limits)
     except _GuardError as exc:
-        return ArchitectureReport((exc.finding,), ())
+        return _report((exc.finding,), (), limits)
 
     findings.extend(_validate_producer_declarations(root, baseline, producers, limits))
-    return ArchitectureReport(_ordered_findings(findings), producers if not findings else ())
+    return _report(findings, producers if not findings else (), limits)
 
 
 def discover_warehouse_producers(
@@ -182,14 +235,15 @@ def discover_warehouse_producers(
     """Return every bounded, tracked production call to a canonical writer."""
 
     root = Path(repo_root)
-    sources: list[tuple[str, str]] = []
     raw_records = 0
     raw_path_bytes = 0
     included_path_bytes = 0
     included_paths: set[str] = set()
     aggregate_source_bytes = 0
+    producers: list[WarehouseProducer] = []
+    findings: list[ArchitectureFinding] = []
 
-    for mode, path in _iter_git_index(root):
+    for mode, path in _iter_git_index(root, limits=limits):
         raw_records += 1
         raw_path_bytes += len(path.encode("utf-8"))
         if raw_records > limits.max_raw_records or raw_path_bytes > limits.max_raw_path_bytes:
@@ -235,14 +289,19 @@ def discover_warehouse_producers(
                 "production source is not valid UTF-8",
                 "Keep the inspected source as a stable UTF-8 regular file inside the repository.",
             ) from exc
-        sources.append((path, text))
-
-    producers: list[WarehouseProducer] = []
-    findings: list[ArchitectureFinding] = []
-    for path, text in sources:
-        parsed, source_findings = _discover_in_source(path, text)
+        parsed, source_findings = _discover_in_source(path, text, limits=limits)
         producers.extend(parsed)
         findings.extend(source_findings)
+        if len(producers) > limits.max_discovered_producers:
+            raise _producer_result_budget_error(
+                path,
+                "canonical writer-call inventory exceeds the configured result budget",
+            )
+        if len(findings) > limits.max_findings:
+            raise _producer_result_budget_error(
+                path,
+                "producer discovery findings exceed the configured result budget",
+            )
     if findings:
         first = _ordered_findings(findings)[0]
         raise _GuardError(
@@ -252,7 +311,12 @@ def discover_warehouse_producers(
             first.remediation,
             line=first.line,
         )
-    return tuple(sorted(producers, key=lambda item: (item.source, item.line, item.writer)))
+    return tuple(
+        sorted(
+            producers,
+            key=lambda item: (item.source, item.line, item.column, item.writer),
+        )
+    )
 
 
 def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _Baseline:
@@ -307,7 +371,14 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
             "Keep the target filesystem and import roots distinct and explicit.",
         )
     _require_string_list(parsed, "legacy_package_roots", baseline_name)
-    _require_string_list(parsed, "target_contexts", baseline_name)
+    target_contexts = _require_string_list(parsed, "target_contexts", baseline_name)
+    if len(set(target_contexts)) != len(target_contexts):
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            baseline_name,
+            "baseline target_contexts must not contain duplicate Context names",
+            "List each governed target Context exactly once.",
+        )
 
     collections = {
         "source_facts": _read_table_array(parsed, "source_facts", baseline_name),
@@ -319,15 +390,15 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
         "producers": _read_table_array(parsed, "warehouse_producers", baseline_name),
     }
     for name, items in collections.items():
-        if not items:
+        if not items or len(items) > limits.max_baseline_entries:
             raise _GuardError(
                 _BASELINE_MALFORMED,
                 baseline_name,
-                f"baseline must declare at least one {name} entry",
-                "Record the audited source-only facts for this required category.",
+                f"baseline must declare one through {limits.max_baseline_entries} {name} entries",
+                "Record the audited source-only facts within the governed baseline-entry limit.",
             )
 
-    return _Baseline(**collections)
+    return _Baseline(target_contexts=frozenset(target_contexts), **collections)
 
 
 def _validate_baseline_facts(
@@ -362,7 +433,7 @@ def _validate_baseline_facts(
                     _validate_common_fact(root, fact, category, limits)
                 if category == "artifacts":
                     artifact_ids.add(fact_id)
-                    _validate_classification(fact, category)
+                    _validate_classification(fact, category, baseline.target_contexts)
                     _require_text(fact, "role", category)
                 elif category == "capture_risks":
                     _require_text(fact, "risk_kind", category)
@@ -376,7 +447,7 @@ def _validate_baseline_facts(
                     _require_text(fact, "current_binding", category)
                     _require_text(fact, "reserved_binding", category)
                 elif category == "warehouse_producers":
-                    _validate_classification(fact, category)
+                    _validate_classification(fact, category, baseline.target_contexts)
                     _require_text(fact, "current_owner", category)
                     _require_text(fact, "required_child", category)
                     _require_text(fact, "layer", category)
@@ -385,6 +456,61 @@ def _validate_baseline_facts(
                     _require_text(fact, "artifact_id", category)
             except _GuardError as exc:
                 findings.append(exc.finding)
+
+    required_capture_risk_ids = {
+        "raw-record-single-publication-clock",
+        "cctv-date-only-publication-time",
+        "warehouse-rss-fetched-time-substitution",
+        "archive-date-only-publication-time",
+        "rss-catalog-environment-override",
+        "gdelt-provider-time-fallback",
+        "gdelt-streaming-local-state-and-refetch",
+        "ingest-wal-replay",
+        "warehouse-semantic-quarantine",
+    }
+    capture_risk_ids = {
+        fact.get("id") for fact in baseline.capture_risks if isinstance(fact.get("id"), str)
+    }
+    missing_capture_risks = sorted(required_capture_risk_ids - capture_risk_ids)
+    if missing_capture_risks:
+        findings.append(
+            ArchitectureFinding(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                None,
+                "baseline omits required Capture-risk declarations: "
+                + ", ".join(missing_capture_risks),
+                "Record each audited Capture temporal, replay, and quarantine migration risk.",
+            )
+        )
+
+    required_interface_kinds = {
+        "cli-facade",
+        "cli-domain",
+        "cli-compatibility",
+        "http-app",
+        "http-openapi",
+        "http-router",
+        "sse",
+        "http-contract-test",
+    }
+    interface_kinds = {
+        fact.get("surface_kind")
+        for fact in baseline.interfaces
+        if isinstance(fact.get("surface_kind"), str)
+    }
+    missing_interface_kinds = sorted(required_interface_kinds - interface_kinds)
+    if missing_interface_kinds:
+        findings.append(
+            ArchitectureFinding(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                None,
+                "baseline omits required interface surface kinds: "
+                + ", ".join(missing_interface_kinds),
+                "Record the audited CLI, HTTP, OpenAPI, SSE, and contract-test source facts.",
+            )
+        )
 
     table_names: set[str] = set()
     for table in baseline.tables:
@@ -402,7 +528,7 @@ def _validate_baseline_facts(
             _require_text(table, "semantic_kind", "tables")
             _require_text(table, "reason", "tables")
             _require_text(table, "required_child", "tables")
-            _validate_classification(table, "tables")
+            _validate_classification(table, "tables", baseline.target_contexts)
             provenance = table.get("provenance")
             if not isinstance(provenance, list) or not provenance:
                 raise _GuardError(
@@ -452,11 +578,7 @@ def _declared_producer_source_missing(
     baseline: _Baseline,
     limits: DiscoveryLimits,
 ) -> list[ArchitectureFinding]:
-    """Classify only missing declared producer files before index scanning.
-
-    A present-but-unsafe path remains the producer scanner's concern, preserving
-    the dedicated unsafe-source diagnostic for symlinks and replacement races.
-    """
+    """Classify a deleted declaration before the Git-index inventory opens it."""
 
     findings: list[ArchitectureFinding] = []
     for declaration in baseline.producers:
@@ -486,32 +608,30 @@ def _validate_producer_declarations(
     limits: DiscoveryLimits,
 ) -> list[ArchitectureFinding]:
     findings: list[ArchitectureFinding] = []
-    declarations: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    declarations: dict[tuple[str, int, int, str, str, str, str, str], Mapping[str, Any]] = {}
     for declaration in baseline.producers:
         try:
-            _validate_source_literal(root, declaration, limits)
+            _validate_producer_declaration(declaration)
         except _GuardError as exc:
             findings.append(exc.finding)
-        key = (
-            str(declaration.get("source") or ""),
-            str(declaration.get("layer") or ""),
-            str(declaration.get("table") or ""),
-        )
+            continue
+        key = _producer_declaration_key(declaration)
         if key in declarations:
             findings.append(
                 ArchitectureFinding(
                     _BASELINE_DUPLICATE,
                     BASELINE_FILENAME,
                     None,
-                    f"duplicate warehouse producer declaration for {key[0]} {key[1]}.{key[2]}",
-                    "Keep one declaration per producer source and literal artifact coordinate.",
+                    "duplicate warehouse producer declaration for "
+                    f"{key[0]}:{key[1]}:{key[2]} {key[3]} {key[4]}.{key[5]}",
+                    "Keep one declaration per canonical writer call identity.",
                 )
             )
             continue
         declarations[key] = declaration
 
     for producer in producers:
-        key = (producer.source, producer.layer, producer.table)
+        key = producer.declaration_key
         if key not in declarations:
             findings.append(
                 ArchitectureFinding(
@@ -523,7 +643,79 @@ def _validate_producer_declarations(
                     "Add a reviewed baseline declaration for this producer and its artifact.",
                 )
             )
+    producer_keys = {producer.declaration_key for producer in producers}
+    for key in declarations:
+        if key not in producer_keys:
+            findings.append(
+                ArchitectureFinding(
+                    _BASELINE_STALE_PRODUCER,
+                    key[0],
+                    key[1],
+                    "declared canonical warehouse writer call is absent or changed: "
+                    f"{key[3]} {key[4]}.{key[5]}",
+                    "Update the reviewed baseline declaration after reconciling the changed writer call.",
+                )
+            )
     return findings
+
+
+def _validate_producer_declaration(declaration: Mapping[str, Any]) -> None:
+    source = _require_text(declaration, "source", "warehouse_producers")
+    if not _is_production_python_path(source, "100644"):
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            source,
+            "warehouse producer source must be a production Python path beneath trade_py",
+            "Declare only a source that belongs to the bounded producer-discovery universe.",
+        )
+    _require_text(declaration, "id", "warehouse_producers")
+    _require_text(declaration, "literal", "warehouse_producers")
+    _require_text(declaration, "current_owner", "warehouse_producers")
+    _require_text(declaration, "required_child", "warehouse_producers")
+    _require_text(declaration, "path_role", "warehouse_producers")
+    _require_text(declaration, "artifact_id", "warehouse_producers")
+    line = declaration.get("line")
+    column = declaration.get("column")
+    writer = declaration.get("writer")
+    layer = declaration.get("layer")
+    table = declaration.get("table")
+    call_digest = declaration.get("call_digest")
+    if (
+        not isinstance(line, int)
+        or line < 1
+        or not isinstance(column, int)
+        or column < 0
+        or writer not in CANONICAL_WRITERS
+        or not isinstance(layer, str)
+        or not layer
+        or not isinstance(table, str)
+        or not table
+        or not isinstance(call_digest, str)
+        or len(call_digest) != 64
+        or any(character not in "0123456789abcdef" for character in call_digest)
+    ):
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            source,
+            "warehouse producer declaration requires positive line, nonnegative column, "
+            "canonical writer, and non-empty literal layer/table",
+            "Record the exact AST-discovered writer call identity in the baseline.",
+        )
+
+
+def _producer_declaration_key(
+    declaration: Mapping[str, Any],
+) -> tuple[str, int, int, str, str, str, str, str]:
+    return (
+        str(declaration["source"]),
+        int(declaration["line"]),
+        int(declaration["column"]),
+        str(declaration["writer"]),
+        str(declaration["layer"]),
+        str(declaration["table"]),
+        str(declaration["literal"]),
+        str(declaration["call_digest"]),
+    )
 
 
 def _validate_common_fact(
@@ -544,6 +736,14 @@ def _validate_source_literal(
 ) -> None:
     source = _require_text(fact, "source", "source fact")
     literal = _require_text(fact, "literal", "source fact")
+    if not _is_allowed_evidence_source(source):
+        raise _GuardError(
+            _BASELINE_UNSAFE_SOURCE,
+            source,
+            "declared evidence source is outside the source-only admission policy",
+            "Declare only approved repository source or build-definition evidence; never data, "
+            "artifacts, manifests, pointers, receipts, or database files.",
+        )
     try:
         payload = _safe_read_relative(root, source, max_bytes=limits.max_evidence_bytes)
     except _GuardError as exc:
@@ -576,12 +776,35 @@ def _validate_source_literal(
         raise _GuardError(
             _BASELINE_LITERAL_MISMATCH,
             source,
-            f"declared source literal is absent: {literal!r}",
+            "declared source literal is absent: "
+            + _bounded_text(literal, limits.max_diagnostic_field_bytes),
             "Update the baseline fact and its migration evidence with the changed source literal.",
         )
 
 
-def _validate_classification(fact: Mapping[str, Any], category: str) -> None:
+def _is_allowed_evidence_source(source: str) -> bool:
+    if source == "trade":
+        return True
+    if not _is_safe_relative_path(source):
+        return False
+    pure = PurePosixPath(source)
+    if pure.parts[0] in _FORBIDDEN_EVIDENCE_ROOTS:
+        return False
+    if pure.parts[0] not in _EVIDENCE_ROOTS:
+        return False
+    if pure.suffix.lower() not in _EVIDENCE_SOURCE_SUFFIXES:
+        return False
+    lowered_name = pure.name.lower()
+    return not any(token in lowered_name for token in _FORBIDDEN_EVIDENCE_TOKENS) and (
+        pure.suffix.lower() not in _FORBIDDEN_EVIDENCE_SUFFIXES
+    )
+
+
+def _validate_classification(
+    fact: Mapping[str, Any],
+    category: str,
+    target_contexts: frozenset[str],
+) -> None:
     classification = _require_text(fact, "classification", category)
     if classification not in _CLASSIFICATIONS:
         raise _GuardError(
@@ -608,6 +831,13 @@ def _validate_classification(fact: Mapping[str, Any], category: str) -> None:
             f"{category} {classification} declaration cannot target 'deferred'",
             "Name the candidate or approved Context explicitly.",
         )
+    if target_context not in target_contexts:
+        raise _GuardError(
+            _BASELINE_CLASSIFICATION,
+            BASELINE_FILENAME,
+            f"{category} target_context {target_context!r} is not a declared target Context",
+            "Use one Context from the baseline target_contexts controlled vocabulary.",
+        )
     if classification == "candidate":
         if "approved_binding" in fact or "adapter_scope" in fact:
             raise _GuardError(
@@ -625,6 +855,14 @@ def _validate_classification(fact: Mapping[str, Any], category: str) -> None:
         "compatibility_evidence",
     ):
         _require_text(fact, field, category)
+    adapter_scope = str(fact["adapter_scope"])
+    if not adapter_scope.startswith(f"{target_context}.adapters."):
+        raise _GuardError(
+            _BASELINE_CLASSIFICATION,
+            BASELINE_FILENAME,
+            f"{category} approved binding adapter_scope must belong to {target_context}.adapters",
+            "Name a persistence adapter scope beneath the approved target Context.",
+        )
 
 
 def _read_table_array(
@@ -671,42 +909,100 @@ def _require_string_list(mapping: Mapping[str, Any], key: str, path: str) -> tup
     return tuple(value)
 
 
-def _iter_git_index(root: Path) -> Iterator[tuple[str, str]]:
+def _iter_git_index(
+    root: Path, *, limits: DiscoveryLimits = DEFAULT_LIMITS
+) -> Iterator[tuple[str, str]]:
+    environment = os.environ.copy()
+    for key in _GIT_ENVIRONMENT_OVERRIDES:
+        environment.pop(key, None)
     try:
         process = subprocess.Popen(
-            ["git", "ls-files", "-z", "--stage", "--", "trade_py"],
+            ["git", "-C", str(root), "ls-files", "-z", "--stage", "--", "trade_py"],
             cwd=root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=environment,
         )
     except OSError as exc:
         raise _GuardError(
-            PRODUCER_UNSAFE_SOURCE,
+            PRODUCER_TOOL_FAILURE,
             "trade_py",
             f"cannot start Git index discovery: {exc}",
-            "Run the check in a repository with a readable Git index.",
+            "Install Git and run the check from a repository with a readable Git index.",
         ) from exc
-    assert process.stdout is not None
+    stdout = process.stdout
+    stderr_stream = process.stderr
+    assert stdout is not None
+    assert stderr_stream is not None
+    stderr_chunks: list[bytes] = []
+    stderr_size = 0
+    stderr_lock = threading.Lock()
+    stderr_done = threading.Event()
+
+    def drain_stderr() -> None:
+        nonlocal stderr_size
+        try:
+            while chunk := stderr_stream.read(8_192):
+                with stderr_lock:
+                    remaining = limits.max_git_stderr_bytes - stderr_size
+                    if remaining > 0:
+                        retained = chunk[:remaining]
+                        stderr_chunks.append(retained)
+                        stderr_size += len(retained)
+        finally:
+            stderr_done.set()
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
+    deadline = time.monotonic() + limits.git_timeout_seconds
     buffer = b""
-    while True:
-        chunk = process.stdout.read(8_192)
-        if not chunk:
-            break
-        buffer += chunk
-        while b"\0" in buffer:
-            raw, buffer = buffer.split(b"\0", 1)
-            if not raw:
-                continue
-            yield _parse_index_record(raw)
-    stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
-    return_code = process.wait()
-    if buffer or return_code != 0:
-        raise _GuardError(
-            PRODUCER_UNSAFE_SOURCE,
-            "trade_py",
-            f"Git index discovery failed: {stderr.strip() or 'incomplete NUL record'}",
-            "Repair the repository Git index before running source-only discovery.",
-        )
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _git_timeout_error()
+            ready, _, _ = select.select([stdout], [], [], remaining)
+            if not ready:
+                raise _git_timeout_error()
+            chunk = os.read(stdout.fileno(), 8_192)
+            if not chunk:
+                break
+            buffer += chunk
+            while b"\0" in buffer:
+                raw, buffer = buffer.split(b"\0", 1)
+                if not raw:
+                    continue
+                yield _parse_index_record(raw)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _git_timeout_error()
+        try:
+            return_code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise _git_timeout_error() from exc
+        stderr_done.wait(timeout=max(0.0, deadline - time.monotonic()))
+        with stderr_lock:
+            stderr = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
+        if buffer or return_code != 0:
+            detail = stderr or "incomplete NUL record"
+            raise _GuardError(
+                PRODUCER_TOOL_FAILURE,
+                "trade_py",
+                "Git index discovery failed: "
+                + _bounded_text(detail, limits.max_diagnostic_field_bytes),
+                "Repair Git availability or the repository index before running source-only discovery.",
+            )
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        stdout.close()
+        stderr_stream.close()
+        stderr_thread.join(timeout=1)
 
 
 def _parse_index_record(raw: bytes) -> tuple[str, str]:
@@ -853,6 +1149,8 @@ def _read_descriptor(descriptor: int, size: int, path: str) -> bytes:
 def _discover_in_source(
     path: str,
     text: str,
+    *,
+    limits: DiscoveryLimits,
 ) -> tuple[list[WarehouseProducer], list[ArchitectureFinding]]:
     try:
         tree = ast.parse(text, filename=path)
@@ -866,6 +1164,16 @@ def _discover_in_source(
                 "Repair the source syntax before relying on its architecture inventory.",
             )
         ]
+    if sum(1 for _ in ast.walk(tree)) > limits.max_ast_nodes_per_file:
+        return [], [
+            _producer_finding(
+                PRODUCER_RESULT_BUDGET,
+                path,
+                1,
+                "production source AST exceeds the configured node budget",
+                "Split the source or make a reviewed governed AST-node budget increase.",
+            )
+        ]
 
     aliases: dict[str, str] = {}
     layouts: set[str] = set()
@@ -876,7 +1184,18 @@ def _discover_in_source(
                 local = alias.asname or alias.name.split(".", 1)[0]
                 aliases[local] = alias.name if alias.asname else local
         elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
+            module = _import_from_module(path, node)
+            if module is None:
+                findings.append(
+                    _producer_finding(
+                        PRODUCER_UNRESOLVED_IMPORT,
+                        path,
+                        node.lineno,
+                        "relative warehouse import escapes the inspected package root",
+                        "Use an import that resolves inside the repository package hierarchy.",
+                    )
+                )
+                continue
             for alias in node.names:
                 local = alias.asname or alias.name
                 if module in {CANONICAL_WAREHOUSE_MODULE, CANONICAL_WAREHOUSE_PACKAGE}:
@@ -977,12 +1296,34 @@ def _discover_in_source(
             WarehouseProducer(
                 source=path,
                 line=node.lineno,
+                column=node.col_offset,
                 writer=writer,
                 layer=layer.value,
                 table=table.value,
+                literal=ast.unparse(node),
+                call_digest=_call_digest(node),
             )
         )
     return producers, findings
+
+
+def _import_from_module(path: str, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module or ""
+    source_path = PurePosixPath(path)
+    package_parts = list(source_path.parts[:-1])
+    ascents = node.level - 1
+    if ascents > len(package_parts):
+        return None
+    resolved = package_parts[: len(package_parts) - ascents]
+    if node.module:
+        resolved.extend(node.module.split("."))
+    return ".".join(resolved)
+
+
+def _call_digest(node: ast.Call) -> str:
+    normalized = ast.dump(node, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _resolve_expression(node: ast.AST | None, aliases: Mapping[str, str]) -> str | None:
@@ -1068,6 +1409,24 @@ def _producer_source_budget_error(path: str, message: str) -> _GuardError:
     )
 
 
+def _producer_result_budget_error(path: str, message: str) -> _GuardError:
+    return _GuardError(
+        PRODUCER_RESULT_BUDGET,
+        path,
+        message,
+        "Reduce the producer scope or make a reviewed governed result-budget increase.",
+    )
+
+
+def _git_timeout_error() -> _GuardError:
+    return _GuardError(
+        PRODUCER_TIMEOUT,
+        "trade_py",
+        "Git index discovery exceeded the configured timeout",
+        "Repair the Git environment or make a reviewed governed timeout increase.",
+    )
+
+
 def _unsafe_source_error(path: str, message: str) -> _GuardError:
     return _GuardError(
         PRODUCER_UNSAFE_SOURCE,
@@ -1097,6 +1456,58 @@ def _ordered_findings(
                 item.message,
             ),
         )
+    )
+
+
+def _bounded_text(value: str, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    suffix = "...[truncated]"
+    suffix_bytes = suffix.encode("utf-8")
+    if max_bytes <= len(suffix_bytes):
+        return encoded[:max_bytes].decode("utf-8", "ignore")
+    budget = max_bytes - len(suffix_bytes)
+    return encoded[:budget].decode("utf-8", "ignore") + suffix
+
+
+def _bounded_finding(
+    finding: ArchitectureFinding,
+    limits: DiscoveryLimits,
+) -> ArchitectureFinding:
+    return ArchitectureFinding(
+        rule_id=finding.rule_id,
+        path=_bounded_text(finding.path, limits.max_diagnostic_field_bytes),
+        line=finding.line,
+        message=_bounded_text(finding.message, limits.max_diagnostic_field_bytes),
+        remediation=_bounded_text(finding.remediation, limits.max_diagnostic_field_bytes),
+    )
+
+
+def _report(
+    findings: Sequence[ArchitectureFinding],
+    producers: Sequence[WarehouseProducer],
+    limits: DiscoveryLimits,
+) -> ArchitectureReport:
+    ordered = _ordered_findings(findings)
+    emitted = tuple(_bounded_finding(finding, limits) for finding in ordered[: limits.max_findings])
+    omitted_count = len(ordered) - len(emitted)
+    if omitted_count:
+        truncation = ArchitectureFinding(
+            _RESULT_TRUNCATED,
+            BASELINE_FILENAME,
+            None,
+            f"{omitted_count} additional findings were omitted by the guarded report limit",
+            "Address the emitted findings, then rerun the guard to inspect remaining issues.",
+        )
+        if len(emitted) < limits.max_findings:
+            emitted += (_bounded_finding(truncation, limits),)
+        elif emitted:
+            emitted = emitted[:-1] + (_bounded_finding(truncation, limits),)
+    return ArchitectureReport(
+        findings=emitted,
+        producers=tuple(producers),
+        omitted_findings_count=omitted_count,
     )
 
 

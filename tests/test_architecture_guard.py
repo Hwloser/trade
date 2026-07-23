@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import hashlib
 import os
 import shutil
 import subprocess
@@ -12,7 +14,9 @@ from trade_py.devtools.architecture_guard import (
     DEFAULT_LIMITS,
     PRODUCER_NONLITERAL_TARGET,
     PRODUCER_PATH_BUDGET,
+    PRODUCER_RESULT_BUDGET,
     PRODUCER_SOURCE_BUDGET,
+    PRODUCER_TIMEOUT,
     PRODUCER_UNDECLARED_WRITER,
     PRODUCER_UNRESOLVED_IMPORT,
     PRODUCER_UNRESOLVED_LAYOUT,
@@ -22,6 +26,13 @@ from trade_py.devtools.architecture_guard import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CANONICAL_WRITE_TABLE = "trade_py.data.warehouse.io.write_table"
+CANONICAL_UPSERT_TABLE = "trade_py.data.warehouse.io.upsert_table"
+DEFAULT_APP = (
+    "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+    "layout = WarehouseLayout.from_data_root('data')\n"
+    'write_table(layout, "ods", "events", frame=None)\n'
+)
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -44,17 +55,54 @@ def _init_repo(tmp_path: Path, sources: dict[str, str]) -> Path:
     return repo
 
 
+def _producer_identity(
+    app: str,
+    *,
+    layer: str,
+    table: str,
+    writer: str,
+) -> tuple[int, int, str, str]:
+    tree = ast.parse(app)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and len(node.args) >= 3
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == layer
+            and isinstance(node.args[2], ast.Constant)
+            and node.args[2].value == table
+        ):
+            digest = hashlib.sha256(
+                ast.dump(node, annotate_fields=True, include_attributes=False).encode("utf-8")
+            ).hexdigest()
+            return node.lineno, node.col_offset, ast.unparse(node), digest
+    raise AssertionError(f"fixture has no {writer} producer for {layer}.{table}")
+
+
+def _toml_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _baseline(
     *,
     producer_source: str = "trade_py/app.py",
     producer_literal: str = 'write_table(layout, "ods", "events", frame=None)',
     producer_layer: str = "ods",
     producer_table: str = "events",
+    producer_writer: str = CANONICAL_WRITE_TABLE,
+    producer_app: str = DEFAULT_APP,
     classification: str = "candidate",
     target_context: str = "datasets",
     artifact_id: str = "warehouse-parquet",
     extra: str = "",
 ) -> str:
+    producer_line, producer_column, normalized_literal, producer_digest = _producer_identity(
+        producer_app,
+        layer=producer_layer,
+        table=producer_table,
+        writer=producer_writer,
+    )
+    producer_literal = normalized_literal
     return f'''schema_version = 1
 target_source_root = "src/trade"
 target_import_root = "trade"
@@ -93,7 +141,7 @@ reason = "Legacy output requires DatasetVersion migration."
 required_child = "dataset-product-boundary"
 
 [[capture_risks]]
-id = "raw-clock"
+id = "raw-record-single-publication-clock"
 source = "trade_py/capture.py"
 literal = "published_at"
 current_owner = "legacy"
@@ -101,6 +149,86 @@ required_child = "capture-boundary"
 risk_kind = "clock-collapse"
 current_behavior = "One field represents multiple clocks."
 required_migration_proof = "Independent clocks."
+
+[[capture_risks]]
+id = "cctv-date-only-publication-time"
+source = "trade_py/cctv.py"
+literal = "synthetic_noon"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "date-only-inferred-precision"
+current_behavior = "Date-only values have synthetic time."
+required_migration_proof = "Preserve source precision."
+
+[[capture_risks]]
+id = "warehouse-rss-fetched-time-substitution"
+source = "trade_py/rss.py"
+literal = "published_at or fetched_at"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Fetch time substitutes provider time."
+required_migration_proof = "Separate provider and received clocks."
+
+[[capture_risks]]
+id = "archive-date-only-publication-time"
+source = "trade_py/archive.py"
+literal = "archive_noon"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "date-only-inferred-precision"
+current_behavior = "Archive dates gain synthetic time."
+required_migration_proof = "Preserve date-only precision."
+
+[[capture_risks]]
+id = "rss-catalog-environment-override"
+source = "trade_py/catalog.py"
+literal = "RSS_OVERRIDE"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "catalog-environment-override-and-absent-rights-evidence"
+current_behavior = "Environment can replace the feed catalog."
+required_migration_proof = "Version SourceManifest rights."
+
+[[capture_risks]]
+id = "gdelt-provider-time-fallback"
+source = "trade_py/data/news/gdelt/source.py"
+literal = "pub = datetime.now(timezone.utc)"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Invalid provider time uses collection time."
+required_migration_proof = "Separate provider and received clocks."
+
+[[capture_risks]]
+id = "gdelt-streaming-local-state-and-refetch"
+source = "trade_py/data/news/gdelt/source.py"
+literal = "bronze_offsets = scan_bronze_channel_offsets(data_root)"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor"
+current_behavior = "Streaming uses mutable state and provider fetches."
+required_migration_proof = "Replay immutable CaptureArtifact segments."
+
+[[capture_risks]]
+id = "ingest-wal-replay"
+source = "trade_py/wal.py"
+literal = "replay_wal"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "provider-refetch-versus-local-artifact-replay-versus-wal-recovery"
+current_behavior = "WAL replay writes legacy data."
+required_migration_proof = "Replay immutable CaptureArtifact references."
+
+[[capture_risks]]
+id = "warehouse-semantic-quarantine"
+source = "trade_py/quarantine.py"
+literal = "quality_status = 'quarantined'"
+current_owner = "legacy"
+required_child = "dataset-product-boundary"
+risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
+current_behavior = "Semantic quality uses a legacy quarantine flag."
+required_migration_proof = "Keep Capture transport and Dataset quality separate."
 
 [[interfaces]]
 id = "cli"
@@ -111,6 +239,76 @@ required_child = "cli-http-sdk-compatibility"
 surface_kind = "cli-facade"
 current_behavior = "Legacy entrypoint remains available."
 compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "cli-domain"
+source = "trade_py/cli/main.py"
+literal = "CANONICAL_DOMAIN"
+current_owner = "legacy"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-domain"
+current_behavior = "CLI routes a canonical domain."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "cli-compatibility"
+source = "trade_py/cli/main.py"
+literal = "LEGACY_DOMAIN"
+current_owner = "legacy"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-compatibility"
+current_behavior = "CLI keeps a legacy domain."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "http-app"
+source = "trade_web/backend/app.py"
+literal = "def create_app"
+current_owner = "legacy"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-app"
+current_behavior = "HTTP application factory."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "http-openapi"
+source = "trade_web/backend/app.py"
+literal = "FastAPI("
+current_owner = "legacy"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-openapi"
+current_behavior = "Generated OpenAPI surface."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "http-router"
+source = "trade_web/backend/router.py"
+literal = "APIRouter"
+current_owner = "legacy"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-router"
+current_behavior = "HTTP route registration."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "sse"
+source = "trade_web/backend/sse.py"
+literal = "text/event-stream"
+current_owner = "legacy"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "sse"
+current_behavior = "SSE response."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "http-contract-test"
+source = "tests/test_http_contract.py"
+literal = "/api/v1/events"
+current_owner = "tests"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-contract-test"
+current_behavior = "HTTP contract assertion."
+compatibility_owner = "interfaces.http.compat"
 
 [[native_bindings]]
 id = "native"
@@ -124,7 +322,11 @@ reserved_binding = "_trade_native"
 [[warehouse_producers]]
 id = "writer"
 source = "{producer_source}"
-literal = '{producer_literal}'
+literal = "{_toml_string(producer_literal)}"
+line = {producer_line}
+column = {producer_column}
+writer = "{producer_writer}"
+call_digest = "{producer_digest}"
 current_owner = "legacy"
 required_child = "dataset-product-boundary"
 layer = "{producer_layer}"
@@ -138,16 +340,30 @@ reason = "Fixture declaration."
 '''
 
 
-def _sources(app: str | None = None) -> dict[str, str]:
+def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict[str, str]:
+    application = app or DEFAULT_APP
     return {
-        "architecture-baseline.toml": _baseline(),
+        "architecture-baseline.toml": _baseline(producer_app=baseline_app),
         "trade": "#!/bin/sh\n# legacy-cli\n",
         "trade_py/__init__.py": "",
         "trade_py/db.py": 'LEGACY_DB = 1\nSQL = "CREATE TABLE legacy_records"\n',
         "trade_py/migrations.py": 'SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n',
         "trade_py/warehouse.py": 'path = f"{table}.parquet"\n',
         "trade_py/capture.py": "published_at = None\n",
+        "trade_py/cctv.py": "synthetic_noon = True\n",
+        "trade_py/rss.py": "published_at or fetched_at\n",
+        "trade_py/archive.py": "archive_noon = True\n",
+        "trade_py/catalog.py": 'RSS_OVERRIDE = "RSS_OVERRIDE"\n',
+        "trade_py/wal.py": "replay_wal = True\n",
+        "trade_py/quarantine.py": "quality_status = 'quarantined'\n",
         "trade_py/data/__init__.py": "",
+        "trade_py/data/news/__init__.py": "",
+        "trade_py/data/news/gdelt/__init__.py": "",
+        "trade_py/data/news/gdelt/source.py": (
+            "from datetime import datetime, timezone\n"
+            "pub = datetime.now(timezone.utc)\n"
+            "bronze_offsets = scan_bronze_channel_offsets(data_root)\n"
+        ),
         "trade_py/data/warehouse/__init__.py": (
             "from trade_py.data.warehouse.io import WarehouseLayout, write_table, upsert_table\n"
         ),
@@ -161,12 +377,12 @@ def _sources(app: str | None = None) -> dict[str, str]:
             "def upsert_table(layout, layer, table, frame, *, key_cols):\n"
             "    return None\n"
         ),
-        "trade_py/app.py": app
-        or (
-            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
-            "layout = WarehouseLayout.from_data_root('data')\n"
-            'write_table(layout, "ods", "events", frame=None)\n'
-        ),
+        "trade_py/app.py": application,
+        "trade_py/cli/main.py": "CANONICAL_DOMAIN = True\nLEGACY_DOMAIN = True\n",
+        "trade_web/backend/app.py": "def create_app():\n    return FastAPI()\n",
+        "trade_web/backend/router.py": "APIRouter = object()\n",
+        "trade_web/backend/sse.py": 'MEDIA = "text/event-stream"\n',
+        "tests/test_http_contract.py": 'EVENTS = "/api/v1/events"\n',
         "engine/cmake/python_bindings.cmake": "nanobind_add_module(trade_py bindings.cpp)\n",
     }
 
@@ -191,6 +407,22 @@ def test_repository_baseline_is_complete_and_source_only() -> None:
         ("trade_py/cli/data.py", "ods.ods_fetch_attempt"),
         ("trade_py/data/warehouse/materialize.py", "ads.ads_warehouse_validation_report"),
     }
+
+
+def test_repository_baseline_includes_review_required_provenance_and_interfaces() -> None:
+    from trade_py.devtools.quality.toml_compat import tomllib
+
+    baseline = tomllib.loads((REPO_ROOT / BASELINE_FILENAME).read_text(encoding="utf-8"))
+    table_names = {table["logical_name"] for table in baseline["tables"]}
+    capture_risk_ids = {risk["id"] for risk in baseline["capture_risks"]}
+    interface_kinds = {item["surface_kind"] for item in baseline["interfaces"]}
+
+    assert {"ingest_runs", "coverage", "enrichment_status"} <= table_names
+    assert {
+        "gdelt-provider-time-fallback",
+        "gdelt-streaming-local-state-and-refetch",
+    } <= capture_risk_ids
+    assert "http-openapi" in interface_kinds
 
 
 @pytest.mark.parametrize(
@@ -259,15 +491,26 @@ def test_canonical_direct_package_and_alias_writers_are_resolved(tmp_path: Path)
         'merge(layout, "dwd", "articles", frame=None, key_cols=["id"])\n'
     )
     sources = _sources(app)
+    alias_line, alias_column, alias_literal, alias_digest = _producer_identity(
+        app,
+        layer="dwd",
+        table="articles",
+        writer=CANONICAL_UPSERT_TABLE,
+    )
     sources[BASELINE_FILENAME] = (
         _baseline(
             producer_literal='write(layout, "ods", "events", frame=None)',
+            producer_app=app,
         )
-        + """
+        + f"""
 [[warehouse_producers]]
 id = "alias-upsert"
 source = "trade_py/app.py"
-literal = 'merge(layout, "dwd", "articles", frame=None, key_cols=["id"])'
+literal = "{_toml_string(alias_literal)}"
+line = {alias_line}
+column = {alias_column}
+writer = "trade_py.data.warehouse.io.upsert_table"
+call_digest = "{alias_digest}"
 current_owner = "legacy"
 required_child = "dataset-product-boundary"
 layer = "dwd"
@@ -442,3 +685,148 @@ def test_declared_producer_rename_or_deletion_fails(tmp_path: Path) -> None:
     shutil.move(repo / "trade_py/app.py", repo / "trade_py/renamed.py")
 
     assert "architecture.baseline_missing_source" in _rule_ids(repo)
+
+
+def test_source_only_evidence_policy_rejects_artifacts_without_opening_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    (repo / "data").mkdir()
+    (repo / "data" / "sentinel.parquet").write_text("not parquet", encoding="utf-8")
+    baseline = (
+        (repo / BASELINE_FILENAME)
+        .read_text(encoding="utf-8")
+        .replace(
+            'source = "trade_py/db.py"',
+            'source = "data/sentinel.parquet"',
+            1,
+        )
+    )
+    _write_baseline(repo, baseline)
+
+    import trade_py.devtools.architecture_guard as guard
+
+    original = guard._safe_read_relative
+    opened: list[str] = []
+
+    def record_open(root: Path, relative: str, *, max_bytes: int) -> bytes:
+        opened.append(relative)
+        return original(root, relative, max_bytes=max_bytes)
+
+    monkeypatch.setattr(guard, "_safe_read_relative", record_open)
+
+    assert "architecture.baseline_unsafe_source" in _rule_ids(repo)
+    assert "data/sentinel.parquet" not in opened
+
+
+def test_git_discovery_ignores_inherited_index_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    alternate_index = tmp_path / "alternate.index"
+    alternate_index.write_bytes(b"")
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate_index))
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert len(report.producers) == 1
+
+
+def test_exact_producer_declarations_fail_for_changed_or_removed_calls(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    changed = (
+        "from trade_py.data.warehouse import WarehouseLayout, upsert_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        'upsert_table(layout, "ods", "events", frame=None, key_cols=["id"])\n'
+    )
+    (repo / "trade_py/app.py").write_text(changed, encoding="utf-8")
+
+    changed_rules = _rule_ids(repo)
+
+    assert PRODUCER_UNDECLARED_WRITER in changed_rules
+    assert "architecture.baseline_stale_producer_declaration" in changed_rules
+
+    repo = _init_repo(tmp_path / "removed", _sources())
+    (repo / "trade_py/app.py").write_text(
+        "# write_table(layout, 'ods', 'events', frame=None)\n", encoding="utf-8"
+    )
+    assert "architecture.baseline_stale_producer_declaration" in _rule_ids(repo)
+
+
+def test_relative_canonical_warehouse_import_is_resolved(tmp_path: Path) -> None:
+    app = (
+        "from .io import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        'write_table(layout, "ods", "events", frame=None)\n'
+    )
+    sources = _sources(app="VALUE = 1\n")
+    sources["trade_py/data/warehouse/consumer.py"] = app
+    sources[BASELINE_FILENAME] = _baseline(
+        producer_source="trade_py/data/warehouse/consumer.py",
+        producer_app=app,
+    )
+    repo = _init_repo(tmp_path, sources)
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert report.producers[0].source == "trade_py/data/warehouse/consumer.py"
+
+
+def test_result_and_diagnostic_bounds_fail_closed(tmp_path: Path) -> None:
+    app = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        'write_table(layout, "ods", "events", frame=None)\n'
+        'write_table(layout, "ads", "other", frame=None)\n'
+    )
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+    producer_limits = DiscoveryLimits(max_discovered_producers=1)
+    producer_report = validate_architecture_baseline(repo, limits=producer_limits)
+
+    assert {finding.rule_id for finding in producer_report.findings} == {PRODUCER_RESULT_BUDGET}
+    assert producer_report.producers == ()
+
+    duplicate_facts = "\n".join(
+        """
+[[source_facts]]
+id = "legacy-db"
+source = "trade_py/db.py"
+literal = "LEGACY_DB = 1"
+current_owner = "legacy"
+required_child = "dataset-product-boundary"
+""".strip()
+        for _ in range(5)
+    )
+    _write_baseline(
+        repo,
+        (repo / BASELINE_FILENAME).read_text(encoding="utf-8") + "\n" + duplicate_facts,
+    )
+    report_limits = DiscoveryLimits(max_findings=3, max_diagnostic_field_bytes=32)
+    bounded_report = validate_architecture_baseline(repo, limits=report_limits)
+
+    assert len(bounded_report.findings) == 3
+    assert bounded_report.omitted_findings_count == 2
+    assert bounded_report.findings[-1].rule_id == "architecture.guard_result_truncated"
+    assert all(
+        len(finding.message.encode("utf-8")) <= report_limits.max_diagnostic_field_bytes
+        for finding in bounded_report.findings
+    )
+
+
+def test_git_discovery_timeout_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/bin/sh\nexec sleep 1\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    report = validate_architecture_baseline(repo, limits=DiscoveryLimits(git_timeout_seconds=0.01))
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_TIMEOUT}
+    assert report.producers == ()

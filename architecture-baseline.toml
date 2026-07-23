@@ -148,6 +148,42 @@ provenance = [
   { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE releases", role = "data_transform" },
 ]
 
+[[tables]]
+logical_name = "ingest_runs"
+current_owner = "trade_py.db.pipeline_db"
+semantic_kind = "legacy-capture-run-state"
+classification = "candidate"
+target_context = "capture"
+reason = "Pipeline ingest run state is a migration input for CaptureRun ownership."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS ingest_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "coverage"
+current_owner = "trade_py.db.pipeline_db"
+semantic_kind = "legacy-coverage-state"
+classification = "candidate"
+target_context = "capture"
+reason = "Pipeline coverage tracks source collection state pending CaptureCheckpoint ownership."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS coverage", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "enrichment_status"
+current_owner = "trade_py.db.pipeline_db"
+semantic_kind = "legacy-enrichment-cache"
+classification = "deferred"
+target_context = "deferred"
+reason = "The shared enrichment cache needs independent lineage and owner evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS enrichment_status", role = "bootstrap" },
+]
+
 [[artifacts]]
 id = "warehouse-parquet"
 source = "trade_py/data/warehouse/io.py"
@@ -254,6 +290,26 @@ current_behavior = "An environment variable can replace the feed index without a
 required_migration_proof = "Versioned SourceManifest with source rights, credentials, and override audit evidence."
 
 [[capture_risks]]
+id = "gdelt-provider-time-fallback"
+source = "trade_py/data/news/gdelt/source.py"
+literal = "pub = datetime.now(timezone.utc)"
+current_owner = "trade_py.data.news.gdelt"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Invalid or absent GDELT seendate is replaced with the local collection clock."
+required_migration_proof = "Persist provider precision separately from received time and prohibit synthetic event-time PIT claims."
+
+[[capture_risks]]
+id = "gdelt-streaming-local-state-and-refetch"
+source = "trade_py/data/news/gdelt/source.py"
+literal = "bronze_offsets = scan_bronze_channel_offsets(data_root)"
+current_owner = "trade_py.data.news.gdelt"
+required_child = "capture-boundary"
+risk_kind = "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor"
+current_behavior = "Streaming scans mutable Bronze Parquet and database cursor state while re-fetching the provider and writing Parquet."
+required_migration_proof = "Capture checkpoints and immutable segments must support provider-free replay, revision identity, and bounded retry receipts."
+
+[[capture_risks]]
 id = "ingest-wal-replay"
 source = "trade_py/data/ingest/batch.py"
 literal = "Replay any leftover WAL segments into main parquet at startup."
@@ -314,6 +370,16 @@ current_behavior = "The FastAPI factory exposes legacy HTTP routes and serves th
 compatibility_owner = "interfaces.http.compat"
 
 [[interfaces]]
+id = "fastapi-openapi-surface"
+source = "trade_web/backend/app.py"
+literal = 'app = FastAPI(title="TradeDB Console", version="1.0", lifespan=lifespan)'
+current_owner = "trade_web.backend"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-openapi"
+current_behavior = "The FastAPI application construction defines the generated OpenAPI surface."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
 id = "observatory-router"
 source = "trade_web/backend/observatory/router.py"
 literal = 'APIRouter(prefix="/api/v1/observatory"'
@@ -355,7 +421,11 @@ reserved_binding = "_trade_native"
 [[warehouse_producers]]
 id = "materialize-dim-sector"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dim", "dim_sector"'
+literal = "write_table(layout, 'dim', 'dim_sector', build_dim_sector())"
+line = 157
+column = 51
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "e618da177738616b2b5c9f8b97b35c3e9d1d85f151f563d065789330c452f240"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dim"
@@ -369,7 +439,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dim-topic"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dim", "dim_topic"'
+literal = "write_table(layout, 'dim', 'dim_topic', build_dim_topic())"
+line = 160
+column = 50
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "b7c8bf5d96d6ee3e58569faeb91d3626720d377e0eb7ffb1184dbcc1d310f773"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dim"
@@ -383,7 +457,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dim-position"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dim", "dim_position"'
+literal = "write_table(layout, 'dim', 'dim_position', dim_position)"
+line = 165
+column = 53
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "835ad766919f2012d05ca41ff8fb14a47215c31e192e6a4fa3d911908d91512e"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dim"
@@ -397,7 +475,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dim-data-source"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dim", "dim_data_source"'
+literal = "write_table(layout, 'dim', 'dim_data_source', dim_data_source)"
+line = 170
+column = 56
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "a61f2718f2b18de4b5f178242943240ddf28481e054bf6a6eece51f76a862f95"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dim"
@@ -411,7 +493,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ods-rss-entry-raw"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ods", "ods_rss_entry_raw"'
+literal = "upsert_table(layout, 'ods', 'ods_rss_entry_raw', new_ods_rss, key_cols=['entry_id'])"
+line = 175
+column = 58
+writer = "trade_py.data.warehouse.io.upsert_table"
+call_digest = "15a107cc6609f63070ddc465c43c8fad063391998064deefcda05489a0dba1a1"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ods"
@@ -425,7 +511,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dwd-article"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dwd", "dwd_article"'
+literal = "write_table(layout, 'dwd', 'dwd_article', dwd_article)"
+line = 181
+column = 52
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "613e33b77795b8e784300b70b807c9c2c15b9a0b017381637e72487a7e99cfe4"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dwd"
@@ -439,7 +529,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dwd-article-quality-check"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dwd", "dwd_article_quality_check"'
+literal = "write_table(layout, 'dwd', 'dwd_article_quality_check', quality)"
+line = 182
+column = 66
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "b538bb7cacca9cafd9cd18c7eba47179a400c97d27421e793879e5e4b8246f66"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dwd"
@@ -453,7 +547,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dwd-article-semantic-check"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dwd", "dwd_article_semantic_check"'
+literal = "write_table(layout, 'dwd', 'dwd_article_semantic_check', semantic)"
+line = 185
+column = 67
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "bcb30829ccf0d53272cfda761c03d9a5196bd3564c8db88f98baa98b683850c7"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dwd"
@@ -467,7 +565,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dwd-article-sector-relevance"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dwd", "dwd_article_sector_relevance"'
+literal = "write_table(layout, 'dwd', 'dwd_article_sector_relevance', relevance)"
+line = 188
+column = 69
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "a16f92b78b5437aae5be9e3d8febc9ad4c47a3cd3d39b7c5da67b413c464c7f0"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dwd"
@@ -481,7 +583,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-dws-sector-topic-daily"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "dws", "dws_sector_topic_daily"'
+literal = "write_table(layout, 'dws', 'dws_sector_topic_daily', dws_sector_topic_daily)"
+line = 193
+column = 63
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "97d3b87a8a5be7ea85a72bac6538d5d3de8e256c0a0e5597f056f241e96694be"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "dws"
@@ -495,7 +601,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-data-signal-report"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_data_signal_report"'
+literal = "write_table(layout, 'ads', 'ads_data_signal_report', ads_data_signal)"
+line = 198
+column = 63
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "f6cdf16838e8d1a50781bcd14b8347892cf6f5817922fdf936a3ad0f46ebda12"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -509,7 +619,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-source-value-report"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_source_value_report"'
+literal = "write_table(layout, 'ads', 'ads_source_value_report', ads_source_value)"
+line = 203
+column = 64
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "c9060e2169ba106ed784751638d31914f8c0721c58665769931230871e73b792"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -523,7 +637,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-feature-value-report"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_feature_value_report"'
+literal = "write_table(layout, 'ads', 'ads_feature_value_report', ads_feature_value)"
+line = 208
+column = 65
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "0aa617d19e87c1e05d9ae2ae04c0e9db50683a11f4119cf40685b8bd1ccaf3ab"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -537,7 +655,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-association-result"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_association_result"'
+literal = "write_table(layout, 'ads', 'ads_association_result', ads_association)"
+line = 213
+column = 63
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "6f49087070a0ec683e821a912347f69d811efe6e0061d4d55a01bb9709490e09"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -551,7 +673,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-hypothesis-validation-report"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_hypothesis_validation_report"'
+literal = "write_table(layout, 'ads', 'ads_hypothesis_validation_report', ads_hypothesis)"
+line = 218
+column = 73
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "c6f644728ec27e477cf4fc7bef30087895c01ce356d4bbfdbf19d42cc0bed825"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -565,7 +691,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-position-risk-signal"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_position_risk_signal"'
+literal = "write_table(layout, 'ads', 'ads_position_risk_signal', ads_position_risk)"
+line = 223
+column = 65
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "c38916c157892db444556d3c37324c180c136cc5297d9e006bde0f850545221a"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -579,7 +709,11 @@ reason = "Legacy table writer recorded before DatasetVersion migration."
 [[warehouse_producers]]
 id = "materialize-ads-warehouse-validation-report"
 source = "trade_py/data/warehouse/materialize.py"
-literal = 'layout, "ads", "ads_warehouse_validation_report"'
+literal = "write_table(layout, 'ads', 'ads_warehouse_validation_report', validation)"
+line = 228
+column = 72
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "d9419f5990ee82ffc322daf15078504454385c858dbcecc6a39ab0e92eaee611"
 current_owner = "trade_py.data.warehouse.materialize"
 required_child = "dataset-product-boundary"
 layer = "ads"
@@ -593,7 +727,11 @@ reason = "The producer exists even though the legacy required-table list omits i
 [[warehouse_producers]]
 id = "cli-fetch-dim-data-source"
 source = "trade_py/cli/data.py"
-literal = 'write_table(layout, "dim", "dim_data_source", dim_data_source)'
+literal = "write_table(layout, 'dim', 'dim_data_source', dim_data_source)"
+line = 1838
+column = 35
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "a61f2718f2b18de4b5f178242943240ddf28481e054bf6a6eece51f76a862f95"
 current_owner = "trade_py.cli.data"
 required_child = "cli-http-sdk-compatibility"
 layer = "dim"
@@ -607,7 +745,11 @@ reason = "CLI compatibility surface currently writes the DIM source catalog."
 [[warehouse_producers]]
 id = "cli-fetch-ods-fetch-attempt"
 source = "trade_py/cli/data.py"
-literal = '"ods.ods_fetch_attempt": upsert_table('
+literal = "upsert_table(layout, 'ods', 'ods_fetch_attempt', attempts, key_cols=['source_id', 'requested_at'])"
+line = 1839
+column = 37
+writer = "trade_py.data.warehouse.io.upsert_table"
+call_digest = "ea9e31732b9a8bc7f0114b0a52657bae7453ef75f7f781f2b793f7c018872390"
 current_owner = "trade_py.cli.data"
 required_child = "cli-http-sdk-compatibility"
 layer = "ods"
