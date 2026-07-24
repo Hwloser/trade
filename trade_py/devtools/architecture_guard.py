@@ -1350,9 +1350,24 @@ class _PersistenceOperation:
 
 
 @dataclass(frozen=True)
+class _ExternalBindingDeclaration:
+    name: str
+    kind: str
+    line: int
+
+
+@dataclass(frozen=True)
+class _TransactionProofRejection:
+    declaration: _ExternalBindingDeclaration
+    target: str
+    with_line: int
+
+
+@dataclass(frozen=True)
 class _CallableProofSummary:
     callable_line: int
     operations: tuple[_PersistenceOperation, ...]
+    transaction_rejections: tuple[_TransactionProofRejection, ...]
 
 
 @dataclass
@@ -3054,6 +3069,21 @@ def _validate_approved_table_binding(
             )
         operation = _summary_persistence_operation(summary, literal, table_name, field)
         if operation is None:
+            rejection = (
+                _transaction_proof_rejection(summary) if field == "transaction_evidence" else None
+            )
+            if rejection is not None:
+                declaration = rejection.declaration
+                raise _GuardError(
+                    _BASELINE_CLASSIFICATION,
+                    adapter_source,
+                    f"approved table binding for {table_name} {field} callable {callable_name} "
+                    f"uses external {declaration.kind} transaction alias {rejection.target!r} "
+                    f"declared on line {declaration.line}",
+                    "Use a callable-local transaction alias or remove the external "
+                    f"{declaration.kind} declaration before using transaction evidence.",
+                    line=rejection.with_line,
+                )
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
                 adapter_source,
@@ -3179,28 +3209,35 @@ def _summarize_callable_proof(
     visitor = _CallableProofVisitor(
         source=source,
         limits=limits,
-        external_binding_names=_callable_external_binding_names(callable_node),
+        external_bindings=_callable_external_bindings(callable_node),
     )
     visitor.visit_statements(callable_node.body)
-    return _CallableProofSummary(callable_node.lineno, tuple(visitor.operations))
+    return _CallableProofSummary(
+        callable_node.lineno,
+        tuple(visitor.operations),
+        tuple(visitor.transaction_rejections),
+    )
 
 
-def _callable_external_binding_names(
+def _callable_external_bindings(
     callable_node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> frozenset[str]:
-    """Return names declared global or nonlocal in this callable's lexical scope."""
+) -> Mapping[str, _ExternalBindingDeclaration]:
+    """Return direct-lexical global/nonlocal declarations by bound name."""
 
-    names: set[str] = set()
+    declarations: dict[str, _ExternalBindingDeclaration] = {}
     pending: list[ast.AST] = list(callable_node.body)
     while pending:
         node = pending.pop()
         if isinstance(node, (ast.Global, ast.Nonlocal)):
-            names.update(node.names)
+            kind = "global" if isinstance(node, ast.Global) else "nonlocal"
+            declarations.update(
+                {name: _ExternalBindingDeclaration(name, kind, node.lineno) for name in node.names}
+            )
             continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
             continue
         pending.extend(ast.iter_child_nodes(node))
-    return frozenset(names)
+    return declarations
 
 
 def _validate_callable_proof_shape(
@@ -3228,12 +3265,13 @@ class _CallableProofVisitor:
         *,
         source: str,
         limits: DiscoveryLimits,
-        external_binding_names: frozenset[str],
+        external_bindings: Mapping[str, _ExternalBindingDeclaration],
     ) -> None:
         self._source = source
         self._limits = limits
-        self._external_binding_names = external_binding_names
+        self._external_bindings = external_bindings
         self.operations: list[_PersistenceOperation] = []
+        self.transaction_rejections: list[_TransactionProofRejection] = []
         self._operation_sql_bytes = 0
         self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
 
@@ -3247,9 +3285,10 @@ class _CallableProofVisitor:
                     or len(statement.items) != 1
                     or not _transaction_receivers_for_items(
                         statement.items,
-                        external_binding_names=self._external_binding_names,
+                        external_bindings=self._external_bindings,
                     )
                 ):
+                    self._record_transaction_rejection(statement.items)
                     return True
                 if self._visit_transaction_block(statement.items, statement.body):
                     return True
@@ -3371,7 +3410,7 @@ class _CallableProofVisitor:
             transaction_receivers.update(
                 _transaction_receivers(
                     item,
-                    external_binding_names=self._external_binding_names,
+                    external_bindings=self._external_bindings,
                 )
             )
         self._transaction_receivers.append(frozenset(transaction_receivers))
@@ -3379,6 +3418,13 @@ class _CallableProofVisitor:
             return self.visit_statements(body)
         finally:
             self._transaction_receivers.pop()
+
+    def _record_transaction_rejection(self, items: Sequence[ast.withitem]) -> None:
+        for item in items:
+            rejection = _external_alias_transaction_rejection(item, self._external_bindings)
+            if rejection is not None:
+                self.transaction_rejections.append(rejection)
+                return
 
     def _record_persistence_operation(self, node: ast.Call) -> None:
         if _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES:
@@ -3428,10 +3474,35 @@ def _summary_persistence_operation(
     return None
 
 
+def _transaction_proof_rejection(
+    summary: _CallableProofSummary,
+) -> _TransactionProofRejection | None:
+    return summary.transaction_rejections[0] if summary.transaction_rejections else None
+
+
+def _external_alias_transaction_rejection(
+    item: ast.withitem,
+    external_bindings: Mapping[str, _ExternalBindingDeclaration],
+) -> _TransactionProofRejection | None:
+    expression = item.context_expr
+    if (
+        not isinstance(expression, ast.Call)
+        or _call_attribute_name(expression) != "transaction"
+        or not isinstance(expression.func, ast.Attribute)
+    ):
+        return None
+    if not isinstance(item.optional_vars, ast.Name):
+        return None
+    declaration = external_bindings.get(item.optional_vars.id)
+    if declaration is None:
+        return None
+    return _TransactionProofRejection(declaration, item.optional_vars.id, expression.lineno)
+
+
 def _transaction_receivers(
     item: ast.withitem,
     *,
-    external_binding_names: frozenset[str] = frozenset(),
+    external_bindings: Mapping[str, _ExternalBindingDeclaration],
 ) -> frozenset[tuple[str, ...]]:
     expression = item.context_expr
     if (
@@ -3441,13 +3512,13 @@ def _transaction_receivers(
     ):
         return frozenset()
     receiver = _expression_identity(expression.func.value)
-    if receiver is None or receiver[0] in external_binding_names:
+    if receiver is None or receiver[0] in external_bindings:
         return frozenset()
     if item.optional_vars is None:
         return frozenset((receiver,))
     if not isinstance(item.optional_vars, ast.Name):
         return frozenset()
-    if item.optional_vars.id in external_binding_names:
+    if item.optional_vars.id in external_bindings:
         return frozenset()
     return frozenset((receiver, (item.optional_vars.id,)))
 
@@ -3455,14 +3526,14 @@ def _transaction_receivers(
 def _transaction_receivers_for_items(
     items: Sequence[ast.withitem],
     *,
-    external_binding_names: frozenset[str] = frozenset(),
+    external_bindings: Mapping[str, _ExternalBindingDeclaration],
 ) -> frozenset[tuple[str, ...]]:
     receivers: set[tuple[str, ...]] = set()
     for item in items:
         receivers.update(
             _transaction_receivers(
                 item,
-                external_binding_names=external_binding_names,
+                external_bindings=external_bindings,
             )
         )
     return frozenset(receivers)

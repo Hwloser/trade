@@ -29,7 +29,7 @@ from trade_py.devtools.architecture_guard import (
     PRODUCER_UNSAFE_SOURCE,
     DiscoveryLimits,
     _call_digest,
-    _callable_external_binding_names,
+    _callable_external_bindings,
     _iter_git_index,
     _summarize_callable_proof,
     validate_architecture_baseline,
@@ -2471,6 +2471,55 @@ def test_approved_binding_rejects_global_transaction_alias_or_receiver(
     assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
 
+def test_approved_binding_reports_global_transaction_alias_declaration(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    replacement = (
+        "def persist_approved(session):\n"
+        "    global tx\n"
+        "    with session.transaction() as tx:\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    source.write_text(
+        _approved_adapter_source().replace(original, replacement, 1)
+        + "\n"
+        + "def persist_writer(session):\n"
+        + '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'callable = "persist_approved" }\nreader_evidence',
+            'callable = "persist_writer" }\nreader_evidence',
+            1,
+        ),
+    )
+
+    report = validate_architecture_baseline(repo)
+
+    finding = next(
+        item
+        for item in report.findings
+        if item.rule_id == "architecture.baseline_invalid_classification"
+    )
+    assert finding.path == "src/trade/datasets/adapters/persistence/warehouse.py"
+    assert finding.line == 6
+    assert "external global transaction alias 'tx'" in finding.message
+    assert "declared on line 5" in finding.message
+    assert "callable-local transaction alias" in finding.remediation
+    assert "external global declaration" in finding.remediation
+
+
 def test_transaction_proof_excludes_nonlocal_alias_from_receiver_set() -> None:
     tree = ast.parse(
         "def outer():\n"
@@ -2491,8 +2540,11 @@ def test_transaction_proof_excludes_nonlocal_alias_from_receiver_set() -> None:
         limits=DEFAULT_LIMITS,
     )
 
-    assert _callable_external_binding_names(nested_callable) == frozenset({"tx"})
+    assert _callable_external_bindings(nested_callable)["tx"].kind == "nonlocal"
+    assert _callable_external_bindings(nested_callable)["tx"].line == 4
     assert not summary.operations
+    assert len(summary.transaction_rejections) == 1
+    assert summary.transaction_rejections[0].with_line == 5
 
 
 def test_transaction_proof_excludes_receiver_for_nonlocal_alias() -> None:
@@ -2516,6 +2568,28 @@ def test_transaction_proof_excludes_receiver_for_nonlocal_alias() -> None:
     )
 
     assert not summary.operations
+    assert len(summary.transaction_rejections) == 1
+    assert summary.transaction_rejections[0].target == "tx"
+
+
+def test_transaction_proof_does_not_report_external_alias_for_nontransaction_with() -> None:
+    tree = ast.parse(
+        "def persist_approved(session):\n"
+        "    global tx\n"
+        "    with lock as tx:\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    callable_node = tree.body[0]
+    assert isinstance(callable_node, ast.FunctionDef)
+
+    summary = _summarize_callable_proof(
+        callable_node,
+        source="temporary.py",
+        limits=DEFAULT_LIMITS,
+    )
+
+    assert not summary.operations
+    assert not summary.transaction_rejections
 
 
 @pytest.mark.parametrize(
