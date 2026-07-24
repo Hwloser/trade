@@ -110,13 +110,21 @@ config/mutation-testing.toml                 policy and source/test ownership
 config/mutation-baseline.json                reviewed score history seed
 config/mutation-exceptions.toml              precise reviewed exceptions
 trade_py/devtools/mutation_testing/
-  cli.py                                     argument parsing and exit contract
+  bootstrap.py                               import-light scope/deadline/receipt owner
+  cli.py                                     argument parsing and orchestration only
+  models.py                                  immutable plans/outcomes/status algebra
   config.py                                  closed configuration parser
   git_scope.py                               bounded base/diff/changed-line discovery
   selection.py                               deterministic targets/tests/mutants
   engine.py                                  Cosmic Ray operator adapter
-  executor.py                                process groups, deadlines, cancellation
-  report.py                                  typed results and generation publication
+  coverage.py                                coverage.py 7.10.7 line-data adapter
+  process_supervisor.py                      spawn gate, PGIDs, deadlines, cancellation
+  isolation.py                               private trees, environment and guard evidence
+  executor.py                                bounded mutation work scheduling only
+  cache.py                                   staged outcomes and committed run markers
+  trend.py                                   projection from committed generations
+  render.py                                  JSON-derived Markdown/HTML rendering
+  report_store.py                            receipt, leases, atomic publish, retention
   baseline.py                                comparable baseline evaluation
 .github/workflows/mutation-testing.yml       CI routing only
 docs/mutation-testing.md                     developer operations
@@ -125,7 +133,11 @@ docs/mutation-testing.md                     developer operations
 The shell facade performs no parsing beyond locating the repository and invoking the
 locked optional environment. The CLI coordinates owned modules but does not contain
 mutation logic. Cosmic Ray is an adapter dependency and never imports application
-runtime modules. Tests use synthetic repositories and source files.
+runtime modules. `models.py` imports no controller adapter; planning and execution
+depend on models, while selection/engine never import process, storage, cache, trend,
+or rendering modules. `render.py` consumes persisted report models and
+`report_store.py` owns bytes and filesystem transitions, not outcome semantics. Tests
+use synthetic repositories and source files.
 
 The controller is a devtool, not a domain service. It does not belong in the future
 business Context graph and is excluded as a mutation target.
@@ -135,7 +147,11 @@ business Context graph and is excluded as a mutation target.
 The durable artifacts are developer reports and cache entries, never business state.
 Identifiers and invariants:
 
-- `run_id` is a UUID generated per invocation.
+- `run_id` is a UUID generated at wrapper entry. Before dependency preparation, the
+  wrapper atomically writes `invocations/<run_id>.json` with schema
+  `trade.mutation.invocation.v1`, mode, lifecycle state, one absolute monotonic
+  deadline, and exact expected staging/run/fallback paths. Bootstrap and full CLI
+  update only that receipt through validated transitions and export its path to CI.
 - `execution_id` (and compatibility field `mutant_id`) is SHA-256 over schema
   version, relative path, original source digest, start/end position, operator
   name/arguments, occurrence, and config digest.
@@ -157,9 +173,11 @@ Identifiers and invariants:
 - a cached result is reusable only when the complete tracked Python tree, mapped
   tests/fixtures, lock and pytest configuration, operator/config/exception policy,
   normalized command/environment including native-thread controls, platform, declared
-  per-mapping clock policy, complete mutant cohort, and tool versions match. V1
-  mappings declare `explicit_input`; a tuple that observes an undeclared wall clock is
-  non-cacheable.
+  per-mapping clock and entropy policies, complete mutant cohort, and tool versions
+  match. V1 mappings declare `explicit_input` clock policy and an explicit entropy
+  policy; a tuple whose bounded import closure references an undeclared clock or
+  entropy API is non-cacheable. The trust tuple is `entropy_non_cacheable` because its
+  default path can call `uuid.uuid4()`.
 - one run directory is staged and fsynced; one `current.json` pointer atomically
   publishes JSON, Markdown, HTML, and their digest manifest as one generation.
 - mutation score excludes timeout, no-coverage, baseline-unavailable, invalid,
@@ -171,8 +189,9 @@ Identifiers and invariants:
 - every killed/survived outcome has `outcome_origin=fresh|cache`. Only verified
   killed/survived outcomes are cacheable. Cache hits increase `cache_resolved`, not
   `test_started_current`.
-- every selected mutant has exactly one terminal state and score is `null` when no
-  killed or survived mutant exists.
+- every selected mutant has exactly one terminal state, including
+  `cancelled_test_started` or `not_run_cancelled` when a signal wins, and score is
+  `null` when no killed or survived mutant exists.
 
 Unavailable states are explicit: missing base, unsupported tool, invalid config,
 baseline test failure, no eligible source, no test mapping, budget exhaustion, and
@@ -189,9 +208,13 @@ rejected before locks or files are created. Each invocation owns one UUID `run_i
 staging directory and holds a per-run lease for its lifetime. The lease records PID,
 process start token, and boot identity. An exclusive bounded output-root publication
 lock serializes current-pointer, retention, and core/full trend updates. Cache records
-are content-addressed by complete cache identity and execution ID. Same-key writers
-use exclusive creation or a per-key lock, and a losing writer accepts the predecessor
-only after schema, identity, size, and digest verification.
+are content-addressed by complete cache identity and execution ID but first stage
+under `cache/staging/<run_id>`. A digest-bound `cache/commits/<run_id>.json` marker is
+published only after the run is complete and cache-eligible; readers require the
+marker and ignore entries left by partial, cancelled, degraded, or report-failed
+runs. Same-key writers use exclusive creation or a per-key lock, and a losing writer
+accepts the predecessor only after schema, identity, size, digest, and commit-marker
+verification.
 
 Before publication, one safe-error layer redacts configured credential values,
 credential-looking environment values, URL userinfo, and controlled home/temp roots
@@ -213,22 +236,38 @@ non-blocking acquisition of its lease, validation of owner identity, a minimum
 24-hour age, and proof that it is not current; an active concurrent invocation cannot
 be removed. Malformed, oversized, symlinked,
 path-escaping, identity-mismatched, or hash-mismatched report state fails closed and
-is preserved for diagnosis. Corrupt cache is a miss and is recomputed. Corrupt trend
-state is quarantined and replaced by a fresh bounded trend carrying an explicit
-recovery record; it is never silently interpreted as historical truth.
+is preserved for diagnosis. A missing pointer on first run is normal. Under the
+publication lock, a malformed/symlinked pointer, missing referenced generation, or
+manifest/digest mismatch is moved to a UUID quarantine record before a valid new
+generation may replace it; the next manifest records the exact recovery code and
+quarantine path. If quarantine cannot be completed, publication fails with a stable
+copy-pasteable repair command and leaves `current.json` unchanged. Corrupt or
+uncommitted cache is a miss and is recomputed. Trend is a rebuildable projection of
+validated immutable committed generations: startup idempotently reconciles missing
+run IDs, quarantines corrupt projection state, and rebuilds within its bound instead
+of treating an independent write as source truth.
 
 Deadline, cancellation, worker, or baseline degradation still produces a marked
-partial generation when the report store is available, with every admitted mutant
-classified and the remaining selected mutants marked `not_run_budget`. Render,
+partial generation when the report store is available. Deadline remainder is
+`not_run_budget`; signal-stopped active work is `cancelled_test_started` and queued
+remainder is `not_run_cancelled`. Render,
 staging-validation, final-directory rename, and current-pointer publication failures
 are distinct. A valid completed generation is published only if every validation
 passes. Otherwise exit 2 preserves the failed run staging path and writes one
-independent bounded `fallback-<run_id>.json` diagnostic outside `current.json`; it
-never labels fallback files as an authoritative generation. The manifest audits run
+independent bounded `fallback-<run_id>.json` with schema
+`trade.mutation.fallback.v1`, redacted stable error code, failing stage, retryability,
+message, remediation command, receipt path, and evidence paths outside
+`current.json`; it never labels fallback files as an authoritative generation. The
+invocation receipt identifies this exact fallback, so CI never falls back to stale
+`current.json` or newest-file globbing. The manifest audits run
 ID, UTC time, mode, source/base
 identity, complete config/tool/environment/cohort digests, budgets, stop reason,
 status, member hashes, and cache/trend decisions without credentials or raw
-environment values. No backup is required for ignored disposable developer state;
+environment values. Immutable generations are retained for at most 30 entries,
+2 GiB, and 30 days; fallback/quarantine/failed-staging evidence is retained for at
+most 50 entries, 512 MiB, and 14 days. Deterministic oldest-creation/run-ID eviction
+under the publication lock protects `current`, all active leases, and the current
+failure evidence and records every eviction. No backup is required for ignored disposable developer state;
 CI uploads the immutable verified run directory. Rollback removes tracked tooling
 without rewriting or deleting these audit generations, which remain subject to
 explicit manual cleanup and never enter production state.
@@ -288,15 +327,20 @@ all report files but does not infer truth from logs.
 
 #### Dependencies
 
-`[project.optional-dependencies].mutation` pins `cosmic-ray==8.4.6`, `coverage` to
-one reviewed minor range, and `pytest>=8,<9`. `scripts/mutation-test` first executes
-the import-light bootstrap with
-`uv run --frozen --no-sync python -m trade_py.devtools.mutation_testing.bootstrap`.
+`[project.optional-dependencies].mutation` pins `cosmic-ray==8.4.6`,
+`coverage==7.10.7`, and `pytest>=8,<9`. `scripts/mutation-test` creates the run ID,
+receipt, parent watchdog, and absolute monotonic deadline before any `uv` child. It
+first executes the import-light bootstrap with
+`uv run --frozen --no-sync python -m trade_py.devtools.mutation_testing.bootstrap`
+and passes the same receipt/deadline to every child.
 For changed mode the bootstrap resolves Git/config and writes a zero-work or
 deferred-only report without importing or resolving Cosmic Ray. Eligible work, and
 all core/full/plan-only requests, are handed off exactly through
-`uv run --frozen --extra mutation python -m
-trade_py.devtools.mutation_testing.cli`. Coverage line data is mandatory before
+`uv run --frozen --no-sync --extra mutation python -m
+trade_py.devtools.mutation_testing.cli`; CI prepares the frozen mutation extra before
+starting the bounded command. Local missing dependencies fail preflight with the
+exact preparation command rather than synchronizing outside the deadline. Coverage
+line data is mandatory before
 mutant execution; the definition-to-test matrix remains authoritative and prevents a
 full-suite fallback. Runtime dependency resolution is unchanged.
 
@@ -342,7 +386,10 @@ becomes enabled automatically.
 Enumeration calls `cosmic_ray.ast.get_ast(source)`, iterates
 `cosmic_ray.ast.ast_nodes(tree)` in preorder, and for each node iterates the selected
 operator's `mutation_positions(node)` in returned order while maintaining one
-module-wide occurrence counter. Selection serializes one candidate per plan.
+independent occurrence counter per `(source_digest, operator_name,
+operator_arguments)`. This matches Cosmic Ray's new `MutationVisitor` per operator;
+there is no cross-operator occurrence counter. Selection serializes one candidate per
+plan.
 Immediately before mutation, the adapter re-hashes/re-enumerates using that exact
 contract, requires occurrence-to-span equality, calls `mutate_code`, parses the
 output, and requires the diff to intersect only that planned location. Source drift
@@ -368,15 +415,15 @@ exact omitted total.
 
 The exact v1 matrix is definition-level:
 
-| Scope | Source | Eligible qualified definitions | Tests | Clock policy |
-|---|---|---|---|---|
-| core | `trade_py/decision/action.py` | `_confidence_label`, `derive_action_decision` | `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/decision/world_state.py` | `infer_market_regime`, `infer_event_regime`, `infer_sentiment_regime`, `infer_technical_regime`, `infer_liquidity_regime`, `infer_uncertainty`, `_build_state_summary`, `build_world_state` | `tests/test_world_state.py`, `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/decision/scenario.py` | `_count_bullish`, `_count_bearish`, `build_scenario_summary` | `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/decision/explanation.py` | `build_explanation` | `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/trust/compute.py` | `_freshness_score`, `_trust_level`, `compute_prediction_trust`, `compute_portfolio_trust` | `tests/test_trust_layer.py` | explicit_input |
-| full | `trade_py/factors/groups/event_features.py` | `build_event_group` | `tests/test_factor_groups.py` | explicit_input |
-| full | `trade_py/signals/window_scorer.py` | `_score_large_order` | `tests/test_window_scorer.py` | explicit_input |
+| Scope | Source | Eligible qualified definitions | Tests | Clock policy | Entropy policy |
+|---|---|---|---|---|---|
+| core | `trade_py/decision/action.py` | `_confidence_label`, `derive_action_decision` | `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/decision/world_state.py` | `infer_market_regime`, `infer_event_regime`, `infer_sentiment_regime`, `infer_technical_regime`, `infer_liquidity_regime`, `infer_uncertainty`, `_build_state_summary`, `build_world_state` | `tests/test_world_state.py`, `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/decision/scenario.py` | `_count_bullish`, `_count_bearish`, `build_scenario_summary` | `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/decision/explanation.py` | `build_explanation` | `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/trust/compute.py` | `_freshness_score`, `_trust_level`, `compute_prediction_trust`, `compute_portfolio_trust` | `tests/test_trust_layer.py` | explicit_input | entropy_non_cacheable |
+| full | `trade_py/factors/groups/event_features.py` | `build_event_group` | `tests/test_factor_groups.py` | explicit_input | deterministic |
+| full | `trade_py/signals/window_scorer.py` | `_score_large_order` | `tests/test_window_scorer.py` | explicit_input | deterministic |
 
 Configuration stores each definition's exact qualified top-level name; the run report
 binds it to current source and definition digests. AST validation rejects a missing,
@@ -410,11 +457,17 @@ same lock before snapshotting active groups. Worker exceptions, lost pipes, repe
 signals, and parent cancellation all use the same TERM, bounded wait, KILL,
 group-existence check, and reap path.
 
-Each thread creates one private tree from a sorted tracked-file manifest containing
-only `trade_py/**/*.py`, the selected mapped tests, a tracked `tests/conftest.py` when
-present, and the injected provenance/isolation plugin. Symlinks, non-regular files,
-bytecode, caches, data, and unrelated tests are rejected or absent. The tree is reused
-across mutants. Before every work item it restores and hashes the target, removes all
+Each thread creates one private tree from a sorted bounded import closure rooted at
+the eligible source, mapped tests, required package `__init__.py` files, tracked
+`tests/conftest.py` when present, and the injected provenance/isolation plugin. Static
+imports are resolved only to repository-local regular Python files within the module,
+edge, depth, file, byte, and deadline ceilings. Configuration must list an exact
+reviewed dependency manifest for unresolved dynamic imports; missing or extra
+requirements fail preflight. The complete tracked-Python digest remains cache identity
+but is not the copy manifest. Symlinks, non-regular files, bytecode, caches, data, and
+unrelated tests are rejected or absent. A 10x unrelated-module fixture must leave the
+same bounded closure executable. The tree is reused across mutants. Before every work
+item it restores and hashes the target, removes all
 bytecode/cache paths, creates a fresh per-mutant `PYTHONPYCACHEPREFIX`, sets
 `PYTHONDONTWRITEBYTECODE=1`, revalidates planned source identity/span, applies only
 `get_operator` plus `mutate_code`, and restores/hash-checks afterward. Consecutive
@@ -428,12 +481,30 @@ UTC/locale/hash seed, native thread variables `OMP_NUM_THREADS`,
 `BLIS_NUM_THREADS`, and `VECLIB_MAXIMUM_THREADS` to `1`, scrubs credentials/proxies,
 denies sockets and external process launch through the test isolation plugin, and
 guards canonical/symlink-resolved opens under real data/model/DB/parquet/artifact
-roots. These controls and versions are cache/report identity. Baselines use the same
-controls plus line coverage and a finite timeout bounded by remaining execution time.
+roots. The plugin writes every provenance/isolation violation to a controller-created
+0600 sidecar authenticated by a per-process random token and append sequence outside
+application exception handling. The controller validates the sidecar before exit-code
+classification; any violation is `infrastructure_error` even if production code
+catches the raised exception or pytest otherwise exits 0/1. These controls and
+versions are cache/report identity. Baselines use the same controls plus line coverage
+and a finite timeout bounded by remaining execution time.
+
+The coverage adapter is exactly coverage.py 7.10.7 in statement/line mode, not branch
+mode. It invokes `python -m coverage run --data-file <private-temp> --source
+<private-package> -m pytest --import-mode=importlib <absolute-mapped-tests>`, then
+`python -m coverage json --data-file <private-temp> -o <private-json>`. Both commands
+use the same supervisor and environment. The adapter accepts only the target
+private-tree path, canonicalizes it back to the repository-relative source path,
+extracts `executed_lines` from bounded JSON, rejects unknown/multiple paths or
+malformed/oversized data, and removes data/JSON after use. Coverage exit/data failure
+is `baseline_unavailable`, never no-coverage or killed.
 
 Pytest mutant exits map `0=survived`, `1=killed`, and `2/3/4/5` or signal to
-infrastructure error. Nonzero baseline means `baseline_unavailable`. Timeout is always
-timeout. A failed tuple does not execute its mutants and cannot create kills.
+infrastructure error only after the authenticated violation sidecar is clean. A
+controller signal produces `cancelled_test_started` for a started mutant, not
+infrastructure error; unstarted selected work becomes `not_run_cancelled`. Nonzero
+baseline means `baseline_unavailable`. Timeout is always timeout. A failed tuple does
+not execute its mutants and cannot create kills.
 
 Cosmic Ray's `apply_mutation`, `use_mutation`, `mutate_and_test`, and `run_tests` are
 forbidden because they write in place or collapse lifecycle/result truth.
@@ -453,7 +524,7 @@ Mode constants:
 | one private tree | 512 files / 8 MiB / 10s copy | same | same |
 | all private trees | 2048 files / 32 MiB | same | same |
 | free space after reservation | 512 MiB | 512 MiB | 512 MiB |
-| dependency graph | 512 modules / 4096 edges / depth 32 | same | same |
+| import closure | 512 modules / 4096 edges / depth 32 | same | same |
 | parse/operator visits | 3M | 20M | 100M |
 | workers | computed max 4 | computed max 4 | computed max 4 |
 | output per mutant | 64 KiB | 64 KiB | 64 KiB |
@@ -487,7 +558,9 @@ incrementally; Markdown/HTML use the same bounded detail records rather than emb
 JSON. Detail truncates deterministically before any per-file, generation, or renderer
 limit.
 
-At 10x source size, source and AST ceilings stop work before candidate truncation.
+At 10x eligible source size, source and AST ceilings stop work before candidate
+truncation; at 10x unrelated repository modules, the root-bounded import closure
+remains within the same copy manifest rather than copying all `trade_py`.
 At 10x test cost, baseline timing excludes incompatible tuples before scheduling or
 the wall deadline terminates admission. At 10x output, bounded ring capture truncates
 diagnostics without blocking pipes.
@@ -515,8 +588,11 @@ scope/config/environment/tool digests, and run ID. Trend retention is at most 36
 records, 8 MiB, and 400 days. Result cache retention is at most 20000 entries and
 512 MiB. Under the output publication lock, deterministic eviction removes the oldest
 `created_at, key` records first and records evicted count/bytes/range in the current
-report. CI restores only a schema/tool/config-compatible cache prefix, validates every
-entry before use, and saves under a run-specific immutable key. The repository
+report. Trend is derived/reconciled idempotently from validated committed generation
+manifests and uses a monotonic publication sequence allocated under the lock; UTC is
+display/retention metadata, not sole ordering truth. CI restores only a
+schema/tool/config-compatible cache prefix, validates every entry and its committed-run
+marker before use, and saves under a run-specific immutable key. The repository
 baseline changes only by explicit review. Comparisons require identical complete
 comparison-key cohorts with no ambiguity, partial status, changed node, or policy
 change; execution IDs remain exact per revision. Cache hit/miss/eviction reasons and
@@ -551,13 +627,20 @@ One GitHub Actions workflow has three jobs/routes:
   with a 100-minute job timeout.
 
 Scheduled and manual core/full share concurrency key
-`mutation-long-${repository}` with `cancel-in-progress: false`; GitHub queues overlap
-instead of cancelling or running long modes concurrently. Manual input is exactly
-`core|full`. Trend records are ordered by report UTC completion time then run ID under
-the publication lock, not workflow dispatch order.
+`mutation-long-${repository}` with `cancel-in-progress: false`. Native GitHub
+concurrency guarantees at most one running and one pending member; a newer dispatch
+may supersede an older pending member even though it does not cancel the running job.
+The workflow relies only on the no-overlap guarantee and does not claim a durable or
+lossless queue. A dispatch cancelled before command entry has no run ID and creates no
+trend evidence. Manual input is exactly `core|full`. Trend records use the
+publication sequence allocated under the report lock, not workflow dispatch or
+adjustable wall-clock order.
 
-Every summary and artifact step uses `if: always()`, 14-day retention, stable run
-paths, explicit missing-file behavior, and a fallback failure summary. This guarantees
+Every summary and artifact step uses `if: always()`, 14-day retention, and the exact
+`trade.mutation.invocation.v1` receipt path exported through `$GITHUB_OUTPUT`.
+CI validates receipt run ID/lifecycle and referenced manifest or typed fallback; it
+never reads global `current.json` or chooses a newest path. Explicit missing-file
+behavior writes a fallback failure summary. This guarantees
 evidence for controller exits, internal deadlines, and gracefully delivered signals
 while the job remains alive. GitHub hard job cancellation, runner loss, or host loss
 cannot guarantee later steps and are explicitly best effort. Outer timeouts remain
@@ -583,23 +666,26 @@ Tests cover:
 - temporary data roots, credential/proxy scrubbing, socket denial, and real-data
   filesystem guards;
 - API/version/operator/get-ast/ast-nodes traversal compatibility,
-  occurrence/span handshake, and forbidden in-place Cosmic Ray APIs;
+  operator-local occurrence/span handshake, and forbidden in-place Cosmic Ray APIs;
 - baseline timing/failed-baseline behavior and exact pytest exit mapping;
 - killed/survived/timeout/no-coverage/baseline-unavailable/invalid/infrastructure
-  classification and count equations;
+  /cancelled-active/not-run-cancelled classification and count equations;
 - parent-owned descendant process termination on timeout, worker failure, signal, and
   global deadline, including cancellation between spawn and registry insertion;
 - worker/native-thread bound, execution-deadline admission stop, and private-tree
   file/byte/copy/free-space limits;
 - bytecode isolation across same-size fixed-mtime mutations;
+- authenticated isolation-violation sidecars that override caught/uncaught pytest exits;
 - run-generation atomic partial JSON/Markdown/HTML publication, independent fallback,
-  output-root safety, per-run lease scavenging, redaction, and generation bounds;
+  invocation receipt binding, corrupt-pointer recovery, output-root safety, per-run
+  lease scavenging, redaction, and generation/aggregate retention bounds;
 - complete cache/cohort identity, fresh/cache count algebra, stale/corrupt
-  invalidation, numeric eviction, and trend recovery;
+  invalidation, committed-run markers, numeric eviction, and derived trend recovery;
 - unestablished/comparison-key baseline policy;
 - script forwarding and missing dependency diagnostics;
-- workflow literal cron/mode/timeout/shared-long-concurrency/non-blocking/always-upload
-  assertions and hard-runner-loss best-effort documentation.
+- workflow literal cron/mode/timeout/shared-long no-overlap/latest-pending semantics,
+  non-blocking receipt-bound always-upload assertions, and hard-runner-loss best-effort
+  documentation.
 
 Validation commands include focused pytest, a real small changed run, core plan or
 bounded small run, TOML/JSON/YAML/static workflow checks, `bash -n`, ShellCheck when
@@ -608,12 +694,14 @@ tests, full pytest with the pre-existing failure reported, and `git diff --check
 
 ### Runtime concurrency evidence
 
-Ownership is one controller process, a bounded thread pool, one synchronized active
-PGID registry with a shared spawn/cancel gate, and one invocation-wide hard deadline
-with an earlier execution deadline. Ordering is determined before
-admission; completion order never changes report ordering. Each thread owns one
-private tree and restores the target between work items. Atomicity is one published
-run generation plus individual verified cache/journal records. Timeout and
+Ownership is one wrapper watchdog plus one controller process, a bounded thread pool,
+one synchronized active PGID registry with a shared spawn/cancel gate, and one
+receipt-bound monotonic deadline created before every `uv` child with an earlier
+execution deadline. Ordering is determined before admission; completion order never
+changes report ordering. Each thread owns one bounded import-closure tree and restores
+the target between work items. Atomicity is one published run generation plus staged
+cache entries made visible only by a completed-run marker; trend is derived from
+committed generations. Timeout and
 cancellation own full process groups. Backpressure is the bounded pool, finite queue,
 source/AST/dependency ceilings, detail budget, and cleanup reserve. Partial failure is
 aggregated by exact terminal status without converting infrastructure errors to

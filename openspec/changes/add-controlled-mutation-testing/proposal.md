@@ -23,20 +23,26 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - pins Cosmic Ray 8.4.6 and uses only `get_operator` plus `mutate_code` for
     deterministic first-order
     Python mutation generation;
-  - applies exactly one position-verified mutation to a worker-owned temporary
-    source tree and proves pytest imported that tree;
+  - enumerates occurrences independently per operator, applies exactly one
+    position-verified mutation to a worker-owned bounded import-closure tree, and
+    proves pytest imported that tree;
   - selects only the closed v1 definition-to-test matrix and requires baseline line
-    coverage before mutant execution;
+    coverage from pinned coverage.py 7.10.7 before mutant execution;
   - prioritizes changed lines, then changed definitions, then configured core paths;
   - enforces mutant, candidate-scan, worker, per-mutant, output, and wall-clock
-    budgets;
+    budgets across bootstrap, dependency preparation, execution, and publication;
   - lets the controller process directly own and terminate every mutant test process
     group and descendant on timeout, worker failure, signal, or global cancellation;
-  - denies network, provider credentials, and real-data paths in mutation workers;
+  - denies network, provider credentials, process launch, and real-data paths in
+    mutation workers and records guard violations outside application exception
+    handling;
   - distinguishes killed, survived, timeout, mapping/line no-coverage,
-    baseline-unavailable, invalid, and infrastructure-error outcomes;
+    baseline-unavailable, cancellation, invalid, and infrastructure-error outcomes;
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
-    generation, with an independent safe fallback if publication itself fails.
+    generation, with an invocation-bound receipt and independent typed fallback if
+    publication itself fails;
+  - commits cache outcomes only after a complete run marker and derives the bounded
+    trend projection from validated immutable generations.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
@@ -47,7 +53,11 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - pull requests plan and run `changed` only when eligible production code changed;
   - nightly and manual runs execute `core`;
   - weekly or explicit manual runs execute `full`;
-  - all mutation jobs are initially non-blocking and upload reports.
+  - all mutation jobs are initially non-blocking and upload evidence for the exact
+    invocation rather than a global latest pointer;
+  - native GitHub concurrency prevents simultaneous long runs but may supersede an
+    older pending request, which is reported honestly rather than described as a
+    durable queue.
 - Add `docs/mutation-testing.md` covering operation, interpretation, exceptions,
   budgets, troubleshooting, and anti-gaming rules.
 
@@ -74,8 +84,9 @@ In scope:
 - Python core business unit-test mutation only.
 - Deterministic changed/core/full planning and execution.
 - Bounded concurrency, native thread pools, source/AST/dependency/private-tree/report
-  limits, process-tree termination, partial reporting, comparable trend artifacts,
-  and exact mutant exceptions.
+  limits, process-tree termination, cancellation algebra, partial reporting,
+  committed cache/trend artifacts, bounded report retention, and exact mutant
+  exceptions.
 - GitHub Actions because the authoritative remote is GitHub.
 
 Out of scope:
@@ -96,8 +107,9 @@ through broad exclusions. Invocation-wide deadlines, parent-owned process groups
 source/AST/dependency/private-tree limits, a serialized spawn/cancel registry,
 bytecode-clean private source trees, mandatory line coverage, closed
 operator/definition maps, bounded generation-atomic output plus safe fallback, exact
-fresh/cache/plan status algebra, and mutant-ID exception validation address those
-risks.
+fresh/cache/plan/cancellation status algebra, authenticated isolation evidence,
+committed cache markers, invocation receipts, corrupt-pointer recovery, and
+mutant-ID exception validation address those risks.
 
 Rollback removes the optional mutation dependency group, controller, wrapper,
 configuration, workflows, documentation, and tests. Generated reports and caches are

@@ -25,9 +25,15 @@ mutant process SHALL set `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
 `VECLIB_MAXIMUM_THREADS` to `1`; those controls SHALL enter environment/cache
 identity.
 
-The wall clock SHALL start at command entry and include Git discovery, source parsing,
-coverage baselines, mutation execution, cancellation, and report publication. The
-controller SHALL reserve 30/60/120 seconds of the changed/core/full wall clock for
+The wall clock SHALL start in the wrapper before bootstrap, dependency verification,
+or any `uv` child. The wrapper SHALL create one run ID, atomic
+`trade.mutation.invocation.v1` receipt, parent watchdog, and absolute monotonic
+deadline passed unchanged through bootstrap and the full controller. It SHALL include
+dependency preparation/verification, Git discovery, source parsing, coverage
+baselines, mutation execution, cancellation, and report publication. CI SHALL prepare
+the frozen mutation environment before starting this bounded invocation; local
+missing dependencies SHALL fail with a preparation command rather than sync outside
+the budget. The controller SHALL reserve 30/60/120 seconds of the changed/core/full wall clock for
 cleanup and report publication inside, not after, the hard limit. The reserves SHALL
 split into TERM, KILL/reap, render/hash/fsync, and pointer-or-fallback sub-budgets of
 `5/5/15/5`, `10/10/30/10`, and `15/15/70/20` seconds. The execution deadline SHALL
@@ -112,9 +118,12 @@ algorithm SHALL be recorded in the report.
 
 Enumeration SHALL call `get_ast(source)`, iterate `ast_nodes(tree)` in preorder, and
 iterate each operator's `mutation_positions(node)` in returned order using one
-module-wide occurrence counter. Startup compatibility tests SHALL compare that
-occurrence/span sequence with Cosmic Ray `MutationVisitor` for every allowlisted
-operator and nested syntax. A mismatch SHALL fail preflight.
+independent occurrence counter per `(source digest, operator name, operator
+arguments)`. This SHALL match Cosmic Ray's new `MutationVisitor` and zero-based
+counter for each operator; no occurrence counter SHALL be shared across operators.
+Startup compatibility tests SHALL compare that occurrence/span sequence with Cosmic
+Ray `MutationVisitor` for every allowlisted operator and nested multi-operator syntax.
+A mismatch SHALL fail preflight.
 
 #### Scenario: A loop condition is mutated
 
@@ -142,20 +151,24 @@ exclusion.
 
 The v1 eligible definition-to-test matrix SHALL be closed:
 
-| Scope | Source | Eligible qualified definitions | Affected unit tests | Clock policy |
-|---|---|---|---|---|
-| core | `trade_py/decision/action.py` | `_confidence_label`, `derive_action_decision` | `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/decision/world_state.py` | `infer_market_regime`, `infer_event_regime`, `infer_sentiment_regime`, `infer_technical_regime`, `infer_liquidity_regime`, `infer_uncertainty`, `_build_state_summary`, `build_world_state` | `tests/test_world_state.py`, `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/decision/scenario.py` | `_count_bullish`, `_count_bearish`, `build_scenario_summary` | `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/decision/explanation.py` | `build_explanation` | `tests/test_explanation.py` | explicit_input |
-| core | `trade_py/trust/compute.py` | `_freshness_score`, `_trust_level`, `compute_prediction_trust`, `compute_portfolio_trust` | `tests/test_trust_layer.py` | explicit_input |
-| full | `trade_py/factors/groups/event_features.py` | `build_event_group` | `tests/test_factor_groups.py` | explicit_input |
-| full | `trade_py/signals/window_scorer.py` | `_score_large_order` | `tests/test_window_scorer.py` | explicit_input |
+| Scope | Source | Eligible qualified definitions | Affected unit tests | Clock policy | Entropy policy |
+|---|---|---|---|---|---|
+| core | `trade_py/decision/action.py` | `_confidence_label`, `derive_action_decision` | `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/decision/world_state.py` | `infer_market_regime`, `infer_event_regime`, `infer_sentiment_regime`, `infer_technical_regime`, `infer_liquidity_regime`, `infer_uncertainty`, `_build_state_summary`, `build_world_state` | `tests/test_world_state.py`, `tests/test_decision_action.py`, `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/decision/scenario.py` | `_count_bullish`, `_count_bearish`, `build_scenario_summary` | `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/decision/explanation.py` | `build_explanation` | `tests/test_explanation.py` | explicit_input | deterministic |
+| core | `trade_py/trust/compute.py` | `_freshness_score`, `_trust_level`, `compute_prediction_trust`, `compute_portfolio_trust` | `tests/test_trust_layer.py` | explicit_input | entropy_non_cacheable |
+| full | `trade_py/factors/groups/event_features.py` | `build_event_group` | `tests/test_factor_groups.py` | explicit_input | deterministic |
+| full | `trade_py/signals/window_scorer.py` | `_score_large_order` | `tests/test_window_scorer.py` | explicit_input | deterministic |
 
 The configuration SHALL identify exact qualified definitions and the run report SHALL
 bind their source/definition digests. Missing, duplicate, nested-ambiguous, or moved
-definitions SHALL fail validation. `changed` SHALL consider changed lines only in this
-complete matrix. `core` SHALL use the rows marked core. `full` SHALL use every row;
+definitions SHALL fail validation. Each row SHALL use a closed clock policy
+`explicit_input|fixed|non_cacheable` and entropy policy
+`deterministic|fixed|entropy_non_cacheable`; the bounded import closure SHALL be
+checked for undeclared `datetime/date/time`, UUID, random, secrets, or OS entropy
+access, and an undeclared access SHALL disable cache reuse. `changed` SHALL consider
+changed lines only in this complete matrix. `core` SHALL use the rows marked core. `full` SHALL use every row;
 full means the complete configured eligible matrix, not all Python files. Adding a
 source, definition, test, or clock policy SHALL require an explicit configuration and
 test change.
@@ -201,13 +214,19 @@ group SHALL be terminated immediately if cancellation wins during spawn. Each th
 SHALL own one bounded private source tree, restore and hash-check the target file
 between mutants, and remove the tree at shutdown.
 
-A private tree SHALL be built from a sorted tracked manifest containing only
-`trade_py/**/*.py`, mapped tests, tracked `tests/conftest.py` when present, and the
-isolation/provenance plugin. It SHALL contain no symlink, non-regular file, data,
-unmapped test, cache, `__pycache__`, or `.pyc`. Before every mutant the worker SHALL
-purge bytecode/cache paths, create a fresh empty `PYTHONPYCACHEPREFIX`, and set
-`PYTHONDONTWRITEBYTECODE=1`. File/byte/copy/free-space limits from the bounded-mode
-requirement SHALL be checked before admission.
+A private tree SHALL be built from a sorted bounded repository-local import closure
+rooted at the eligible source, mapped tests, required package `__init__.py` files,
+tracked `tests/conftest.py` when present, and the isolation/provenance plugin. Static
+resolution SHALL obey the configured module/edge/depth/file/byte/deadline limits.
+Unresolved dynamic imports SHALL require an exact reviewed dependency manifest or
+fail preflight. The complete tracked-Python digest SHALL remain cache identity but
+SHALL NOT force the entire package into the copy manifest. A 10x fixture of unrelated
+modules SHALL not change the closure or prevent eligible v1 work. The tree SHALL
+contain no symlink, non-regular file, data, unmapped test, cache, `__pycache__`, or
+`.pyc`. Before every mutant the worker SHALL purge bytecode/cache paths, create a
+fresh empty `PYTHONPYCACHEPREFIX`, and set `PYTHONDONTWRITEBYTECODE=1`.
+File/byte/copy/free-space limits from the bounded-mode requirement SHALL be checked
+before admission.
 
 The adapter SHALL instantiate only `get_operator(name)()` and call
 `mutate_code(original_text, operator, occurrence)`. It SHALL NOT call
@@ -230,8 +249,25 @@ deny guard; deny external process launch; and reject canonical/symlink-resolved
 filesystem opens beneath the real repository `data/`, model, database, parquet, and
 generated-artifact roots. Tests SHALL prove provider, scheduler, event, real-data,
 network, and external-client access fail closed. V1 SHALL refuse cache reuse for a
-tuple that observes an undeclared wall clock; every current mapping declares
-`explicit_input`.
+tuple whose bounded import closure accesses an undeclared clock or entropy API. The
+trust tuple SHALL remain entropy-non-cacheable while its default path can call
+`uuid.uuid4()`.
+
+The isolation/provenance plugin SHALL append every guard violation to a
+controller-created mode-0600 sidecar authenticated by a per-process random token and
+monotonic sequence outside application exception handling. The controller SHALL
+validate that sidecar before interpreting pytest exit. Any guard violation SHALL be
+`infrastructure_error`, including when application code catches the raised guard
+exception or pytest otherwise exits 0 or 1.
+
+Line coverage SHALL use exactly coverage.py 7.10.7 in statement/line mode. The
+adapter SHALL run `python -m coverage run --data-file <private-data> --source
+<private-package> -m pytest --import-mode=importlib <absolute-mapped-tests>` followed
+by `python -m coverage json --data-file <private-data> -o <private-json>`. It SHALL
+canonicalize exactly one private target path back to the repository-relative source,
+read bounded `executed_lines`, reject malformed/oversized/multiple/unknown paths, and
+remove data and JSON afterward. Coverage process or data failure SHALL be
+`baseline_unavailable`, never `no_coverage` or `killed`.
 
 The baseline time `T` for a selected affected-test set SHALL be measured before mutant
 execution under the same provenance, coverage, environment, and process-group
@@ -246,9 +282,13 @@ process before returning. A timeout SHALL be `timeout`, not `killed`. Failure to
 launch, copy, mutate, parse, collect, or execute infrastructure SHALL be
 `infrastructure_error`, not `killed`.
 
-Pytest exits SHALL map exactly: `0=survived`, `1=killed`, and `2/3/4/5` or a signal
-SHALL be `infrastructure_error` in mutant phase. Baseline exit `0` is usable; any
-other exit is `baseline_unavailable`. The classification SHALL be:
+After the authenticated violation sidecar is proven clean, pytest exits SHALL map
+exactly: `0=survived`, `1=killed`, and `2/3/4/5` SHALL be
+`infrastructure_error` in mutant phase. A controller SIGINT/SIGTERM SHALL classify a
+started mutant `cancelled_test_started` and unstarted selected work
+`not_run_cancelled`; neither SHALL be conflated with infrastructure or budget.
+Baseline exit `0` is usable; any other exit is `baseline_unavailable`. The
+classification SHALL be:
 
 - baseline failure: mark that test tuple's selected mutants `baseline_unavailable`;
 - pytest exits zero under the mutant: `survived`;
@@ -256,7 +296,9 @@ other exit is `baseline_unavailable`. The classification SHALL be:
 - deadline expires: `timeout`;
 - no mapping or baseline line coverage: `no_coverage_mapping` or `no_coverage_line`;
 - the operator cannot produce valid changed source: `invalid`;
-- controller/tool/process failure: `infrastructure_error`.
+- controller/tool/process or isolation-guard failure: `infrastructure_error`;
+- controller signal after mutant pytest start: `cancelled_test_started`;
+- selected work not admitted after controller signal: `not_run_cancelled`.
 
 #### Scenario: Mutant causes an infinite loop with descendants
 
@@ -274,6 +316,14 @@ contain the exact `.trade-mutation-output-v1` ownership marker. Filesystem roots
 repository data, DB, model, Parquet, generated-artifact roots, path escapes, and
 unrelated existing directories SHALL fail before a lock or write.
 
+At wrapper entry, each invocation SHALL atomically create
+`invocations/<run_id>.json` using schema `trade.mutation.invocation.v1` with run ID,
+mode, absolute deadline, lifecycle state, and exact expected staging, final, and
+fallback paths. The bootstrap and controller SHALL update only valid forward
+transitions. CI SHALL consume the receipt path exported through `$GITHUB_OUTPUT`,
+validate the run ID and referenced evidence, and SHALL NOT infer this invocation from
+global `current.json`, timestamps, or newest-file globbing.
+
 Every invocation SHALL stage one run-ID directory containing:
 
 - `report.json` using schema `trade.mutation.report.v1`;
@@ -285,8 +335,11 @@ JSON SHALL be authoritative and Markdown/HTML SHALL render from the persisted JS
 After fsync of files and the staged directory, the controller SHALL atomically replace
 one `current.json` pointer to publish the generation. A crash SHALL expose either the
 previous complete generation or the new complete generation, never mixed files.
-Atomic per-mutant cache/journal entries SHALL permit a retry to reuse only verified
-matching outcomes; v1 does not expose a `--resume-from` report contract.
+Per-mutant cache outcomes SHALL stage under their run ID. A digest-bound completed-run
+commit marker SHALL be published only after the generation is complete and
+cache-eligible; cache reads SHALL require that marker. Partial, cancelled, degraded,
+or report-failed entries SHALL remain uncommitted and unreadable. V1 does not expose a
+`--resume-from` report contract.
 
 Each invocation SHALL hold a per-run staging lease containing PID, process-start
 token, and boot identity. Staging cleanup SHALL require non-blocking lease acquisition,
@@ -294,8 +347,17 @@ valid stale owner identity, age at least 24 hours, and proof the run is not curr
 Render, staging-validation, final-directory rename, and pointer-publication failures
 SHALL remain distinct. If a complete generation cannot be validated and published,
 the controller SHALL preserve owned staging, return exit 2, and atomically write only
-one bounded `fallback-<run_id>.json` diagnostic outside `current.json`; fallback is
-not a report generation.
+one bounded `fallback-<run_id>.json` diagnostic using schema
+`trade.mutation.fallback.v1` with redacted stable `error_code`, failed stage,
+retryability, message, remediation command, receipt path, and exact evidence paths
+outside `current.json`; fallback is not a report generation.
+
+A missing `current.json` before the first successful generation SHALL be normal.
+Under the publication lock, a malformed or symlinked pointer, missing referenced
+generation, or manifest/member digest mismatch SHALL be moved to a UUID quarantine
+record before a valid successor can publish. The successor manifest SHALL record the
+recovery code and quarantine path. If safe quarantine cannot complete, publication
+SHALL fail with a stable repair command and leave the predecessor untouched.
 
 One safe-error layer SHALL redact configured credential values,
 credential-looking environment values, URL userinfo, and controlled home/temp roots
@@ -323,19 +385,21 @@ starts. Therefore:
 - `selected` equals the sum of every terminal status;
 - `resolved = fresh_resolved + cache_resolved`;
 - `fresh_resolved = killed_fresh + survived_fresh + timeout +
-  infrastructure_error_test_started`;
+  infrastructure_error_test_started + cancelled_test_started`;
 - `cache_resolved = killed_cache + survived_cache`;
 - `killed = killed_fresh + killed_cache` and
   `survived = survived_fresh + survived_cache`;
 - `test_started_current = executed = fresh_resolved`;
 - `no_coverage = no_coverage_mapping + no_coverage_line`;
-- `not_run = not_run_budget + not_run_plan + baseline_unavailable +
-  equivalent_exception`;
+- `not_run = not_run_budget + not_run_plan + not_run_cancelled +
+  baseline_unavailable + equivalent_exception`;
 - mutation score SHALL be `null` when `killed + survived == 0`, otherwise
   `killed / (killed + survived)`.
 
-Timeout, no-coverage, baseline-unavailable, invalid, infrastructure-error, exception,
-and not-run outcomes SHALL NOT improve the score.
+Timeout, cancellation, no-coverage, baseline-unavailable, invalid,
+infrastructure-error, exception, and not-run outcomes SHALL NOT improve the score or
+be cacheable. Cancellation before admission, between spawn/registration, during
+pytest, and while queued SHALL each have a golden count-algebra test.
 
 `--plan-only` SHALL validate config/tool APIs, enumerate and select candidates, read no
 outcome cache, run no coverage/pytest, assign every selected mutant `not_run_plan`,
@@ -352,19 +416,26 @@ include execution/mutant ID, the digest of every tracked Python source file, map
 fixtures/conftest, `pyproject.toml`, `setup.cfg`, `uv.lock`, mutation configuration
 and exceptions, normalized pytest arguments, Python/Cosmic Ray/coverage/pytest/plugin
 versions, platform/architecture, controlled environment including native-thread
-controls, declared clock policy, selection algorithm, and complete mutant cohort.
-Corrupt, partial, unbounded, undeclared-clock, or
-identity-mismatched entries SHALL be ignored. Changed mode MAY read a matching entry
-but SHALL remain correct without it.
+controls, declared clock and entropy policies, selection algorithm, and complete
+mutant cohort. Corrupt, partial, unbounded, undeclared-clock/entropy,
+identity-mismatched, or entries without a valid completed-run commit marker SHALL be
+ignored. Changed mode MAY read a matching entry but SHALL remain correct without it.
 
-Core/full SHALL append one `trend.jsonl` record keyed by mode, commit, exact
-comparison-key cohort, scope/config/environment digests, and report generation.
+Core/full SHALL maintain `trend.jsonl` as an idempotently rebuildable projection of
+validated committed immutable generations, keyed by mode, commit, exact
+comparison-key cohort, scope/config/environment digests, run ID, and a publication
+sequence allocated under the output lock. UTC is display/age metadata, not sole
+ordering truth.
 Trend retention SHALL be at most 365 records, 8 MiB, and 400 days. Result cache
 retention SHALL be at most 20000 entries and 512 MiB. Under the output publication
 lock, deterministic eviction SHALL remove oldest `created_at,key` records first and
-record evicted counts, bytes, and range. CI SHALL restore only a
-schema/tool/config-compatible cache prefix, validate entries, append the current
-record, and save it under a new run-specific immutable key. Score regression is
+record evicted counts, bytes, and range. Immutable generations SHALL be at most 30
+entries, 2 GiB, and 30 days; fallback, quarantine, and failed-staging evidence SHALL
+be at most 50 entries, 512 MiB, and 14 days. Eviction SHALL protect `current`, active
+leases, and current failure evidence. CI SHALL restore only a
+schema/tool/config-compatible cache prefix, validate entries and commit markers,
+reconcile trend from committed generations, and save under a new run-specific
+immutable key. Score regression is
 comparable only over identical complete, unambiguous comparison-key cohorts with
 unchanged normalized node text and policy; execution IDs remain source-exact.
 Different exclusions, budgets, partial runs, ambiguous/added/deleted/changed
@@ -438,9 +509,11 @@ GitHub Actions SHALL:
 - use PR concurrency key
   `mutation-pr-${repository}-${pull_request.number}` with
   `cancel-in-progress: true`;
-- use `if: always()` to append a success or fallback failure summary and upload the
+- use `if: always()` to validate the exact invocation receipt exported through
+  `$GITHUB_OUTPUT`, append its success or typed fallback summary, and upload only its
   run/staging/fallback path with 14-day retention for controller exits, internal
-  deadlines, and gracefully delivered signals while the job remains alive;
+  deadlines, and gracefully delivered signals while the job remains alive; global
+  `current.json` and newest-file globbing SHALL NOT select CI evidence;
 - document upload after hard GitHub job cancellation, runner loss, or host loss as
   best effort rather than guaranteed;
 - run core on cron `17 18 * * 1-6` UTC and on manual request, with 1800-second script
@@ -449,10 +522,13 @@ GitHub Actions SHALL:
   5400-second script budget, non-blocking job semantics, and a 100-minute outer
   timeout;
 - give scheduled/manual core and full one shared concurrency key
-  `mutation-long-${repository}` with `cancel-in-progress: false`, so they queue rather
-  than overlap or destroy evidence;
-- order trend records by report UTC completion time then run ID, not workflow dispatch
-  order.
+  `mutation-long-${repository}` with `cancel-in-progress: false`, which guarantees at
+  most one running and one pending member but permits a newer dispatch to supersede an
+  older pending member; the workflow SHALL rely only on no overlap and SHALL NOT claim
+  a durable/lossless queue;
+- create no run ID or trend record for a pending dispatch superseded before command
+  entry, and order committed trend records by publication sequence, not workflow
+  dispatch or adjustable UTC order.
 
 The ordinary pull-request workflow SHALL never invoke `core` or `full`. Documentation,
 test-only, fixture, generated, and excluded changes SHALL not execute mutant tests.
@@ -467,5 +543,6 @@ test-only, fixture, generated, and excluded changes SHALL not execute mutant tes
 
 - **WHEN** nightly core, weekly full, or manual core/full are requested concurrently
 - **THEN** the shared long-run concurrency group runs at most one
-- **AND** queued runs are not cancelled by newer runs
+- **AND** at most the latest pending request is retained under native GitHub semantics
+- **AND** a superseded pre-start request creates no false report or trend record
 - **AND** no two long modes compete for mutation workers or trend publication.
