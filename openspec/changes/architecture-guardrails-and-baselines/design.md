@@ -369,6 +369,12 @@ developer corrects the baseline or source evidence through a reviewed child
 change. It does not automatically rewrite imports, infer table ownership, or
 silently ignore an unknown file.
 
+If the guard reports baseline or producer source identity/content drift, stop
+concurrent source mutation and rerun after the worktree stabilizes; do not
+bypass the refusal. A Git index subprocess that exceeds its stderr diagnostic
+budget is likewise terminated and must be repaired or receive a reviewed
+governed budget increase.
+
 Task 2.4 will provide the developer runbook keyed by `architecture.*`,
 `dependency.*`, `persistence.*`, `artifacts.*`, and `execution.*` rule IDs,
 including `trade dev check --show-plan` and JSON-report commands. That runbook
@@ -385,8 +391,10 @@ commit before any owner migration consumes it.
 Task 2.1 has no contributor, target-batch, quality-executor, or structured
 output-envelope lifecycle. It reads only the finite set of baseline-declared
 source files and one bounded producer-inventory pass. The pass uses a bounded
-internal Git-index subprocess with a 30-second deadline, bounded stderr, and
-process-group cleanup; it is not a Task 2.3 quality-executor lifecycle. No
+internal Git-index subprocess with a 30-second deadline, a 4 KiB hard stderr
+retention ceiling plus one overflow-probe byte, and process-group cleanup; that
+probe stops discovery rather than draining stderr until timeout. It is not a
+Task 2.3 quality-executor lifecycle. No
 network access, package installation, database scan, artifact hash, or
 recursive full-repository AST scan is permitted, except for the separately
 bounded producer-inventory pass below. Baseline validation groups declared
@@ -420,8 +428,11 @@ outside `vendor`, `third_party`, `generated`, `cache`, and `__pycache__` path
 segments; at reviewed commit `5537e99f3ba4` it includes 306 files and 3,102,353
 source bytes, with zero exclusions. Included paths are additionally bounded to
 512 entries and 64 KiB
-path bytes, each source is bounded to 1 MiB, and aggregate source is bounded to
-32 MiB.
+path bytes, each source is bounded to 1 MiB, and aggregate logical source
+payload is bounded to 32 MiB. Each admitted source is reopened and reread once
+for same-identity payload verification, so producer descriptor-read I/O is
+bounded to 64 MiB per invocation, excluding separately bounded baseline and
+evidence reads.
 Repository-confined directory-descriptor traversal and `O_NOFOLLOW`-equivalent
 file reads reject symlinks, non-regular entries, escapes, unsupported safe-read
 primitives, pre-read/post-read/post-path identity drift, and a reopened

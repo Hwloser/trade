@@ -3758,26 +3758,36 @@ def _iter_git_index(
     stderr_size = 0
     stderr_lock = threading.Lock()
     stderr_done = threading.Event()
+    stderr_overflow = threading.Event()
 
     def drain_stderr() -> None:
         nonlocal stderr_size
+        diagnostic_limit = max(0, limits.max_git_stderr_bytes)
         try:
             while True:
-                chunk = stderr_stream.read(8_192)
+                with stderr_lock:
+                    read_size = (
+                        1
+                        if stderr_size >= diagnostic_limit
+                        else min(8_192, diagnostic_limit - stderr_size)
+                    )
+                chunk = os.read(stderr_stream.fileno(), read_size)
                 if not chunk:
                     break
                 with stderr_lock:
-                    remaining = limits.max_git_stderr_bytes - stderr_size
-                    if remaining > 0:
-                        retained = chunk[:remaining]
-                        stderr_chunks.append(retained)
-                        stderr_size += len(retained)
+                    if stderr_size >= diagnostic_limit:
+                        stderr_overflow.set()
+                        _terminate_process_group(process)
+                        return
+                    stderr_chunks.append(chunk)
+                    stderr_size += len(chunk)
         finally:
             stderr_done.set()
 
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
     stderr_thread.start()
     deadline = time.monotonic() + limits.git_timeout_seconds
+    poll_interval_seconds = 0.05
     record_limit = min(
         limits.max_git_record_bytes,
         limits.max_raw_path_bytes + 512,
@@ -3785,12 +3795,21 @@ def _iter_git_index(
     buffer = b""
     try:
         while True:
+            if stderr_overflow.is_set():
+                raise _git_stderr_budget_error()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _git_timeout_error()
-            ready, _, _ = select.select([stdout], [], [], remaining)
+            ready, _, _ = select.select(
+                [stdout],
+                [],
+                [],
+                min(remaining, poll_interval_seconds),
+            )
+            if stderr_overflow.is_set():
+                raise _git_stderr_budget_error()
             if not ready:
-                raise _git_timeout_error()
+                continue
             chunk = os.read(stdout.fileno(), 8_192)
             if not chunk:
                 break
@@ -3816,20 +3835,34 @@ def _iter_git_index(
                 if not raw:
                     continue
                 yield _parse_index_record(raw)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise _git_timeout_error()
-        try:
-            return_code = process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired as exc:
-            raise _git_timeout_error() from exc
-        if not stderr_done.wait(timeout=max(0.0, deadline - time.monotonic())):
-            raise _GuardError(
-                PRODUCER_TOOL_FAILURE,
-                "trade_py",
-                "Git index discovery did not close its stderr stream before the deadline",
-                "Repair the Git environment before running source-only discovery.",
+        while True:
+            if stderr_overflow.is_set():
+                raise _git_stderr_budget_error()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _git_timeout_error()
+            try:
+                return_code = process.wait(timeout=min(remaining, poll_interval_seconds))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        while not stderr_done.wait(
+            timeout=min(
+                max(0.0, deadline - time.monotonic()),
+                poll_interval_seconds,
             )
+        ):
+            if stderr_overflow.is_set():
+                raise _git_stderr_budget_error()
+            if time.monotonic() >= deadline:
+                raise _GuardError(
+                    PRODUCER_TOOL_FAILURE,
+                    "trade_py",
+                    "Git index discovery did not close its stderr stream before the deadline",
+                    "Repair the Git environment before running source-only discovery.",
+                )
+        if stderr_overflow.is_set():
+            raise _git_stderr_budget_error()
         with stderr_lock:
             stderr = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
         if buffer or return_code != 0:
@@ -5003,6 +5036,15 @@ def _git_timeout_error() -> _GuardError:
         "trade_py",
         "Git index discovery exceeded the configured timeout",
         "Repair the Git environment or make a reviewed governed timeout increase.",
+    )
+
+
+def _git_stderr_budget_error() -> _GuardError:
+    return _GuardError(
+        PRODUCER_TOOL_FAILURE,
+        "trade_py",
+        "Git index discovery exceeded the configured stderr diagnostic budget",
+        "Repair the Git environment or make a reviewed governed stderr budget increase.",
     )
 
 

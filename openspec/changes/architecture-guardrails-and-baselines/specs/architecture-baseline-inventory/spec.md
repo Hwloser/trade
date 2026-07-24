@@ -317,7 +317,14 @@ The scanner SHALL consume the Git path stream incrementally, validate and
 deduplicate each record as received, and stop before materializing an
 unbounded path list. It SHALL refuse more than 1,024 raw index records or
 128 KiB of raw path bytes, more than 512 included paths or 64 KiB of included
-path bytes, more than 32 MiB aggregate source, or one source file over 1 MiB.
+path bytes, more than 32 MiB aggregate logical source payload, or one source
+file over 1 MiB. It SHALL retain no more than 4 KiB of Git stderr diagnostic
+bytes and consume at most one further probe byte; that byte SHALL terminate the
+Git process group and fail with `architecture.producer_discovery_tool_failed`,
+rather than draining unbounded stderr until timeout. The source payload is reread once to verify
+same-identity bytes, so the 32 MiB logical source ceiling permits at most 64
+MiB of producer descriptor-read I/O per invocation. This excludes separately
+bounded baseline and evidence reads.
 `architecture.producer_discovery_path_budget_exceeded` SHALL fail the scan
 before AST parsing when a raw or included path budget is exceeded;
 `architecture.producer_discovery_budget_exceeded` SHALL fail it before

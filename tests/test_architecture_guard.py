@@ -5000,3 +5000,44 @@ def test_git_discovery_bounds_unterminated_stdout_and_nonzero_stderr(
     assert {finding.rule_id for finding in failed_report.findings} == {PRODUCER_TOOL_FAILURE}
     assert failed_report.producers == ()
     assert len(failed_report.findings[0].message.encode("utf-8")) <= 64
+
+
+def test_git_discovery_stops_continuous_stderr_at_diagnostic_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\n" "$$" > "$ARCH_GUARD_CHILD_PID_FILE"\n'
+        "while :; do\n"
+        '  printf "x" >&2\n'
+        "done\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    child_pid_path = tmp_path / "continuous-stderr-child.pid"
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("ARCH_GUARD_CHILD_PID_FILE", str(child_pid_path))
+
+    started = time.monotonic()
+    report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_git_stderr_bytes=64, git_timeout_seconds=5),
+    )
+
+    assert time.monotonic() - started < 2
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_TOOL_FAILURE}
+    assert report.producers == ()
+    assert "stderr diagnostic budget" in report.findings[0].message
+    child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+    for _ in range(100):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("stderr-overflow Git process still exists after process-group cleanup")
