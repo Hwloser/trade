@@ -167,14 +167,17 @@ implementation child may add an explicit `approved_binding` that names one
 Context and one non-empty, dot-delimited persistence-adapter scope using
 identifier segments beneath `<context>.adapters.` after proving writer, reader,
 transaction, compatibility, and owner behavior. Each of its writer, reader,
-transaction, and compatibility proofs is a distinct `{ source, literal }`
-record verified through the same repository-confined source-only reader. Every
-proof is located in the named `src/trade/<adapter_scope path>.py` implementation;
-writer, reader, and compatibility literals identify the logical table, and the
-transaction-proof source identifies the adapter scope. Thus a valid but
-unrelated legacy literal or cross-adapter proof cannot authorize the table.
-Prose, comments, stale literals, unnamed or malformed adapter scopes, and
-data/artifact paths cannot authorize a binding.
+transaction, and compatibility proofs is a distinct
+`{ source, literal, callable }` record verified through the same
+repository-confined source-only reader. Every proof is located in the named
+`src/trade/<adapter_scope path>.py` implementation and in its named module-level
+callable. Writer proof must be a table-specific write passed to a persistence
+call; reader and compatibility proof must be table-specific reads passed to a
+persistence call; transaction proof must be a table-specific persistence call
+inside a transaction context. Thus a valid but unrelated legacy literal,
+cross-adapter proof, or top-level constant cannot authorize the table. Prose,
+comments, stale literals, unnamed or malformed adapter scopes, and data/artifact
+paths cannot authorize a binding.
 
 Static provenance is intentionally a bounded, named audit inventory, not a
 claim to discover or semantically normalize every legacy SQL statement. The
@@ -183,25 +186,29 @@ inventory changes, including the governed `pipeline_dag` and `asset_registry`
 records. The three reviewed f-string construction sites for `Recommendation`,
 `RecommendationTrace`, and `factor_registry` are recorded separately as
 non-authorizing `dynamic_sql_limitations`, bound to their logical table,
-construction-site literal, limitation kind, owning child, and exact rationale.
-They remain limitations until an owning migration child introduces an
-AST-aware SQL-normalization or runtime migration-evidence design.
+construction-site literal, limitation kind, owning child, exact rationale, and
+`non_authorizing = true` marker. A limitation cannot attach to an
+`approved_binding` table. It remains a limitation until an owning migration
+child introduces an AST-aware SQL-normalization or runtime migration-evidence
+design.
 
 The checker reads UTF-8 text through repository-confined no-follow descriptors
 and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
 non-regular files, source identity drift, duplicate declarations, and source
 facts that no longer match an executable source literal. Per invocation, it
 caches each decoded and comment/inert-string-masked evidence source, batches
-all pending literals for one source into one executable-text scan, and so does
-not rescan the whole source for every baseline fact. The Python masking pass
-advances monotonically through sorted inert-string spans and translates AST
-UTF-8 columns through one compact per-non-ASCII-line map. Before Python AST
-construction, a streamed token admission budget rejects high-cardinality
-evidence. Successful and terminally failed transformations are both memoized,
-so repeated facts do not repeat bounded work or change the failure outcome.
-Python comments and standalone string, bytes, or f-string expressions, and
-admitted shell/CMake/C-family comments, cannot satisfy evidence. It does not load
-modules, initialize `TradeDB`, read an
+all pending literals for one source into one deterministic Aho-Corasick
+multi-pattern source scan, and so does not rescan the whole source for every
+baseline fact or build a backtracking regular expression. Per-source literal
+count and literal-byte budgets reject pathological declaration groups before
+the automaton is built. The Python masking pass advances monotonically through
+sorted inert-string spans and translates AST UTF-8 columns through one compact
+per-non-ASCII-line map. Before Python AST construction, a streamed token
+admission budget rejects high-cardinality evidence. Successful and terminally
+failed transformations are both memoized, so repeated facts do not repeat
+bounded work or change the failure outcome. Python comments and standalone
+string, bytes, or f-string expressions, and admitted shell/CMake/C-family
+comments, cannot satisfy evidence. It does not load modules, initialize `TradeDB`, read an
 artifact directory, or accept arbitrary paths outside the repository. The
 focused source-only fixture permits reads only of the baseline, declared source
 evidence, and verified regular descriptors in the bounded production-Python
@@ -237,6 +244,51 @@ only by `trade.bootstrap`, which exposes
 `LegacySchemaBootstrapAdapter` through a narrow schema-bootstrap allowlist and
 removal condition. Every other target `trade_py.*` or `trade_web.*` import is
 denied.
+
+### Persistent-write safety
+
+This child is source-only: `architecture-baseline.toml` is a reviewed
+declaration of legacy table and artifact facts, not a durable runtime writer,
+and `architecture_guard.py` reads repository text and temporary test fixtures
+only. The existing `TradeDB`, pipeline databases, catalog SQLite projection,
+Parquet artifacts, and their runtime transaction boundaries remain
+authoritative and unchanged. No guard result grants a table write: a
+`candidate` or `deferred` record is non-authorizing, while a future
+`approved_binding` needs table-specific, adapter-local writer, reader,
+transaction, and compatibility proof. Dynamic SQL is recorded only as an
+explicit non-authorizing limitation.
+
+Before a future owner migration can write a new schema generation, its child
+must name the authoritative writer, deterministic idempotency key, local
+concurrency control, staged validation, atomic visibility point, crash and
+corrupt-predecessor handling, partial-result state, reader consistency, backup
+or hash verification, sample proof, rollback, and audit trail. This child
+supplies the source inventory and rejects stale provenance so those later
+claims cannot silently erase known bootstrap, alter, transform, projection, or
+Capture-risk evidence. Its only failure output is a deterministic developer
+diagnostic; it does not open a data root, create a database connection, or
+write artifacts.
+
+### Schema migration compatibility
+
+The governed baseline records legacy schema evolution facts and the required
+child responsible for each eventual ownership transfer. It does not execute,
+generate, or authorize a migration. Future migrations must be additive
+versioned changes that retain the old schema generation, support backward and
+forward compatible readers and writers through a compatibility window, and
+use an idempotent checkpointed replay or shadow copy. Cutover requires a
+dual-read comparison or a readiness-gated pointer switch, a verified prior
+generation or backup snapshot for restoration, and no destructive retirement
+until the published compatibility window closes.
+
+For this change, rollback is a reviewable correction to source metadata and
+guard logic before any migration child consumes it; runtime databases,
+artifacts, readers, and migrations remain untouched. The focused fixtures
+mutate table provenance, roles, dynamic limitation markers, and Capture-risk
+semantics to prove that an incomplete baseline blocks the developer gate
+rather than being treated as a schema transition. A later child owns real
+temporary-root migration rehearsal, row/artifact reconciliation, and
+compatibility cutover evidence.
 
 ### Failure and recovery
 
@@ -287,7 +339,9 @@ source input at once. A 30-second step timeout, 64 emitted findings, bounded
 fields, reserved metadata space, count-only truncation fallback, and 32 KiB
 serialized envelope prevent an oversized structured report. Baseline validation
 groups declared evidence literals by source and scans each transformed source
-once for its pending literals; it is exercised from a temporary fixture
+once for its pending literals using a deterministic multi-pattern automaton.
+It rejects a source with more than 256 distinct literals or more than 64 KiB of
+literal bytes before matching; this bound is exercised from a temporary fixture
 repository. When a finding limit reserves one emitted slot for the truncation
 record, `omitted_count` counts every hidden real finding, including the
 displaced final finding.
@@ -535,9 +589,17 @@ does not claim source-wide discovery, complete SQL-statement semantics, or
 literal-complete provenance for arbitrary legacy DDL/DML. The reviewed
 f-string DDL construction sites in `Recommendation`, `RecommendationTrace`,
 and `factor_registry` have mandatory non-authorizing limitation records rather
-than invented normalized SQL facts. Their owning migration children need a
-reviewed AST-aware SQL-normalization or runtime migration-evidence design
-before broadening the claim.
+than invented normalized SQL facts. Each record has `non_authorizing = true`,
+cannot authorize an approved table, and is owned by the corresponding migration
+child. Their owning migration children need a reviewed AST-aware
+SQL-normalization or runtime migration-evidence design before broadening the
+claim.
+
+The Capture-risk inventory is a bounded registry of named audited source facts,
+including the EastMoney timezone/precision overwrite. It is intentionally not a
+claim that every provider or temporal path has been exhaustively discovered.
+Any child migrating a Capture-related adapter must perform a child-local audit
+and add its own reviewed risk declaration before asserting broader coverage.
 
 `BtcRunStore.current_path`, `compatibility_path`, and
 `engine/cmake/python_bindings.cmake` are pinned as source facts, alongside
@@ -583,12 +645,16 @@ source-protection guarantee and avoids duplicate Git traversal.
 - **Repeated evidence or pathological inert strings exhaust review capacity** ->
   Descriptor-verified executable text and terminal transformation failures are
   memoized once per source per guard invocation, and pending baseline literals
-  are grouped into one source scan rather than one scan per fact. Python token
+  are grouped into one deterministic multi-pattern source scan rather than one
+  scan per fact. A 256-literal and 64 KiB literal-byte budget per source rejects
+  oversized declaration groups before matching; the automaton never builds a
+  backtracking alternation or pairwise literal-coverage map. Python token
   masking advances through sorted inert spans with a monotonic cursor while
   reusing one UTF-8 byte-to-character map per non-ASCII physical line. A
   streamed pre-parse token ceiling rejects high-cardinality inputs before
   AST/span allocation. Focused regressions pin successful and failed
-  transformation reuse, one grouped literal scan per evidence source, and
+  transformation reuse, one grouped literal scan per evidence source,
+  overlapping-prefix matcher parity, per-source literal-budget refusal, and
   large line-separated, same-line, and token-over-budget inert-string fixtures
   without adding runtime application I/O.
 - **A source-text rule cannot prove runtime ownership** -> The guard blocks
@@ -603,10 +669,11 @@ source-protection guarantee and avoids duplicate Git traversal.
 - **Dynamic historical DDL lacks stable literals** -> Task 2.1 has explicit,
   fail-closed, non-authorizing limitation records for the reviewed f-string
   `Recommendation`, `RecommendationTrace`, and `factor_registry` construction
-  sites. It does not invent normalized provenance or claim source-wide static
-  DDL/DML completeness. Their owning migration children must add AST-aware
-  normalized or runtime-backed evidence before broadening schema-provenance
-  claims.
+  sites. `non_authorizing = true` is a required machine-checked field and a
+  limitation cannot authorize an approved table. The guard does not invent
+  normalized provenance or claim source-wide static DDL/DML completeness. Their
+  owning migration children must add AST-aware normalized or runtime-backed
+  evidence before broadening schema-provenance claims.
 - **Guard volume or noisy diagnostics** -> Per-file, per-batch, total-scope,
   and concurrent-wave source-byte budgets; argv limits; timeout; versioned
   bounded envelope; stable sort; and explicit count-only truncation make

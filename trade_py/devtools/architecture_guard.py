@@ -21,6 +21,7 @@ import threading
 import time
 import tokenize
 from array import array
+from collections import deque
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -115,6 +116,16 @@ _CREATE_TABLE_LITERAL = re.compile(
     r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z_][A-Za-z0-9_]*"
 )
 _NAMED_ADAPTER_SCOPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_NAMED_CALLABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SQL_WRITE_OPERATION = re.compile(r"\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE)\b", re.IGNORECASE)
+_SQL_READ_OPERATION = re.compile(r"\s*SELECT\b", re.IGNORECASE)
+_SQL_PERSISTENCE_OPERATION = re.compile(
+    r"\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|SELECT)\b",
+    re.IGNORECASE,
+)
+_PERSISTENCE_CALL_NAMES = frozenset(
+    {"execute", "executemany", "executescript", "fetch", "fetchall", "fetchone", "query"}
+)
 _EXCLUDED_SOURCE_SEGMENTS = frozenset(
     {"vendor", "third_party", "generated", "cache", "__pycache__"}
 )
@@ -619,6 +630,27 @@ _REQUIRED_TABLE_BINDINGS = {
     ),
 }
 _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
+    "catalog_meta": (
+        (
+            "trade_py/observatory/catalog/store.py",
+            "CREATE TABLE catalog_meta",
+            "bootstrap",
+        ),
+    ),
+    "catalog_runs": (
+        (
+            "trade_py/observatory/catalog/store.py",
+            "CREATE TABLE runs",
+            "bootstrap",
+        ),
+    ),
+    "catalog_releases": (
+        (
+            "trade_py/observatory/catalog/store.py",
+            "CREATE TABLE releases",
+            "bootstrap",
+        ),
+    ),
     "event_log": (
         (
             "trade_py/db/trade_db.py",
@@ -1133,6 +1165,8 @@ class DiscoveryLimits:
     max_total_baseline_entries: int = 1_024
     max_evidence_sources: int = 512
     max_aggregate_evidence_bytes: int = 8 * 1024 * 1024
+    max_evidence_literals_per_source: int = 256
+    max_evidence_literal_bytes_per_source: int = 64 * 1024
     max_discovered_producers: int = 1_024
     max_producer_literal_bytes: int = 8 * 1024
     max_producer_report_bytes: int = 256 * 1024
@@ -1253,6 +1287,7 @@ class _EvidenceReader:
     _payloads: dict[str, bytes]
     _decoded_text: dict[str, str]
     _executable_text: dict[str, str]
+    _python_trees: dict[str, ast.Module]
     _executable_failures: dict[str, ArchitectureFinding]
     _literal_matches: dict[tuple[str, str], bool]
     _aggregate_bytes: int = 0
@@ -1263,6 +1298,7 @@ class _EvidenceReader:
         self._payloads = {}
         self._decoded_text = {}
         self._executable_text = {}
+        self._python_trees = {}
         self._executable_failures = {}
         self._literal_matches = {}
 
@@ -1370,6 +1406,33 @@ class _EvidenceReader:
         self._literal_matches[key] = present
         return present
 
+    def python_tree(self, relative: str) -> ast.Module:
+        """Return one parsed Python module after source evidence is admitted."""
+
+        cached = self._python_trees.get(relative)
+        if cached is not None:
+            return cached
+        if PurePosixPath(relative).suffix not in {".py", ".pyi"}:
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                relative,
+                "approved adapter evidence must be Python source",
+                "Bind approved persistence proofs to the named target adapter Python module.",
+            )
+        self.executable_text(relative)
+        source = self._decoded_text[relative]
+        try:
+            tree = ast.parse(source, filename=relative)
+        except (RecursionError, SyntaxError) as exc:
+            raise _GuardError(
+                _BASELINE_INVALID_SOURCE,
+                relative,
+                "approved adapter evidence source cannot be parsed safely",
+                "Repair the target adapter source before using it as approved-binding evidence.",
+            ) from exc
+        self._python_trees[relative] = tree
+        return tree
+
     def prime_literal_matches(self, queries: Sequence[tuple[str, str]]) -> None:
         """Evaluate each declared source's pending literals in one source scan."""
 
@@ -1381,6 +1444,22 @@ class _EvidenceReader:
             ):
                 grouped.setdefault(source, set()).add(literal)
         for source, literals in grouped.items():
+            literal_bytes = sum(len(literal.encode("utf-8")) for literal in literals)
+            if (
+                len(literals) > self.limits.max_evidence_literals_per_source
+                or literal_bytes > self.limits.max_evidence_literal_bytes_per_source
+            ):
+                failure = _baseline_evidence_budget_error(
+                    source,
+                    "declared source-evidence literals exceed the configured per-source "
+                    "literal-count or literal-byte budget",
+                    remediation=(
+                        "Reduce duplicate source literals, split the governed evidence source, "
+                        "or make a reviewed per-source literal-budget increase."
+                    ),
+                )
+                self._executable_failures[source] = failure.finding
+                continue
             try:
                 text = self.executable_text(source)
             except _GuardError:
@@ -1701,6 +1780,13 @@ def _validate_baseline_facts(
                         )
                     _require_text(fact, "owning_child", category)
                     _require_text(fact, "limitation", category)
+                    if fact.get("non_authorizing") is not True:
+                        raise _GuardError(
+                            _BASELINE_NONAUTHORIZING,
+                            BASELINE_FILENAME,
+                            "dynamic SQL limitation must declare non_authorizing = true",
+                            "Keep dynamic SQL limitation records explicitly non-authorizing.",
+                        )
                 elif category == "interfaces":
                     _require_text(fact, "surface_kind", category)
                     _require_text(fact, "current_behavior", category)
@@ -2205,6 +2291,14 @@ def _validate_dynamic_sql_limitations(
                     "Declare the logical table before recording its nonliteral SQL limitation.",
                 )
             table = tables_by_name[logical_name]
+            if table.get("classification") == "approved_binding":
+                raise _GuardError(
+                    _BASELINE_NONAUTHORIZING,
+                    BASELINE_FILENAME,
+                    f"dynamic SQL limitation cannot authorize approved table {logical_name!r}",
+                    "Move dynamic SQL behind a separately reviewed static or runtime evidence "
+                    "design before authorizing the table.",
+                )
             if limitation.get("owning_child") != table.get("required_child"):
                 raise _GuardError(
                     _BASELINE_INCOMPLETE_PROVENANCE,
@@ -2232,6 +2326,7 @@ def _validate_dynamic_sql_limitations(
             or record.get("limitation_kind") != limitation_kind
             or record.get("owning_child") != owning_child
             or record.get("limitation") != limitation_text
+            or record.get("non_authorizing") is not True
         )
     ]
     if invalid:
@@ -2317,39 +2412,83 @@ def _literal_is_present(text: str, literal: str) -> bool:
 
 
 def _literal_matches_for_source(text: str, literals: set[str]) -> Mapping[str, bool]:
-    """Match all requested literals from one executable source-text scan."""
+    """Match pending literals in one deterministic Aho-Corasick source scan."""
 
     create_table_literals = {
         literal for literal in literals if _CREATE_TABLE_LITERAL.fullmatch(literal) is not None
     }
-    ordinary_literals = literals - create_table_literals
-    ordered = tuple(sorted(ordinary_literals, key=lambda literal: (-len(literal), literal)))
-    covered_literals = {
-        candidate: {literal for literal in ordered if literal in candidate} for candidate in ordered
-    }
-    branches = [f"(?P<create_table>{_CREATE_TABLE_LITERAL.pattern})"]
-    if ordered:
-        branches.append("(?P<ordinary>" + "|".join(re.escape(literal) for literal in ordered) + ")")
-    pattern = re.compile("(?=(" + "|".join(branches) + "))")
-    matched_create_tables: set[str] = set()
-    matched_literals: set[str] = set()
-    for match in pattern.finditer(text):
-        create_table = match.group("create_table")
-        if create_table is not None:
-            matched_create_tables.add(create_table)
-            matched_literals.update(literal for literal in ordered if literal in create_table)
-        else:
-            ordinary = match.group("ordinary")
-            assert ordinary is not None
-            matched_literals.update(covered_literals[ordinary])
-        if len(matched_create_tables) == len(create_table_literals) and len(
-            matched_literals
-        ) == len(ordinary_literals):
+    transitions: list[dict[str, int]] = [{}]
+    failures = [0]
+    terminals: list[str | None] = [None]
+    for literal in sorted(literals):
+        node = 0
+        for character in literal:
+            next_node = transitions[node].get(character)
+            if next_node is None:
+                next_node = len(transitions)
+                transitions[node][character] = next_node
+                transitions.append({})
+                failures.append(0)
+                terminals.append(None)
+            node = next_node
+        terminals[node] = literal
+
+    pending = deque(transitions[0].values())
+    output_links = [-1] * len(transitions)
+    while pending:
+        node = pending.popleft()
+        for character, child in transitions[node].items():
+            pending.append(child)
+            fallback = failures[node]
+            while fallback and character not in transitions[fallback]:
+                fallback = failures[fallback]
+            failures[child] = transitions[fallback].get(character, 0)
+            failure = failures[child]
+            output_links[child] = (
+                failure if terminals[failure] is not None else output_links[failure]
+            )
+
+    retired: set[int] = set()
+    next_active = output_links.copy()
+
+    def active_terminal(node: int) -> int:
+        if node == -1 or node not in retired:
+            return node
+        next_active[node] = active_terminal(next_active[node])
+        return next_active[node]
+
+    def retire_terminal(node: int) -> None:
+        retired.add(node)
+        next_active[node] = active_terminal(output_links[node])
+
+    matched: set[str] = set()
+    node = 0
+    for index, character in enumerate(text):
+        while node and character not in transitions[node]:
+            node = failures[node]
+        node = transitions[node].get(character, 0)
+
+        output = node if terminals[node] is not None else output_links[node]
+        while output != -1:
+            output = active_terminal(output)
+            if output == -1:
+                break
+            literal = terminals[output]
+            assert literal is not None
+            if (
+                literal in create_table_literals
+                and index + 1 < len(text)
+                and (next_character := text[index + 1]).isascii()
+                and (next_character.isalnum() or next_character == "_")
+            ):
+                output = output_links[output]
+                continue
+            matched.add(literal)
+            retire_terminal(output)
+        if len(matched) == len(literals):
             break
-    return {
-        **{literal: literal in matched_create_tables for literal in create_table_literals},
-        **{literal: literal in matched_literals for literal in ordinary_literals},
-    }
+
+    return {literal: literal in matched for literal in literals}
 
 
 def _live_python_source_text(text: str, *, source: str, max_tokens: int) -> str:
@@ -2667,11 +2806,13 @@ def _validate_approved_table_binding(
 
     table_name = _require_text(fact, "logical_name", "tables")
     adapter_source = f"src/trade/{adapter_scope.replace('.', '/')}.py"
+    adapter_tree = evidence.python_tree(adapter_source)
     for field in _APPROVED_BINDING_EVIDENCE_FIELDS:
         proof = fact[field]
         assert isinstance(proof, Mapping)
         source = _require_text(proof, "source", f"tables.{table_name}.{field}")
         literal = _require_text(proof, "literal", f"tables.{table_name}.{field}")
+        callable_name = _require_text(proof, "callable", f"tables.{table_name}.{field}")
         if source != adapter_source:
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
@@ -2690,17 +2831,125 @@ def _validate_approved_table_binding(
                 "identify the logical table",
                 "Use a table-specific writer, reader, or compatibility proof literal.",
             )
-        if field == "transaction_evidence" and adapter_scope not in evidence.executable_text(
-            source
-        ):
+        if _NAMED_CALLABLE.fullmatch(callable_name) is None:
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
                 BASELINE_FILENAME,
-                f"approved table binding for {table_name} transaction proof does not "
-                f"identify adapter scope {adapter_scope}",
-                "Declare the adapter scope in its transaction proof source before authorizing "
-                "the table.",
+                f"approved table binding for {table_name} has invalid {field} callable "
+                f"{callable_name!r}",
+                "Name one function or async function in the target adapter module.",
             )
+        callable_node = _adapter_callable(adapter_tree, callable_name)
+        if callable_node is None:
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                BASELINE_FILENAME,
+                f"approved table binding for {table_name} has {field} callable "
+                f"{callable_name!r} outside its adapter module",
+                "Bind each proof to a declared function or async function in the target adapter.",
+            )
+        if not _callable_contains_literal(callable_node, literal):
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                BASELINE_FILENAME,
+                f"approved table binding for {table_name} has {field} literal outside "
+                f"callable {callable_name}",
+                "Place the declared proof literal in its named adapter callable.",
+            )
+        if field == "transaction_evidence":
+            if not _callable_opens_transaction(callable_node, literal):
+                raise _GuardError(
+                    _BASELINE_CLASSIFICATION,
+                    BASELINE_FILENAME,
+                    f"approved table binding for {table_name} transaction callable "
+                    f"{callable_name} has no transaction context",
+                    "Use a transaction/context-manager operation in the named adapter callable.",
+                )
+        elif not _callable_has_persistence_operation(callable_node, literal, field):
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                BASELINE_FILENAME,
+                f"approved table binding for {table_name} {field} callable "
+                f"{callable_name} has no matching persistence operation",
+                "Use a table-specific persistence call in the named adapter callable.",
+            )
+
+
+def _adapter_callable(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    for statement in tree.body:
+        if (
+            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.name == name
+        ):
+            return statement
+    return None
+
+
+def _callable_contains_literal(
+    callable_node: ast.AST,
+    literal: str,
+) -> bool:
+    return any(
+        isinstance(node, ast.Constant) and isinstance(node.value, str) and literal in node.value
+        for node in ast.walk(callable_node)
+    )
+
+
+def _callable_opens_transaction(
+    callable_node: ast.FunctionDef | ast.AsyncFunctionDef, literal: str
+) -> bool:
+    for node in ast.walk(callable_node):
+        if not isinstance(node, ast.With | ast.AsyncWith):
+            continue
+        for item in node.items:
+            expression = item.context_expr
+            if (
+                isinstance(expression, ast.Call)
+                and _call_attribute_name(expression) == "transaction"
+                and _callable_has_persistence_operation(
+                    node,
+                    literal,
+                    field="transaction_evidence",
+                )
+            ):
+                return True
+    return False
+
+
+def _callable_has_persistence_operation(
+    callable_node: ast.AST,
+    literal: str,
+    field: str,
+) -> bool:
+    if field == "writer_evidence":
+        expected_operation = _SQL_WRITE_OPERATION
+    elif field == "transaction_evidence":
+        expected_operation = _SQL_PERSISTENCE_OPERATION
+    else:
+        expected_operation = _SQL_READ_OPERATION
+    for node in ast.walk(callable_node):
+        if (
+            not isinstance(node, ast.Call)
+            or _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES
+        ):
+            continue
+        for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
+            if (
+                isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+                and literal in argument.value
+                and expected_operation.search(argument.value) is not None
+            ):
+                return True
+    return False
+
+
+def _call_attribute_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    return None
 
 
 def _read_table_array(

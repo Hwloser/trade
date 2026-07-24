@@ -30,16 +30,22 @@ contract and SHALL be recorded as a non-authorizing
 normalized literal. Every such record SHALL name a unique `id`, existing
 `logical_name`, repository `source`, executable construction-site `literal`,
 `limitation_kind`, the table's `owning_child`, and an explicit limitation
-rationale. The mandatory audited dynamic-DDL set is the `Recommendation`,
+rationale, and SHALL declare `non_authorizing = true`. A limitation SHALL
+never be attached to an `approved_binding` table and cannot authorize a
+table, persistence adapter, SQL statement, or schema shape. The mandatory
+audited dynamic-DDL set is the `Recommendation`,
 `RecommendationTrace`, and `factor_registry` construction sites in
 `trade_py/db/migrations.py`; their declaration, limitation kind, owning child,
-and rationale SHALL match the governed binding. A dynamic limitation neither
-authorizes persistence access nor proves physical-schema completeness.
+non-authorizing marker, and rationale SHALL match the governed binding. A
+dynamic limitation neither authorizes persistence access nor proves
+physical-schema completeness.
 
 The validator SHALL transform executable source evidence, including a terminal
 transformation failure, at most once per source per invocation. It SHALL batch
-the pending baseline literal matches for one transformed source into one source
-scan before individual-fact validation. Python inert-string masking SHALL
+the pending baseline literal matches for one transformed source into one
+deterministic multi-pattern source scan before individual-fact validation. It
+SHALL fail closed before scanning when a source exceeds the governed
+per-source literal-count or literal-byte budget. Python inert-string masking SHALL
 advance through ordered spans without a repeated whole-span scan and reuse one
 UTF-8 byte-to-character mapping per non-ASCII physical line. Before
 constructing a Python AST, the validator SHALL stream and enforce the governed
@@ -53,13 +59,16 @@ matching `<context>.adapters.<identifier>[.<identifier>...]` authorizes a
 literal SQL table reference. An `approved_binding` SHALL also declare separate
 `writer_evidence`, `reader_evidence`, `transaction_evidence`, and
 `compatibility_evidence` records; each record SHALL contain a repository source
-and an executable source literal accepted by the same source-only admission
-and no-follow validation as other baseline evidence. Every proof SHALL be in
-the one named target adapter module
-`src/trade/<adapter_scope path>.py`; writer, reader, and compatibility literals
-SHALL identify the logical table, and the transaction-proof source SHALL
-identify the declared adapter scope. `candidate` and `deferred` declarations
-SHALL reject every persistence-binding field.
+an executable source literal, and one named module-level Python `callable`
+accepted by the same source-only admission and no-follow validation as other
+baseline evidence. Every proof SHALL be in the one named target adapter module
+`src/trade/<adapter_scope path>.py` and within the named callable. Writer
+evidence SHALL occur as a table-specific write statement passed to a
+persistence call; reader and compatibility evidence SHALL occur as
+table-specific read statements passed to a persistence call; transaction
+evidence SHALL occur inside a transaction context containing a table-specific
+persistence operation. `candidate` and `deferred` declarations SHALL reject
+every persistence-binding field.
 
 #### Scenario: A baseline table source changes
 
@@ -87,8 +96,10 @@ SHALL reject every persistence-binding field.
 #### Scenario: An approved binding has unverified proof
 
 - **WHEN** an owning child supplies prose, a comment-only literal, an unsafe
-  path, a stale literal, a proof from another adapter, or a writer/reader/
-  compatibility literal that does not identify the declared logical table
+  path, a stale literal, a proof from another adapter or callable, a top-level
+  constant, a writer/reader/compatibility literal that does not identify the
+  declared logical table, or a named callable without the required
+  persistence/transaction operation
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
 
@@ -97,8 +108,9 @@ SHALL reject every persistence-binding field.
 - **WHEN** the baseline omits or changes the reviewed dynamic-DDL limitation
   for `Recommendation`, `RecommendationTrace`, or `factor_registry`
 - **THEN** baseline validation fails until the exact construction site,
-  limitation kind, owning child, and non-authorizing rationale are restored;
-  no normalized static provenance is inferred
+  limitation kind, owning child, explicit `non_authorizing = true` marker, and
+  non-authorizing rationale are restored; no normalized static provenance is
+  inferred
 
 #### Scenario: Historical DDL has two provenance roles
 
@@ -134,10 +146,14 @@ These are source-only migration inputs, not runtime artifact inspection or
 release authorization.
 
 The baseline SHALL record a bounded, mandatory Capture-risk inventory for the
-audited legacy `RawRecord` temporal model; RSS, GDELT, warehouse, archive, and
-date-only publication-time fallbacks; the EastMoney provider timezone/precision
-overwrite; and the `InfluenceSignal` runtime evaluation-time substitution for
-`published_at`. Every Capture-risk record SHALL state its repository source,
+named audited legacy `RawRecord` temporal model; RSS, GDELT, warehouse, archive,
+and date-only publication-time fallbacks; the EastMoney provider
+timezone/precision overwrite; and the `InfluenceSignal` runtime evaluation-time
+substitution for `published_at`. This is not a claim that every provider or
+temporal behavior in the repository has been exhaustively discovered. Each
+future child that migrates a Capture-related adapter SHALL audit its own source
+scope and add a separately reviewed binding before asserting broader coverage.
+Every Capture-risk record SHALL state its repository source,
 exact literal, risk kind, current behavior, required child, and required
 migration proof. The governed binding SHALL pin every one of those fields, so
 weakening either prose field fails validation rather than merely satisfying a

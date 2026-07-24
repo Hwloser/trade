@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -1095,6 +1096,42 @@ provenance = [
   {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS FreshnessStatus", role = "migration" }},
 ]
 
+[[tables]]
+logical_name = "catalog_meta"
+current_owner = "legacy"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "The catalog is a rebuildable projection."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE catalog_meta", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "catalog_runs"
+current_owner = "legacy"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog runs are projection facts."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE runs", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "catalog_releases"
+current_owner = "legacy"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog releases are projection facts."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE releases", role = "bootstrap" }},
+]
+
 {_required_table_declarations()}
 
 [[artifacts]]
@@ -1322,6 +1359,7 @@ source = "trade_py/db/migrations.py"
 literal = 'conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {{col_def}}")'
 limitation_kind = "dynamic_ddl"
 owning_child = "decision-support-boundary"
+non_authorizing = true
 limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[dynamic_sql_limitations]]
@@ -1331,6 +1369,7 @@ source = "trade_py/db/migrations.py"
 literal = 'conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {{col_def}}")'
 limitation_kind = "dynamic_ddl"
 owning_child = "decision-support-boundary"
+non_authorizing = true
 limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[dynamic_sql_limitations]]
@@ -1340,6 +1379,7 @@ source = "trade_py/db/migrations.py"
 literal = 'f"ALTER TABLE factor_registry ADD COLUMN {{col}} REAL NOT NULL DEFAULT {{default}}"'
 limitation_kind = "dynamic_ddl"
 owning_child = "study-boundary"
+non_authorizing = true
 limitation = "The f-string column and default are dynamic DDL and are non-authorizing until the Study migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[interfaces]]
@@ -1648,6 +1688,9 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'return KLINE_DIR(data_root) / "reconciliation" / "current.json"\n'
         ),
         "trade_py/observatory/catalog/store.py": (
+            'CATALOG_META_SQL = "CREATE TABLE catalog_meta"\n'
+            'CATALOG_RUNS_SQL = "CREATE TABLE runs"\n'
+            'CATALOG_RELEASES_SQL = "CREATE TABLE releases"\n'
             'return base / "catalog.sqlite", base / "generation.json"\n'
         ),
         "trade_py/app.py": application,
@@ -1767,6 +1810,16 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
         "recommendation-trace-dynamic-columns",
         "factor-registry-dynamic-columns",
     } == {item["id"] for item in baseline["dynamic_sql_limitations"]}
+    for table_name, literal in (
+        ("catalog_meta", "CREATE TABLE catalog_meta"),
+        ("catalog_runs", "CREATE TABLE runs"),
+        ("catalog_releases", "CREATE TABLE releases"),
+    ):
+        assert {
+            "source": "trade_py/observatory/catalog/store.py",
+            "literal": literal,
+            "role": "bootstrap",
+        } in tables_by_name[table_name]["provenance"]
     assert "http-openapi" in interface_kinds
     for table_name, source, literal, role in (
         (
@@ -1889,6 +1942,35 @@ def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    "risk_id",
+    (
+        "raw-record-single-publication-clock",
+        "cctv-date-only-publication-time",
+        "eastmoney-stock-timezone-overwrite",
+        "warehouse-rss-fetched-time-substitution",
+        "rss-provider-time-fallback",
+        "archive-date-only-publication-time",
+        "rss-catalog-environment-override",
+        "gdelt-catalog-db-config",
+        "gdelt-provider-time-fallback",
+        "gdelt-streaming-local-state-and-refetch",
+        "ingest-wal-replay",
+        "warehouse-semantic-quarantine",
+        "influence-signal-runtime-publication-time",
+    ),
+)
+def test_required_capture_risk_bindings_fail_closed_on_removal(
+    tmp_path: Path,
+    risk_id: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline.replace(f'id = "{risk_id}"', 'id = "removed"', 1))
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
     ("path", "source"),
     (
         (
@@ -1913,56 +1995,97 @@ def test_non_python_comments_do_not_satisfy_source_evidence(
 
 
 @pytest.mark.parametrize(
-    ("original", "replacement"),
-    (
-        (
-            'current_owner = "trade_py.data.news.rss"',
-            'current_owner = "incorrect.owner"',
-        ),
-        (
-            'required_child = "capture-boundary"',
-            'required_child = "study-boundary"',
-        ),
-        (
-            'risk_kind = "provider-timestamp-absence-substitution"',
-            'risk_kind = "incorrect-risk-kind"',
-        ),
-        (
-            'current_behavior = "RSS entries without a provider timestamp substitute the local collection clock."',
-            'current_behavior = "Generic timestamp behavior."',
-        ),
-        (
-            'required_migration_proof = "Persist provider precision separately from observed and received time, and prohibit synthetic event-time PIT claims."',
-            'required_migration_proof = "Generic migration proof."',
-        ),
+    ("risk_id", "field"),
+    tuple(
+        (risk_id, field)
+        for risk_id in (
+            "raw-record-single-publication-clock",
+            "cctv-date-only-publication-time",
+            "eastmoney-stock-timezone-overwrite",
+            "warehouse-rss-fetched-time-substitution",
+            "rss-provider-time-fallback",
+            "archive-date-only-publication-time",
+            "rss-catalog-environment-override",
+            "gdelt-catalog-db-config",
+            "gdelt-provider-time-fallback",
+            "gdelt-streaming-local-state-and-refetch",
+            "ingest-wal-replay",
+            "warehouse-semantic-quarantine",
+            "influence-signal-runtime-publication-time",
+        )
+        for field in (
+            "source",
+            "literal",
+            "current_owner",
+            "required_child",
+            "risk_kind",
+            "current_behavior",
+            "required_migration_proof",
+        )
     ),
 )
-def test_required_capture_risk_bindings_reject_semantic_mutation(
+def test_required_capture_risk_bindings_reject_every_field_mutation(
     tmp_path: Path,
-    original: str,
-    replacement: str,
+    risk_id: str,
+    field: str,
 ) -> None:
     repo = _init_repo(tmp_path, _sources())
     baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
-    _write_baseline(repo, baseline.replace(original, replacement, 1))
+    start = baseline.index(f'id = "{risk_id}"')
+    end = baseline.find("\n[[", start + 1)
+    risk_record = baseline[start:] if end == -1 else baseline[start:end]
+    record_field = re.search(
+        rf"^{re.escape(field)} = (['\"])(?P<value>.*?)\1$",
+        risk_record,
+        flags=re.MULTILINE,
+    )
+    assert record_field is not None
+    replacement = f'{field} = "mutated-{risk_id}-{field}"'
+    mutated_record = (
+        risk_record[: record_field.start()] + replacement + risk_record[record_field.end() :]
+    )
+    _write_baseline(repo, baseline[:start] + mutated_record + baseline[start + len(risk_record) :])
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
 
 
-def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> None:
-    repo = _init_repo(tmp_path, _sources())
-    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
-    source.parent.mkdir(parents=True)
-    source.write_text(
-        'APPROVED_RECORD_SQL = "CREATE TABLE approved_records"\n'
-        'WRITER_PROOF = "write approved_records"\n'
-        'READER_PROOF = "read approved_records"\n'
-        'TRANSACTION_PROOF = "datasets.adapters.persistence.warehouse transaction"\n'
-        'COMPATIBILITY_PROOF = "compatibility approved_records"\n',
-        encoding="utf-8",
-    )
-    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
-    approved = (
+def _approved_adapter_source(*, include_unrelated: bool = False) -> str:
+    source = """\
+APPROVED_RECORD_DDL = "CREATE TABLE approved_records"
+
+
+def persist_approved(session):
+    with session.transaction():
+        session.execute("INSERT INTO approved_records (id) VALUES (?)")
+
+
+def load_approved(session):
+    return session.execute("SELECT id FROM approved_records").fetchall()
+
+
+def load_approved_compat(session):
+    return session.query("SELECT id FROM approved_records")
+"""
+    if include_unrelated:
+        source += """\
+
+def persist_unrelated(session):
+    with session.transaction():
+        session.execute("INSERT INTO unrelated_records (id) VALUES (?)")
+
+
+def load_unrelated(session):
+    return session.execute("SELECT id FROM unrelated_records").fetchall()
+
+
+def load_unrelated_compat(session):
+    return session.query("SELECT id FROM unrelated_records")
+"""
+    return source
+
+
+def _approved_binding_declaration() -> str:
+    return (
         "[[tables]]\n"
         'logical_name = "approved_records"\n'
         'current_owner = "legacy"\n'
@@ -1972,14 +2095,23 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
         'reason = "Fixture approved binding."\n'
         'required_child = "dataset-product-boundary"\n'
         'adapter_scope = "datasets.adapters.persistence.warehouse"\n'
-        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }\n'
-        'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }\n'
-        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "TRANSACTION_PROOF" }\n'
-        'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility approved_records" }\n'
+        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }\n'
+        'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved" }\n'
+        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }\n'
+        'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved_compat" }\n'
         "provenance = [\n"
         '  { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
         "]"
     )
+
+
+def test_approved_binding_requires_structural_adapter_proofs(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source(), encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    approved = _approved_binding_declaration()
     approved_baseline = baseline + "\n" + approved
 
     _write_baseline(repo, approved_baseline)
@@ -2005,7 +2137,7 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
     _write_baseline(
         repo,
         approved_baseline.replace(
-            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }',
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }',
             'writer_evidence = "arbitrary prose"',
             1,
         ),
@@ -2015,22 +2147,22 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
     _write_baseline(
         repo,
         approved_baseline.replace(
-            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }',
-            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "STALE_READER_PROOF" }',
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved" }',
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "unknown_callable" }',
             1,
         ),
     )
-    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
     source.write_text(
-        '# WRITER_PROOF = "write approved_records"\n'
-        'READER_PROOF = "read approved_records"\n'
-        'TRANSACTION_PROOF = "datasets.adapters.persistence.warehouse transaction"\n'
-        'COMPATIBILITY_PROOF = "compatibility approved_records"\n',
+        'WRITER_PROOF = "INSERT INTO approved_records (id) VALUES (?)"\n'
+        'READER_PROOF = "SELECT id FROM approved_records"\n'
+        'TRANSACTION_PROOF = "INSERT INTO approved_records (id) VALUES (?)"\n'
+        'COMPATIBILITY_PROOF = "SELECT id FROM approved_records"\n',
         encoding="utf-8",
     )
     _write_baseline(repo, approved_baseline)
-    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
 
 @pytest.mark.parametrize(
@@ -2038,15 +2170,15 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
     (
         (
             "writer_evidence",
-            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write unrelated_records" }',
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO unrelated_records", callable = "persist_unrelated" }',
         ),
         (
             "reader_evidence",
-            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read unrelated_records" }',
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM unrelated_records", callable = "load_unrelated" }',
         ),
         (
             "compatibility_evidence",
-            'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility unrelated_records" }',
+            'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM unrelated_records", callable = "load_unrelated_compat" }',
         ),
     ),
 )
@@ -2058,44 +2190,17 @@ def test_approved_binding_rejects_same_adapter_proof_for_different_table(
     repo = _init_repo(tmp_path, _sources())
     source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
     source.parent.mkdir(parents=True)
-    source.write_text(
-        'APPROVED_RECORD_SQL = "CREATE TABLE approved_records"\n'
-        'WRITE_APPROVED = "write approved_records"\n'
-        'READ_APPROVED = "read approved_records"\n'
-        'TRANSACTION = "datasets.adapters.persistence.warehouse transaction"\n'
-        'COMPATIBILITY_APPROVED = "compatibility approved_records"\n'
-        'WRITE_UNRELATED = "write unrelated_records"\n'
-        'READ_UNRELATED = "read unrelated_records"\n'
-        'COMPATIBILITY_UNRELATED = "compatibility unrelated_records"\n',
-        encoding="utf-8",
-    )
+    source.write_text(_approved_adapter_source(include_unrelated=True), encoding="utf-8")
     baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
-    approved = (
-        "\n[[tables]]\n"
-        'logical_name = "approved_records"\n'
-        'current_owner = "legacy"\n'
-        'semantic_kind = "approved-fixture-record"\n'
-        'classification = "approved_binding"\n'
-        'target_context = "datasets"\n'
-        'reason = "Fixture approved binding."\n'
-        'required_child = "dataset-product-boundary"\n'
-        'adapter_scope = "datasets.adapters.persistence.warehouse"\n'
-        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }\n'
-        'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }\n'
-        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "TRANSACTION" }\n'
-        'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility approved_records" }\n'
-        "provenance = [\n"
-        '  { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
-        "]\n"
-    )
+    approved = "\n" + _approved_binding_declaration() + "\n"
     approved_baseline = baseline + approved
     _write_baseline(repo, approved_baseline)
     assert validate_architecture_baseline(repo).ok
 
     original = {
-        "writer_evidence": 'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }',
-        "reader_evidence": 'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }',
-        "compatibility_evidence": 'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility approved_records" }',
+        "writer_evidence": 'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }',
+        "reader_evidence": 'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved" }',
+        "compatibility_evidence": 'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved_compat" }',
     }[field]
     _write_baseline(repo, approved_baseline.replace(original, replacement, 1))
 
@@ -2137,6 +2242,33 @@ def test_audited_schema_evolution_provenance_fails_closed(
     provenance_record = f'  {{ source = "{source}", literal = "{literal}", role = "{role}" }},\n'
     assert provenance_record in baseline, f"{table_name}: {provenance_record}"
     _write_baseline(repo, baseline.replace(provenance_record, "", 1))
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("table_name", "literal"),
+    (
+        ("catalog_meta", "CREATE TABLE catalog_meta"),
+        ("catalog_runs", "CREATE TABLE runs"),
+        ("catalog_releases", "CREATE TABLE releases"),
+    ),
+)
+def test_catalog_projection_bootstrap_provenance_fails_closed(
+    tmp_path: Path,
+    table_name: str,
+    literal: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    record = (
+        '  { source = "trade_py/observatory/catalog/store.py", '
+        f'literal = "{literal}", role = "bootstrap" }},\n'
+    )
+    assert record in baseline, table_name
+    _write_baseline(
+        repo, baseline.replace(record, record.replace('"bootstrap"', '"data_transform"'), 1)
+    )
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
 
@@ -2187,6 +2319,40 @@ def test_required_dynamic_sql_limitations_reject_binding_mutation(
     _write_baseline(repo, baseline.replace(original, replacement, 1))
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+def test_dynamic_sql_limitations_require_explicit_non_authorizing_marker(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline.replace("non_authorizing = true\n", "", 1))
+
+    assert "architecture.baseline_non_authorizing_binding" in _rule_ids(repo)
+
+
+def test_dynamic_sql_limitation_cannot_authorize_its_table(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source(), encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    replacement = _approved_binding_declaration().replace(
+        'logical_name = "approved_records"',
+        'logical_name = "Recommendation"',
+        1,
+    )
+    original_start = baseline.index('[[tables]]\nlogical_name = "Recommendation"')
+    original_end = baseline.find("\n[[tables]]", original_start + 1)
+    original_table = (
+        baseline[original_start:] if original_end == -1 else baseline[original_start:original_end]
+    )
+    mutated = (
+        baseline[:original_start] + replacement + baseline[original_start + len(original_table) :]
+    )
+    _write_baseline(repo, mutated)
+
+    assert "architecture.baseline_non_authorizing_binding" in _rule_ids(repo)
 
 
 @pytest.mark.parametrize(
@@ -2743,6 +2909,78 @@ def test_source_evidence_literals_are_batched_once_per_source(
 
     assert report.ok, report.findings
     assert source_scans == 1
+
+
+def test_batched_literal_matching_matches_single_literal_semantics() -> None:
+    import trade_py.devtools.architecture_guard as guard
+
+    text = "CREATE TABLE records_archive\nCREATE TABLE IF NOT EXISTS records\naaaaaa\n"
+    literals = {
+        "CREATE TABLE records",
+        "CREATE TABLE records_archive",
+        "CREATE TABLE IF NOT EXISTS records",
+        "aaaaab",
+        "aaaaaa",
+    }
+
+    assert guard._literal_matches_for_source(text, literals) == {
+        literal: guard._literal_is_present(text, literal) for literal in literals
+    }
+
+
+def test_batched_literal_matching_handles_overlapping_absent_prefixes() -> None:
+    import trade_py.devtools.architecture_guard as guard
+
+    text = "a" * 32_768
+    literals = {("a" * width) + "b" for width in range(1, 128)}
+
+    started = time.monotonic()
+    matches = guard._literal_matches_for_source(text, literals)
+    elapsed_seconds = time.monotonic() - started
+
+    assert matches == {literal: False for literal in literals}
+    assert elapsed_seconds < 3.0
+
+
+@pytest.mark.parametrize(
+    ("literal_count", "literal_byte_budget"),
+    (
+        (1, 1024),
+        (256, 8),
+    ),
+)
+def test_batched_literal_matching_fails_closed_on_per_source_budget(
+    tmp_path: Path,
+    literal_count: int,
+    literal_byte_budget: int,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    repeated_source = (
+        "\n".join(f'EVIDENCE_{index} = "evidence-{index}"' for index in range(2)) + "\n"
+    )
+    (repo / "tests/repeated_literals.py").write_text(repeated_source, encoding="utf-8")
+    evidence = guard._EvidenceReader(
+        repo,
+        DiscoveryLimits(
+            max_evidence_literals_per_source=literal_count,
+            max_evidence_literal_bytes_per_source=literal_byte_budget,
+        ),
+    )
+    source = "tests/repeated_literals.py"
+    evidence.prime_literal_matches(
+        ((source, "evidence-0"), (source, "evidence-1")),
+    )
+
+    with pytest.raises(guard._GuardError) as error:
+        evidence.literal_is_present(source, "evidence-0")
+
+    assert error.value.finding.rule_id == "architecture.baseline_evidence_budget_exceeded"
+    assert error.value.finding.remediation == (
+        "Reduce duplicate source literals, split the governed evidence source, "
+        "or make a reviewed per-source literal-budget increase."
+    )
 
 
 def test_many_inert_strings_are_masked_with_linear_span_progress(

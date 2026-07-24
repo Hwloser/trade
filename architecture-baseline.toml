@@ -135,7 +135,7 @@ target_context = "datasets"
 reason = "The catalog is explicitly rebuildable and therefore not a second source of truth."
 required_child = "dataset-product-boundary"
 provenance = [
-  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE catalog_meta", role = "data_transform" },
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE catalog_meta", role = "bootstrap" },
 ]
 
 [[tables]]
@@ -147,7 +147,7 @@ target_context = "datasets"
 reason = "Catalog runs are projection facts that need DatasetVersion lineage migration."
 required_child = "dataset-product-boundary"
 provenance = [
-  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE runs", role = "data_transform" },
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE runs", role = "bootstrap" },
 ]
 
 [[tables]]
@@ -159,7 +159,7 @@ target_context = "datasets"
 reason = "Catalog releases are a current projection of immutable facts."
 required_child = "dataset-product-boundary"
 provenance = [
-  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE releases", role = "data_transform" },
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE releases", role = "bootstrap" },
 ]
 
 [[tables]]
@@ -992,6 +992,7 @@ source = "trade_py/db/migrations.py"
 literal = 'conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {col_def}")'
 limitation_kind = "dynamic_ddl"
 owning_child = "decision-support-boundary"
+non_authorizing = true
 limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[dynamic_sql_limitations]]
@@ -1001,6 +1002,7 @@ source = "trade_py/db/migrations.py"
 literal = 'conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {col_def}")'
 limitation_kind = "dynamic_ddl"
 owning_child = "decision-support-boundary"
+non_authorizing = true
 limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[dynamic_sql_limitations]]
@@ -1010,6 +1012,7 @@ source = "trade_py/db/migrations.py"
 literal = 'f"ALTER TABLE factor_registry ADD COLUMN {col} REAL NOT NULL DEFAULT {default}"'
 limitation_kind = "dynamic_ddl"
 owning_child = "study-boundary"
+non_authorizing = true
 limitation = "The f-string column and default are dynamic DDL and are non-authorizing until the Study migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[interfaces]]

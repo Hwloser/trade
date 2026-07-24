@@ -13,8 +13,8 @@ reason = "The checker only parses repository source text and temporary test fixt
 
 [[impacts]]
 id = "schema_migration"
-applies = false
-reason = "The baseline records source-defined table facts and candidate classifications but does not alter schema, execute migrations, or assign final runtime table ownership."
+applies = true
+reason = "The source-only baseline governs legacy schema bootstrap, alteration, and transform provenance plus the compatibility prerequisites that future owner migrations must satisfy, without executing or authorizing a runtime migration in this child."
 
 [[impacts]]
 id = "point_in_time"
@@ -42,6 +42,46 @@ consumers = "Repository developers and child OpenSpec implementers consume the q
 compatibility = "Existing ScopeSelection execution fields remain filtered for ordinary providers, while ProducerDiscoverySelection and its failure/partial-scope signals are additive. Legacy trade_py imports and runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a noncandidate legacy-only changed scope receives no new architecture step."
 migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts and bounded CLI/HTTP/OpenAPI/SSE source inventory rather than moving source, readers, or interface behavior."
 rollback = "Remove the isolated contributor, validator, baseline, architecture-specific scope metadata, planner issue, and focused tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
+
+[evidence.storage]
+authoritative_writer = "This source-only child has no runtime durable writer: existing TradeDB, pipeline databases, catalog SQLite projection, and Parquet owners remain unchanged. A future Context migration becomes authoritative only after its child names one repository writer and passes its own reviewed ownership proof."
+idempotency_key = "The guard has no write retry path. Future table migrations must use a stable migration-generation plus source-record or immutable-artifact identity, while the baseline preserves the reviewed source literal and required child for that obligation."
+concurrency_control = "The guard performs bounded read-only source inspection only. Future schema work must use the owning Context transaction or migration-leader lock and retain compatible-reader fencing; this child neither opens a database nor coordinates runtime writers."
+staging_validation = "Baseline and guard changes validate only repository-confined source evidence in temporary fixtures. A future migration must stage a copy or additive generation, verify rows and immutable artifact references, and reconcile before any reader-visible cutover."
+atomic_visibility = "Runtime state remains unchanged in this child. Later owner migrations must make a schema generation visible only through their local transaction or generation-stamped compatibility pointer after validation; candidate, deferred, and dynamic-limitation records remain non-authorizing."
+crash_windows = "A failed source-only validation leaves no durable state. Future migration children must retain checkpoints and a recoverable prior generation so interruption before or after cutover can be diagnosed and resumed without publishing mixed ownership."
+corrupt_predecessor = "The guard reports malformed, missing, stale, or unsafe evidence as an explicit failure and never repairs it. Future migrations must quarantine or restore a verified predecessor rather than accepting corrupt rows, pointers, manifests, or artifacts."
+partial_results = "A baseline validation returns ordered findings and no partial success. Future multi-table or artifact migration work must keep incomplete reconciliation or backfill explicit and must not publish a partially migrated reader surface."
+reader_consistency = "Existing SQLite, Parquet, catalog, CLI, HTTP, Web, SDK, notebook, scheduler, and event readers remain unchanged. Future Context readers must use compatibility adapters during the migration window; this guard only records source definitions and blocks stale declarations."
+backup_hash_verification = "Runtime data is untouched in this child. Future migration rehearsals must use temporary-root copies and verify row counts, durable artifact digests, and compatibility-reader results against a preserved prior generation."
+small_sample_verification = "Focused temporary repository fixtures mutate provenance roles, dynamic SQL limitations, Capture-risk semantics, adapter-local proof, and evidence budgets. Future data migrations require their own temporary-root small-sample backfill and rollback rehearsal."
+rollback = "Revert the validator, baseline metadata, and focused fixtures as one developer-tooling unit before any owner migration consumes the facts. There is no database, artifact, manifest, pointer, or runtime reader state to restore."
+audit_trail = "The reviewed baseline, OpenSpec evidence, deterministic guard findings, source path, line, literal, role, required child, and git history form the audit trail. It records no provider payload, credential, runtime row, or durable migration receipt."
+
+[evidence.migration]
+compatibility_modes = ["backward", "forward"]
+dual_read_write = true
+
+[evidence.migration.versioning]
+strategy = "additive_version"
+old_version_preserved = true
+
+[evidence.migration.backfill]
+mode = "idempotent_replay"
+destructive = false
+checkpointed = true
+
+[evidence.migration.cutover]
+strategy = "dual_read_compare"
+readiness_gate = true
+
+[evidence.migration.rollback]
+supported = true
+restore_source = "previous_generation"
+
+[evidence.migration.legacy_retirement]
+after_compatibility_window = true
+minimum_window_days = 30
 
 [evidence.concurrency]
 ownership = "ScopeSelection and the planner own canonical delta/filter metadata, bounded ProducerDiscoverySelection, and partial-scope refusal; the architecture contributor constructs producer-prefilter batches, one prerequisite baseline step, and target batches; the existing quality executor owns scheduling and process lifecycle; the guard owns no mutable application state."
