@@ -78,6 +78,13 @@ provenance = [
   { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?", role = "data_transform" },
   { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'", role = "data_transform" },
   { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "DELETE FROM pipeline_dag", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET enabled=0 WHERE job_name='sentiment_pipeline'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET enabled=0 WHERE job_name='event_pipeline'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET source=?, emits='', description=?", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?", role = "data_transform" },
 ]
 
 [[tables]]
@@ -90,8 +97,9 @@ reason = "The source registry is a migration input for future SourceManifest own
 required_child = "capture-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS asset_registry", role = "bootstrap" },
-  { source = "trade_py/db/migrations.py", literal = "def _migrate_v18", role = "migration" },
-  { source = "trade_py/db/migrations.py", literal = "def _migrate_v22", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT INTO asset_registry", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?", role = "data_transform" },
 ]
 
 [[tables]]
@@ -868,6 +876,16 @@ current_behavior = "A date-only provider value is converted to a synthetic noon 
 required_migration_proof = "Preserve source precision and prohibit unproven point-in-time publication claims."
 
 [[capture_risks]]
+id = "eastmoney-stock-timezone-overwrite"
+source = "trade_py/data/news/akshare_news.py"
+literal = "pub = pub_raw.to_pydatetime().replace(tzinfo=CST)"
+current_owner = "trade_py.data.news"
+required_child = "capture-boundary"
+risk_kind = "provider-timezone-and-precision-overwrite"
+current_behavior = "Parsed provider timestamps are relabeled CST without preserving source timezone or precision."
+required_migration_proof = "Preserve provider timezone and precision, and record observed, received, and available clocks before point-in-time use."
+
+[[capture_risks]]
 id = "warehouse-rss-fetched-time-substitution"
 source = "trade_py/data/warehouse/fetch.py"
 literal = '"published_at": published_at or fetched_at'
@@ -966,6 +984,33 @@ required_child = "study-boundary"
 risk_kind = "runtime-evaluation-time-substituted-for-publication-time"
 current_behavior = "Feed scorer uses the local evaluation clock as InfluenceSignal published_at, which is then used to select the most recent reliability record."
 required_migration_proof = "Separate source publication, observed, received, evaluation, available, and revision clocks before a Dataset or Study publishes an InfluenceSignal-derived result."
+
+[[dynamic_sql_limitations]]
+id = "recommendation-dynamic-columns"
+logical_name = "Recommendation"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {col_def}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[dynamic_sql_limitations]]
+id = "recommendation-trace-dynamic-columns"
+logical_name = "RecommendationTrace"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {col_def}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[dynamic_sql_limitations]]
+id = "factor-registry-dynamic-columns"
+logical_name = "factor_registry"
+source = "trade_py/db/migrations.py"
+literal = 'f"ALTER TABLE factor_registry ADD COLUMN {col} REAL NOT NULL DEFAULT {default}"'
+limitation_kind = "dynamic_ddl"
+owning_child = "study-boundary"
+limitation = "The f-string column and default are dynamic DDL and are non-authorizing until the Study migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[interfaces]]
 id = "root-trade-facade"

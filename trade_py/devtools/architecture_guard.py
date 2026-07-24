@@ -67,6 +67,44 @@ _RESULT_TRUNCATED = "architecture.guard_result_truncated"
 
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
 _CLASSIFICATIONS = frozenset({"candidate", "deferred", "approved_binding"})
+_DYNAMIC_SQL_LIMITATION_KINDS = frozenset({"dynamic_ddl", "dynamic_data_transform"})
+_REQUIRED_DYNAMIC_SQL_LIMITATIONS = {
+    (
+        "Recommendation",
+        "trade_py/db/migrations.py",
+        'conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {col_def}")',
+    ): (
+        "recommendation-dynamic-columns",
+        "dynamic_ddl",
+        "decision-support-boundary",
+        "The f-string column definition is dynamic DDL and is non-authorizing until the "
+        "Decision Support migration adds reviewed SQL-normalization or runtime migration "
+        "evidence.",
+    ),
+    (
+        "RecommendationTrace",
+        "trade_py/db/migrations.py",
+        'conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {col_def}")',
+    ): (
+        "recommendation-trace-dynamic-columns",
+        "dynamic_ddl",
+        "decision-support-boundary",
+        "The f-string column definition is dynamic DDL and is non-authorizing until the "
+        "Decision Support migration adds reviewed SQL-normalization or runtime migration "
+        "evidence.",
+    ),
+    (
+        "factor_registry",
+        "trade_py/db/migrations.py",
+        'f"ALTER TABLE factor_registry ADD COLUMN {col} REAL NOT NULL DEFAULT {default}"',
+    ): (
+        "factor-registry-dynamic-columns",
+        "dynamic_ddl",
+        "study-boundary",
+        "The f-string column and default are dynamic DDL and are non-authorizing until the "
+        "Study migration adds reviewed SQL-normalization or runtime migration evidence.",
+    ),
+}
 _APPROVED_BINDING_EVIDENCE_FIELDS = (
     "writer_evidence",
     "reader_evidence",
@@ -80,7 +118,7 @@ _NAMED_ADAPTER_SCOPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0
 _EXCLUDED_SOURCE_SEGMENTS = frozenset(
     {"vendor", "third_party", "generated", "cache", "__pycache__"}
 )
-_EVIDENCE_ROOTS = frozenset({"trade_py", "trade_web", "tests", "engine"})
+_EVIDENCE_ROOTS = frozenset({"src", "trade_py", "trade_web", "tests", "engine"})
 _EVIDENCE_SOURCE_SUFFIXES = frozenset(
     {".py", ".pyi", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".cmake", ".txt"}
 )
@@ -117,6 +155,7 @@ _REQUIRED_CAPTURE_RISK_IDS = frozenset(
     {
         "raw-record-single-publication-clock",
         "cctv-date-only-publication-time",
+        "eastmoney-stock-timezone-overwrite",
         "warehouse-rss-fetched-time-substitution",
         "rss-provider-time-fallback",
         "archive-date-only-publication-time",
@@ -136,6 +175,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.intelligence",
         "capture-boundary",
         "provider-observed-received-available-revision-clocks-collapsed",
+        "RawRecord exposes one published_at field for all temporal semantics.",
+        "Independent provider, observed, received, available, revision, and finality clocks.",
     ),
     "cctv-date-only-publication-time": (
         "trade_py/data/news/akshare_news.py",
@@ -143,6 +184,17 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news",
         "capture-boundary",
         "date-only-inferred-precision",
+        "A date-only provider value is converted to a synthetic noon timestamp.",
+        "Preserve source precision and prohibit unproven point-in-time publication claims.",
+    ),
+    "eastmoney-stock-timezone-overwrite": (
+        "trade_py/data/news/akshare_news.py",
+        "pub = pub_raw.to_pydatetime().replace(tzinfo=CST)",
+        "trade_py.data.news",
+        "capture-boundary",
+        "provider-timezone-and-precision-overwrite",
+        "Parsed provider timestamps are relabeled CST without preserving source timezone or precision.",
+        "Preserve provider timezone and precision, and record observed, received, and available clocks before point-in-time use.",
     ),
     "warehouse-rss-fetched-time-substitution": (
         "trade_py/data/warehouse/fetch.py",
@@ -150,6 +202,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.warehouse",
         "capture-boundary",
         "provider-timestamp-absence-substitution",
+        "Missing provider publication time falls back to fetch time.",
+        "Record provider time and received time separately in CaptureArtifact metadata.",
     ),
     "rss-provider-time-fallback": (
         "trade_py/data/news/rss/base.py",
@@ -157,6 +211,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news.rss",
         "capture-boundary",
         "provider-timestamp-absence-substitution",
+        "RSS entries without a provider timestamp substitute the local collection clock.",
+        "Persist provider precision separately from observed and received time, and prohibit synthetic event-time PIT claims.",
     ),
     "archive-date-only-publication-time": (
         "trade_py/data/news/rss/archive.py",
@@ -164,6 +220,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news.rss",
         "capture-boundary",
         "date-only-inferred-precision",
+        "Archive day values become synthetic UTC noon timestamps.",
+        "Retain date-only precision and use an explicit availability policy.",
     ),
     "rss-catalog-environment-override": (
         "trade_py/data/news/rss/catalog.py",
@@ -171,6 +229,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news.rss",
         "capture-boundary",
         "catalog-environment-override-and-absent-rights-evidence",
+        "An environment variable can replace the feed index without an immutable SourceManifest.",
+        "Versioned SourceManifest with source rights, credentials, and override audit evidence.",
     ),
     "gdelt-catalog-db-config": (
         "trade_py/data/news/gdelt/source.py",
@@ -178,6 +238,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news.gdelt",
         "capture-boundary",
         "db-first-provider-channel-config",
+        "GDELT channel query, language, enablement, and priority are selected from mutable DB-first catalog settings.",
+        "Freeze a SourceManifest channel configuration digest in CaptureRequest and support CaptureArtifactRef-only replay without provider access.",
     ),
     "gdelt-provider-time-fallback": (
         "trade_py/data/news/gdelt/source.py",
@@ -185,6 +247,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news.gdelt",
         "capture-boundary",
         "provider-timestamp-absence-substitution",
+        "Invalid or absent GDELT seendate is replaced with the local collection clock.",
+        "Persist provider precision separately from received time and prohibit synthetic event-time PIT claims.",
     ),
     "gdelt-streaming-local-state-and-refetch": (
         "trade_py/data/news/gdelt/source.py",
@@ -192,6 +256,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.news.gdelt",
         "capture-boundary",
         "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor",
+        "Streaming scans mutable Bronze Parquet and database cursor state while re-fetching the provider and writing Parquet.",
+        "Capture checkpoints and immutable segments must support provider-free replay, revision identity, and bounded retry receipts.",
     ),
     "ingest-wal-replay": (
         "trade_py/data/ingest/batch.py",
@@ -199,6 +265,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.ingest",
         "capture-boundary",
         "provider-refetch-versus-local-artifact-replay-versus-wal-recovery",
+        "WAL recovery writes legacy parquet before a formal Capture receipt exists.",
+        "Provider-free replay from immutable CaptureArtifact references and explicit replay receipts.",
     ),
     "warehouse-semantic-quarantine": (
         "trade_py/data/warehouse/articles.py",
@@ -206,6 +274,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.warehouse",
         "dataset-product-boundary",
         "transport-integrity-versus-downstream-semantic-quarantine",
+        "Article semantic quality marks rows quarantined in the warehouse transform.",
+        "Capture transport failures remain distinct from Datasets semantic quality quarantine.",
     ),
     "influence-signal-runtime-publication-time": (
         "trade_py/intelligence/feed_scorer.py",
@@ -213,6 +283,8 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.intelligence.feed_scorer",
         "study-boundary",
         "runtime-evaluation-time-substituted-for-publication-time",
+        "Feed scorer uses the local evaluation clock as InfluenceSignal published_at, which is then used to select the most recent reliability record.",
+        "Separate source publication, observed, received, evaluation, available, and revision clocks before a Dataset or Study publishes an InfluenceSignal-derived result.",
     ),
 }
 _REQUIRED_TABLE_BINDINGS = {
@@ -229,6 +301,13 @@ _REQUIRED_TABLE_BINDINGS = {
         "deferred",
         "deferred",
         "process-manager-and-platform-boundary",
+    ),
+    "asset_registry": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS asset_registry",
+        "candidate",
+        "capture",
+        "capture-boundary",
     ),
     "source_health_daily": (
         "trade_py/db/trade_db.py",
@@ -603,6 +682,63 @@ _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
         (
             "trade_py/db/migrations.py",
             "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "DELETE FROM pipeline_dag",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET enabled=0 WHERE job_name='sentiment_pipeline'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET enabled=0 WHERE job_name='event_pipeline'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET source=?, emits='', description=?",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?",
+            "data_transform",
+        ),
+    ),
+    "asset_registry": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS asset_registry",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)",
+            "migration",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT INTO asset_registry",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?",
             "data_transform",
         ),
     ),
@@ -1102,6 +1238,7 @@ class _Baseline:
     tables: tuple[Mapping[str, Any], ...]
     artifacts: tuple[Mapping[str, Any], ...]
     capture_risks: tuple[Mapping[str, Any], ...]
+    dynamic_sql_limitations: tuple[Mapping[str, Any], ...]
     interfaces: tuple[Mapping[str, Any], ...]
     native_bindings: tuple[Mapping[str, Any], ...]
     producers: tuple[Mapping[str, Any], ...]
@@ -1117,6 +1254,7 @@ class _EvidenceReader:
     _decoded_text: dict[str, str]
     _executable_text: dict[str, str]
     _executable_failures: dict[str, ArchitectureFinding]
+    _literal_matches: dict[tuple[str, str], bool]
     _aggregate_bytes: int = 0
 
     def __init__(self, root: Path, limits: DiscoveryLimits) -> None:
@@ -1126,6 +1264,7 @@ class _EvidenceReader:
         self._decoded_text = {}
         self._executable_text = {}
         self._executable_failures = {}
+        self._literal_matches = {}
 
     def read(self, relative: str) -> bytes:
         cached = self._payloads.get(relative)
@@ -1219,6 +1358,39 @@ class _EvidenceReader:
             line=failure.line,
         )
 
+    def literal_is_present(self, relative: str, literal: str) -> bool:
+        """Memoize one executable literal lookup per source/literal pair."""
+
+        key = (relative, literal)
+        cached = self._literal_matches.get(key)
+        if cached is not None:
+            return cached
+        text = self.executable_text(relative)
+        present = _literal_is_present(text, literal)
+        self._literal_matches[key] = present
+        return present
+
+    def prime_literal_matches(self, queries: Sequence[tuple[str, str]]) -> None:
+        """Evaluate each declared source's pending literals in one source scan."""
+
+        grouped: dict[str, set[str]] = {}
+        for source, literal in queries:
+            if (
+                _is_allowed_evidence_source(source)
+                and (source, literal) not in self._literal_matches
+            ):
+                grouped.setdefault(source, set()).add(literal)
+        for source, literals in grouped.items():
+            try:
+                text = self.executable_text(source)
+            except _GuardError:
+                # Individual validation replays the cached failure with fact context.
+                continue
+            matches = _literal_matches_for_source(text, literals)
+            self._literal_matches.update(
+                ((source, literal), present) for literal, present in matches.items()
+            )
+
 
 def validate_architecture_baseline(
     repo_root: Path | str,
@@ -1240,6 +1412,7 @@ def validate_architecture_baseline(
         return _report((exc.finding,), (), limits)
 
     evidence = _EvidenceReader(root, limits)
+    evidence.prime_literal_matches(_baseline_evidence_queries(baseline))
     findings.extend(_validate_baseline_facts(root, baseline, evidence))
     if findings:
         return _report(findings, (), limits)
@@ -1439,6 +1612,11 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
         "tables": _read_table_array(parsed, "tables", baseline_name),
         "artifacts": _read_table_array(parsed, "artifacts", baseline_name),
         "capture_risks": _read_table_array(parsed, "capture_risks", baseline_name),
+        "dynamic_sql_limitations": _read_table_array(
+            parsed,
+            "dynamic_sql_limitations",
+            baseline_name,
+        ),
         "interfaces": _read_table_array(parsed, "interfaces", baseline_name),
         "native_bindings": _read_table_array(parsed, "native_bindings", baseline_name),
         "producers": _read_table_array(parsed, "warehouse_producers", baseline_name),
@@ -1476,6 +1654,7 @@ def _validate_baseline_facts(
         ("source_facts", baseline.source_facts),
         ("artifacts", baseline.artifacts),
         ("capture_risks", baseline.capture_risks),
+        ("dynamic_sql_limitations", baseline.dynamic_sql_limitations),
         ("interfaces", baseline.interfaces),
         ("native_bindings", baseline.native_bindings),
         ("warehouse_producers", baseline.producers),
@@ -1493,7 +1672,7 @@ def _validate_baseline_facts(
                 seen_ids.add(fact_id)
                 if category == "artifacts":
                     artifact_ids.add(fact_id)
-                if category != "warehouse_producers":
+                if category not in {"dynamic_sql_limitations", "warehouse_producers"}:
                     _validate_common_fact(root, fact, category, evidence)
                 if category == "artifacts":
                     _validate_classification(
@@ -1508,6 +1687,20 @@ def _validate_baseline_facts(
                     _require_text(fact, "risk_kind", category)
                     _require_text(fact, "current_behavior", category)
                     _require_text(fact, "required_migration_proof", category)
+                elif category == "dynamic_sql_limitations":
+                    _validate_source_literal(root, fact, evidence)
+                    _require_text(fact, "logical_name", category)
+                    limitation_kind = _require_text(fact, "limitation_kind", category)
+                    if limitation_kind not in _DYNAMIC_SQL_LIMITATION_KINDS:
+                        raise _GuardError(
+                            _BASELINE_INCOMPLETE_PROVENANCE,
+                            BASELINE_FILENAME,
+                            f"dynamic SQL limitation has unsupported kind {limitation_kind!r}",
+                            "Use dynamic_ddl or dynamic_data_transform for nonliteral SQL "
+                            "evidence limitations.",
+                        )
+                    _require_text(fact, "owning_child", category)
+                    _require_text(fact, "limitation", category)
                 elif category == "interfaces":
                     _require_text(fact, "surface_kind", category)
                     _require_text(fact, "current_behavior", category)
@@ -1544,6 +1737,8 @@ def _validate_baseline_facts(
             current_owner,
             required_child,
             risk_kind,
+            current_behavior,
+            required_migration_proof,
         ) in _REQUIRED_CAPTURE_RISK_BINDINGS.items()
         if risk_id in capture_risks_by_id
         and (
@@ -1552,6 +1747,9 @@ def _validate_baseline_facts(
             or capture_risks_by_id[risk_id].get("current_owner") != current_owner
             or capture_risks_by_id[risk_id].get("required_child") != required_child
             or capture_risks_by_id[risk_id].get("risk_kind") != risk_kind
+            or capture_risks_by_id[risk_id].get("current_behavior") != current_behavior
+            or capture_risks_by_id[risk_id].get("required_migration_proof")
+            != required_migration_proof
         )
     ]
     if missing_capture_risks or invalid_capture_risks:
@@ -1568,7 +1766,8 @@ def _validate_baseline_facts(
                 "baseline omits or misbinds required Capture-risk declarations: "
                 + "; ".join(risk_details),
                 "Record each audited Capture temporal, replay, and quarantine risk with its "
-                "reviewed source, literal, owner, child change, and risk kind.",
+                "reviewed source, literal, owner, child change, risk kind, current behavior, "
+                "and required migration proof.",
             )
         )
 
@@ -1695,6 +1894,12 @@ def _validate_baseline_facts(
                 "classification, target Context, and responsible child change.",
             )
         )
+
+    _validate_dynamic_sql_limitations(
+        baseline.dynamic_sql_limitations,
+        tables_by_name,
+        findings,
+    )
 
     artifacts_by_id = {
         fact.get("id"): fact for fact in baseline.artifacts if isinstance(fact.get("id"), str)
@@ -1934,6 +2139,115 @@ def _validate_common_fact(
     _validate_source_literal(root, fact, evidence)
 
 
+def _baseline_evidence_queries(baseline: _Baseline) -> tuple[tuple[str, str], ...]:
+    """Collect source/literal evidence requests without treating producers as evidence."""
+
+    queries: set[tuple[str, str]] = set()
+    for facts in (
+        baseline.source_facts,
+        baseline.tables,
+        baseline.artifacts,
+        baseline.capture_risks,
+        baseline.dynamic_sql_limitations,
+        baseline.interfaces,
+        baseline.native_bindings,
+    ):
+        for fact in facts:
+            _collect_source_literal_queries(fact, queries)
+    return tuple(sorted(queries))
+
+
+def _collect_source_literal_queries(
+    value: object,
+    queries: set[tuple[str, str]],
+) -> None:
+    if isinstance(value, Mapping):
+        source = value.get("source")
+        literal = value.get("literal")
+        if isinstance(source, str) and source and isinstance(literal, str) and literal:
+            queries.add((source, literal))
+        for child in value.values():
+            _collect_source_literal_queries(child, queries)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_source_literal_queries(child, queries)
+
+
+def _validate_dynamic_sql_limitations(
+    limitations: Sequence[Mapping[str, Any]],
+    tables_by_name: Mapping[str, Mapping[str, Any]],
+    findings: list[ArchitectureFinding],
+) -> None:
+    """Ensure known dynamic SQL stays explicitly non-authorizing."""
+
+    seen: set[tuple[str, str, str]] = set()
+    declared: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    for limitation in limitations:
+        try:
+            logical_name = _require_text(limitation, "logical_name", "dynamic_sql_limitations")
+            source = _require_text(limitation, "source", "dynamic_sql_limitations")
+            literal = _require_text(limitation, "literal", "dynamic_sql_limitations")
+            key = (logical_name, source, literal)
+            if key in seen:
+                raise _GuardError(
+                    _BASELINE_DUPLICATE,
+                    BASELINE_FILENAME,
+                    f"duplicate dynamic SQL limitation for {logical_name} at {source}: {literal}",
+                    "Record each nonliteral SQL construction site once.",
+                )
+            seen.add(key)
+            declared[key] = limitation
+            if logical_name not in tables_by_name:
+                raise _GuardError(
+                    _BASELINE_INCOMPLETE_PROVENANCE,
+                    BASELINE_FILENAME,
+                    f"dynamic SQL limitation names undeclared table {logical_name!r}",
+                    "Declare the logical table before recording its nonliteral SQL limitation.",
+                )
+            table = tables_by_name[logical_name]
+            if limitation.get("owning_child") != table.get("required_child"):
+                raise _GuardError(
+                    _BASELINE_INCOMPLETE_PROVENANCE,
+                    BASELINE_FILENAME,
+                    f"dynamic SQL limitation for {logical_name} is not owned by its table migration child",
+                    "Bind the limitation to the same required child as the audited table.",
+                )
+        except _GuardError as exc:
+            findings.append(exc.finding)
+    invalid = [
+        logical_name
+        for (
+            logical_name,
+            source,
+            literal,
+        ), (
+            limitation_id,
+            limitation_kind,
+            owning_child,
+            limitation_text,
+        ) in _REQUIRED_DYNAMIC_SQL_LIMITATIONS.items()
+        if (
+            (record := declared.get((logical_name, source, literal))) is None
+            or record.get("id") != limitation_id
+            or record.get("limitation_kind") != limitation_kind
+            or record.get("owning_child") != owning_child
+            or record.get("limitation") != limitation_text
+        )
+    ]
+    if invalid:
+        findings.append(
+            ArchitectureFinding(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                None,
+                "baseline omits or misbinds required dynamic SQL limitations: "
+                + ", ".join(sorted(invalid)),
+                "Record each reviewed dynamic SQL construction site with its table, source, "
+                "limitation kind, owning child, and non-authorizing limitation rationale.",
+            )
+        )
+
+
 def _validate_source_literal(
     root: Path,
     fact: Mapping[str, Any],
@@ -1968,8 +2282,7 @@ def _validate_source_literal(
             ) from exc
         raise
     try:
-        text = evidence.executable_text(source)
-        literal_is_present = _literal_is_present(text, literal)
+        literal_is_present = evidence.literal_is_present(source, literal)
     except UnicodeDecodeError as exc:
         raise _GuardError(
             _BASELINE_UNSAFE_SOURCE,
@@ -2001,6 +2314,42 @@ def _literal_is_present(text: str, literal: str) -> bool:
     if match is None:
         return literal in text
     return any(candidate.group(0) == literal for candidate in _CREATE_TABLE_LITERAL.finditer(text))
+
+
+def _literal_matches_for_source(text: str, literals: set[str]) -> Mapping[str, bool]:
+    """Match all requested literals from one executable source-text scan."""
+
+    create_table_literals = {
+        literal for literal in literals if _CREATE_TABLE_LITERAL.fullmatch(literal) is not None
+    }
+    ordinary_literals = literals - create_table_literals
+    ordered = tuple(sorted(ordinary_literals, key=lambda literal: (-len(literal), literal)))
+    covered_literals = {
+        candidate: {literal for literal in ordered if literal in candidate} for candidate in ordered
+    }
+    branches = [f"(?P<create_table>{_CREATE_TABLE_LITERAL.pattern})"]
+    if ordered:
+        branches.append("(?P<ordinary>" + "|".join(re.escape(literal) for literal in ordered) + ")")
+    pattern = re.compile("(?=(" + "|".join(branches) + "))")
+    matched_create_tables: set[str] = set()
+    matched_literals: set[str] = set()
+    for match in pattern.finditer(text):
+        create_table = match.group("create_table")
+        if create_table is not None:
+            matched_create_tables.add(create_table)
+            matched_literals.update(literal for literal in ordered if literal in create_table)
+        else:
+            ordinary = match.group("ordinary")
+            assert ordinary is not None
+            matched_literals.update(covered_literals[ordinary])
+        if len(matched_create_tables) == len(create_table_literals) and len(
+            matched_literals
+        ) == len(ordinary_literals):
+            break
+    return {
+        **{literal: literal in matched_create_tables for literal in create_table_literals},
+        **{literal: literal in matched_literals for literal in ordinary_literals},
+    }
 
 
 def _live_python_source_text(text: str, *, source: str, max_tokens: int) -> str:
@@ -2102,8 +2451,7 @@ def _inert_python_string_spans(
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
+            and _is_inert_literal_expression(node.value)
             and node.end_lineno is not None
             and node.end_col_offset is not None
         ):
@@ -2122,6 +2470,12 @@ def _inert_python_string_spans(
                 )
             )
     return tuple(sorted(spans))
+
+
+def _is_inert_literal_expression(node: ast.expr) -> bool:
+    return (isinstance(node, ast.Constant) and isinstance(node.value, (bytes, str))) or isinstance(
+        node, ast.JoinedStr
+    )
 
 
 def _ast_source_position_offset(
@@ -2280,6 +2634,12 @@ def _validate_classification(
                 "Use a repository source and executable literal for every approved-binding proof.",
             )
         _validate_source_literal(root, proof, evidence)
+    if category == "tables":
+        _validate_approved_table_binding(
+            fact,
+            adapter_scope=adapter_scope,
+            evidence=evidence,
+        )
 
 
 def _reject_non_authorizing_binding(fact: Mapping[str, Any], category: str) -> None:
@@ -2295,6 +2655,52 @@ def _reject_non_authorizing_binding(fact: Mapping[str, Any], category: str) -> N
             f"{category} audit-only declaration must not contain a persistence binding",
             "Keep candidate and deferred facts audit-only until a separately reviewed approved binding exists.",
         )
+
+
+def _validate_approved_table_binding(
+    fact: Mapping[str, Any],
+    *,
+    adapter_scope: str,
+    evidence: _EvidenceReader,
+) -> None:
+    """Bind prospective table authorization to one target adapter implementation."""
+
+    table_name = _require_text(fact, "logical_name", "tables")
+    adapter_source = f"src/trade/{adapter_scope.replace('.', '/')}.py"
+    for field in _APPROVED_BINDING_EVIDENCE_FIELDS:
+        proof = fact[field]
+        assert isinstance(proof, Mapping)
+        source = _require_text(proof, "source", f"tables.{table_name}.{field}")
+        literal = _require_text(proof, "literal", f"tables.{table_name}.{field}")
+        if source != adapter_source:
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                BASELINE_FILENAME,
+                f"approved table binding for {table_name} has {field} outside "
+                f"its adapter scope {adapter_scope}",
+                "Bind every approved table proof to the named target adapter module.",
+            )
+        if field in {"writer_evidence", "reader_evidence", "compatibility_evidence"} and (
+            table_name not in literal
+        ):
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                BASELINE_FILENAME,
+                f"approved table binding for {table_name} has {field} that does not "
+                "identify the logical table",
+                "Use a table-specific writer, reader, or compatibility proof literal.",
+            )
+        if field == "transaction_evidence" and adapter_scope not in evidence.executable_text(
+            source
+        ):
+            raise _GuardError(
+                _BASELINE_CLASSIFICATION,
+                BASELINE_FILENAME,
+                f"approved table binding for {table_name} transaction proof does not "
+                f"identify adapter scope {adapter_scope}",
+                "Declare the adapter scope in its transaction proof source before authorizing "
+                "the table.",
+            )
 
 
 def _read_table_array(

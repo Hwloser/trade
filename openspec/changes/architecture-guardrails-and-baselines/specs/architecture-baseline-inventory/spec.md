@@ -15,18 +15,35 @@ Every table declaration SHALL record a logical table name, current owner,
 one-or-more provenance records, and a classification. A provenance record
 SHALL name a repository source, an exact source literal, and one of
 `bootstrap`, `migration`, `alter`, or `data_transform`; a single bootstrap DDL
-location SHALL not be treated as complete physical-schema evidence. A
-declaration with a known bootstrap and literal migration, alter, or backfill
-source SHALL record every audited exact source/literal/role fact. Dynamic SQL
-or f-string-derived DDL is outside this literal evidence contract and SHALL be
-recorded as a scoped limitation for the owning migration child rather than
-represented by an invented normalized literal. The validator SHALL transform executable source
-evidence, including a terminal transformation failure, at most once per source
-per invocation; Python inert-string masking SHALL advance through ordered spans
-without a repeated whole-span scan and reuse one UTF-8 byte-to-character mapping
-per non-ASCII physical line. Before constructing a Python AST, the validator
-SHALL stream and enforce the governed Python evidence-token budget, failing
-closed when the limit is exceeded.
+location SHALL not be treated as complete physical-schema evidence. The
+governed multi-source provenance inventory is a finite, named table/source/
+literal/role set. Within that inventory, each declaration SHALL record every
+required exact source/literal/role fact and validation SHALL fail if any is
+removed or changed. This source-only check does not discover arbitrary legacy
+DDL/DML or prove the complete semantics of a SQL expression; a later owning
+migration child needs AST-aware normalization or runtime-backed evidence before
+making that broader claim.
+
+Dynamic SQL or f-string-derived DDL is outside the static-literal evidence
+contract and SHALL be recorded as a non-authorizing
+`dynamic_sql_limitations` record rather than represented by an invented
+normalized literal. Every such record SHALL name a unique `id`, existing
+`logical_name`, repository `source`, executable construction-site `literal`,
+`limitation_kind`, the table's `owning_child`, and an explicit limitation
+rationale. The mandatory audited dynamic-DDL set is the `Recommendation`,
+`RecommendationTrace`, and `factor_registry` construction sites in
+`trade_py/db/migrations.py`; their declaration, limitation kind, owning child,
+and rationale SHALL match the governed binding. A dynamic limitation neither
+authorizes persistence access nor proves physical-schema completeness.
+
+The validator SHALL transform executable source evidence, including a terminal
+transformation failure, at most once per source per invocation. It SHALL batch
+the pending baseline literal matches for one transformed source into one source
+scan before individual-fact validation. Python inert-string masking SHALL
+advance through ordered spans without a repeated whole-span scan and reuse one
+UTF-8 byte-to-character mapping per non-ASCII physical line. Before
+constructing a Python AST, the validator SHALL stream and enforce the governed
+Python evidence-token budget, failing closed when the limit is exceeded.
 classification SHALL carry a semantic kind, target Context or `deferred`,
 reason, required owning child, and explicit activation state. `candidate` and
 `deferred` are audit-only classifications and SHALL never authorize target
@@ -37,8 +54,12 @@ literal SQL table reference. An `approved_binding` SHALL also declare separate
 `writer_evidence`, `reader_evidence`, `transaction_evidence`, and
 `compatibility_evidence` records; each record SHALL contain a repository source
 and an executable source literal accepted by the same source-only admission
-and no-follow validation as other baseline evidence. `candidate` and
-`deferred` declarations SHALL reject every persistence-binding field.
+and no-follow validation as other baseline evidence. Every proof SHALL be in
+the one named target adapter module
+`src/trade/<adapter_scope path>.py`; writer, reader, and compatibility literals
+SHALL identify the logical table, and the transaction-proof source SHALL
+identify the declared adapter scope. `candidate` and `deferred` declarations
+SHALL reject every persistence-binding field.
 
 #### Scenario: A baseline table source changes
 
@@ -66,10 +87,18 @@ and no-follow validation as other baseline evidence. `candidate` and
 #### Scenario: An approved binding has unverified proof
 
 - **WHEN** an owning child supplies prose, a comment-only literal, an unsafe
-  path, or a stale literal for writer, reader, transaction, or compatibility
-  proof
+  path, a stale literal, a proof from another adapter, or a writer/reader/
+  compatibility literal that does not identify the declared logical table
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
+
+#### Scenario: A mandatory dynamic SQL limitation is absent or misbound
+
+- **WHEN** the baseline omits or changes the reviewed dynamic-DDL limitation
+  for `Recommendation`, `RecommendationTrace`, or `factor_registry`
+- **THEN** baseline validation fails until the exact construction site,
+  limitation kind, owning child, and non-authorizing rationale are restored;
+  no normalized static provenance is inferred
 
 #### Scenario: Historical DDL has two provenance roles
 
@@ -104,26 +133,30 @@ Context/deferred state, or required child differs from the governed binding.
 These are source-only migration inputs, not runtime artifact inspection or
 release authorization.
 
-The baseline SHALL also record the current Capture-risk facts for the legacy
-`RawRecord` temporal model and every known RSS, GDELT, warehouse, archive, and
-date-only publication-time fallback, plus the `InfluenceSignal` runtime
-evaluation-time substitution for `published_at`. Every Capture-risk record
-SHALL state its repository source, exact literal, risk kind, current behavior,
-required child, and required migration proof. Required risk kinds include
-provider timestamp absence/substitution, date-only inferred precision,
-catalog/environment override and absent rights-policy evidence,
-provider-refetch versus local artifact replay versus WAL recovery,
+The baseline SHALL record a bounded, mandatory Capture-risk inventory for the
+audited legacy `RawRecord` temporal model; RSS, GDELT, warehouse, archive, and
+date-only publication-time fallbacks; the EastMoney provider timezone/precision
+overwrite; and the `InfluenceSignal` runtime evaluation-time substitution for
+`published_at`. Every Capture-risk record SHALL state its repository source,
+exact literal, risk kind, current behavior, required child, and required
+migration proof. The governed binding SHALL pin every one of those fields, so
+weakening either prose field fails validation rather than merely satisfying a
+non-empty-field check. Required risk kinds include provider timestamp
+absence/substitution, date-only inferred precision, provider timezone and
+precision overwrite, catalog/environment override and absent rights-policy
+evidence, provider-refetch versus local artifact replay versus WAL recovery,
 transport/integrity failure versus downstream semantic quarantine, and
 runtime-evaluation-time substituted for publication time. `capture-boundary`
-and `study-boundary` SHALL treat those
-declarations as mandatory inputs and prove independent
-provider/observed/received/available/revision/finality clocks, SourceManifest
-rights enforcement, provider-free replay, and the Capture transport-versus-
-Datasets semantic quarantine split before migrating a news or NLP adapter.
+and `study-boundary` SHALL treat the bounded declarations as mandatory inputs
+and prove independent provider/observed/received/available/revision/finality
+clocks, SourceManifest rights enforcement, provider-free replay, and the
+Capture transport-versus-Datasets semantic quarantine split before migrating
+the corresponding audited news or NLP adapter.
 
 All source literals SHALL occur in executable/admitted source content. Python
-comments and inert string expressions, shell/CMake `#` comments, and C-family
-line or block comments SHALL NOT satisfy an evidence literal.
+comments and standalone string, bytes, or f-string expressions, shell/CMake
+`#` comments, and C-family line or block comments SHALL NOT satisfy an evidence
+literal.
 
 The warehouse artifact inventory SHALL be producer-driven. Its only canonical
 writer targets are the module-level functions
@@ -186,10 +219,43 @@ and the source contents SHALL be read only from the verified descriptor. This
 prevents a symlink or replacement from becoming source evidence or an
 inconsistent producer inventory.
 
-The current capacity measurement is 305 included paths and 2,968,477 source
-bytes from that exact predicate at the reviewed commit; it excludes zero
-current paths. It is capacity evidence, not an authorization to raise the
-limits.
+The current capacity measurement is 306 included paths and 3,102,353 source
+bytes from that exact predicate at reviewed commit `5537e99f3ba4`; it excludes
+zero current paths. It is capacity evidence, not an authorization to raise the
+limits. Reproduce the fixed-commit measurement from Git blobs, not the current
+worktree, with:
+
+```sh
+git ls-tree -r -l -z 5537e99f3ba4 -- trade_py |
+  uv run python -c '
+import sys
+
+excluded = {"vendor", "third_party", "generated", "cache", "__pycache__"}
+paths = 0
+source_bytes = 0
+for entry in filter(None, sys.stdin.buffer.read().split(b"\0")):
+    metadata, raw_path = entry.split(b"\t", 1)
+    mode, kind, _object_id, size = metadata.split()
+    path = raw_path.decode("utf-8")
+    parts = path.split("/")
+    name = parts[-1]
+    if (
+        mode in {b"100644", b"100755"}
+        and kind == b"blob"
+        and parts[0] == "trade_py"
+        and path.endswith(".py")
+        and not any(part in {"test", "tests"} | excluded for part in parts)
+        and not name.startswith("test_")
+        and not name.endswith("_test.py")
+    ):
+        paths += 1
+        source_bytes += int(size)
+print(f"included_paths={paths} source_bytes={source_bytes}")
+'
+```
+
+The output SHALL be `included_paths=306 source_bytes=3102353`; a changed
+reviewed measurement requires a governed evidence update and review.
 
 After the initial inventory, every modified, added, renamed, or untracked
 production Python file receives the same bounded AST import/call prefilter
@@ -311,8 +377,9 @@ validation-required table list omits it, and the CLI fetch producers
 #### Scenario: A source-only Capture fact changes
 
 - **WHEN** a child changes a provider-time fallback, date-only precision rule,
-  catalog/environment override, replay/WAL behavior, or semantic quarantine
-  source literal
+  provider timezone/precision overwrite, catalog/environment override,
+  replay/WAL behavior, or semantic quarantine source literal or changes the
+  required current-behavior or migration-proof semantics
 - **THEN** baseline validation fails until the record's risk kind, current
   behavior, required child, and required migration proof are updated in the
   same reviewed change

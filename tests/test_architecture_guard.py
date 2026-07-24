@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,55 @@ _AUDITED_SCHEMA_EVOLUTION_PROVENANCE = {
         (
             "trade_py/db/migrations.py",
             "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'",
+            "data_transform",
+        ),
+        ("trade_py/db/migrations.py", "DELETE FROM pipeline_dag", "data_transform"),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET enabled=0 WHERE job_name='sentiment_pipeline'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET enabled=0 WHERE job_name='event_pipeline'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET source=?, emits='', description=?",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?",
+            "data_transform",
+        ),
+    ),
+    "asset_registry": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS asset_registry",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)",
+            "migration",
+        ),
+        ("trade_py/db/migrations.py", "INSERT INTO asset_registry", "data_transform"),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?",
             "data_transform",
         ),
     ),
@@ -381,6 +431,15 @@ _REQUIRED_TABLE_FIXTURES = (
         "deferred",
         "deferred",
         "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "asset_registry",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS asset_registry",
+        "candidate",
+        "capture",
+        "capture-boundary",
         "bootstrap",
     ),
     (
@@ -1133,8 +1192,8 @@ literal = "published_at: datetime"
 current_owner = "trade_py.intelligence"
 required_child = "capture-boundary"
 risk_kind = "provider-observed-received-available-revision-clocks-collapsed"
-current_behavior = "One field represents multiple clocks."
-required_migration_proof = "Independent clocks."
+current_behavior = "RawRecord exposes one published_at field for all temporal semantics."
+required_migration_proof = "Independent provider, observed, received, available, revision, and finality clocks."
 
 [[capture_risks]]
 id = "cctv-date-only-publication-time"
@@ -1143,8 +1202,18 @@ literal = "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)"
 current_owner = "trade_py.data.news"
 required_child = "capture-boundary"
 risk_kind = "date-only-inferred-precision"
-current_behavior = "Date-only values have synthetic time."
-required_migration_proof = "Preserve source precision."
+current_behavior = "A date-only provider value is converted to a synthetic noon timestamp."
+required_migration_proof = "Preserve source precision and prohibit unproven point-in-time publication claims."
+
+[[capture_risks]]
+id = "eastmoney-stock-timezone-overwrite"
+source = "trade_py/data/news/akshare_news.py"
+literal = "pub = pub_raw.to_pydatetime().replace(tzinfo=CST)"
+current_owner = "trade_py.data.news"
+required_child = "capture-boundary"
+risk_kind = "provider-timezone-and-precision-overwrite"
+current_behavior = "Parsed provider timestamps are relabeled CST without preserving source timezone or precision."
+required_migration_proof = "Preserve provider timezone and precision, and record observed, received, and available clocks before point-in-time use."
 
 [[capture_risks]]
 id = "warehouse-rss-fetched-time-substitution"
@@ -1153,8 +1222,8 @@ literal = '"published_at": published_at or fetched_at'
 current_owner = "trade_py.data.warehouse"
 required_child = "capture-boundary"
 risk_kind = "provider-timestamp-absence-substitution"
-current_behavior = "Fetch time substitutes provider time."
-required_migration_proof = "Separate provider and received clocks."
+current_behavior = "Missing provider publication time falls back to fetch time."
+required_migration_proof = "Record provider time and received time separately in CaptureArtifact metadata."
 
 [[capture_risks]]
 id = "rss-provider-time-fallback"
@@ -1163,8 +1232,8 @@ literal = "pub_time = datetime.now(timezone.utc)"
 current_owner = "trade_py.data.news.rss"
 required_child = "capture-boundary"
 risk_kind = "provider-timestamp-absence-substitution"
-current_behavior = "Missing RSS provider time is replaced with the local collection clock."
-required_migration_proof = "Persist provider precision separately from received time."
+current_behavior = "RSS entries without a provider timestamp substitute the local collection clock."
+required_migration_proof = "Persist provider precision separately from observed and received time, and prohibit synthetic event-time PIT claims."
 
 [[capture_risks]]
 id = "archive-date-only-publication-time"
@@ -1173,8 +1242,8 @@ literal = "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)"
 current_owner = "trade_py.data.news.rss"
 required_child = "capture-boundary"
 risk_kind = "date-only-inferred-precision"
-current_behavior = "Archive dates gain synthetic time."
-required_migration_proof = "Preserve date-only precision."
+current_behavior = "Archive day values become synthetic UTC noon timestamps."
+required_migration_proof = "Retain date-only precision and use an explicit availability policy."
 
 [[capture_risks]]
 id = "rss-catalog-environment-override"
@@ -1183,8 +1252,8 @@ literal = 'override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")'
 current_owner = "trade_py.data.news.rss"
 required_child = "capture-boundary"
 risk_kind = "catalog-environment-override-and-absent-rights-evidence"
-current_behavior = "Environment can replace the feed catalog."
-required_migration_proof = "Version SourceManifest rights."
+current_behavior = "An environment variable can replace the feed index without an immutable SourceManifest."
+required_migration_proof = "Versioned SourceManifest with source rights, credentials, and override audit evidence."
 
 [[capture_risks]]
 id = "gdelt-catalog-db-config"
@@ -1193,8 +1262,8 @@ literal = 'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json"
 current_owner = "trade_py.data.news.gdelt"
 required_child = "capture-boundary"
 risk_kind = "db-first-provider-channel-config"
-current_behavior = "GDELT channel query, language, enablement, and priority can change from DB-first catalog settings."
-required_migration_proof = "Freeze SourceManifest channel configuration digest in CaptureRequest and use CaptureArtifactRef-only replay."
+current_behavior = "GDELT channel query, language, enablement, and priority are selected from mutable DB-first catalog settings."
+required_migration_proof = "Freeze a SourceManifest channel configuration digest in CaptureRequest and support CaptureArtifactRef-only replay without provider access."
 
 [[capture_risks]]
 id = "gdelt-provider-time-fallback"
@@ -1203,8 +1272,8 @@ literal = "pub = datetime.now(timezone.utc)"
 current_owner = "trade_py.data.news.gdelt"
 required_child = "capture-boundary"
 risk_kind = "provider-timestamp-absence-substitution"
-current_behavior = "Invalid provider time uses collection time."
-required_migration_proof = "Separate provider and received clocks."
+current_behavior = "Invalid or absent GDELT seendate is replaced with the local collection clock."
+required_migration_proof = "Persist provider precision separately from received time and prohibit synthetic event-time PIT claims."
 
 [[capture_risks]]
 id = "gdelt-streaming-local-state-and-refetch"
@@ -1213,8 +1282,8 @@ literal = "bronze_offsets = scan_bronze_channel_offsets(data_root)"
 current_owner = "trade_py.data.news.gdelt"
 required_child = "capture-boundary"
 risk_kind = "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor"
-current_behavior = "Streaming uses mutable state and provider fetches."
-required_migration_proof = "Replay immutable CaptureArtifact segments."
+current_behavior = "Streaming scans mutable Bronze Parquet and database cursor state while re-fetching the provider and writing Parquet."
+required_migration_proof = "Capture checkpoints and immutable segments must support provider-free replay, revision identity, and bounded retry receipts."
 
 [[capture_risks]]
 id = "ingest-wal-replay"
@@ -1223,8 +1292,8 @@ literal = "self._recover_wal()"
 current_owner = "trade_py.data.ingest"
 required_child = "capture-boundary"
 risk_kind = "provider-refetch-versus-local-artifact-replay-versus-wal-recovery"
-current_behavior = "WAL replay writes legacy data."
-required_migration_proof = "Replay immutable CaptureArtifact references."
+current_behavior = "WAL recovery writes legacy parquet before a formal Capture receipt exists."
+required_migration_proof = "Provider-free replay from immutable CaptureArtifact references and explicit replay receipts."
 
 [[capture_risks]]
 id = "warehouse-semantic-quarantine"
@@ -1233,8 +1302,8 @@ literal = 'quality_status = "quarantined"'
 current_owner = "trade_py.data.warehouse"
 required_child = "dataset-product-boundary"
 risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
-current_behavior = "Semantic quality uses a legacy quarantine flag."
-required_migration_proof = "Keep Capture transport and Dataset quality separate."
+current_behavior = "Article semantic quality marks rows quarantined in the warehouse transform."
+required_migration_proof = "Capture transport failures remain distinct from Datasets semantic quality quarantine."
 
 [[capture_risks]]
 id = "influence-signal-runtime-publication-time"
@@ -1243,8 +1312,35 @@ literal = "published_at = datetime.now(timezone.utc).isoformat()"
 current_owner = "trade_py.intelligence.feed_scorer"
 required_child = "study-boundary"
 risk_kind = "runtime-evaluation-time-substituted-for-publication-time"
-current_behavior = "Runtime evaluation time becomes legacy InfluenceSignal publication time."
-required_migration_proof = "Separate source publication, evaluation, and availability clocks."
+current_behavior = "Feed scorer uses the local evaluation clock as InfluenceSignal published_at, which is then used to select the most recent reliability record."
+required_migration_proof = "Separate source publication, observed, received, evaluation, available, and revision clocks before a Dataset or Study publishes an InfluenceSignal-derived result."
+
+[[dynamic_sql_limitations]]
+id = "recommendation-dynamic-columns"
+logical_name = "Recommendation"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {{col_def}}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[dynamic_sql_limitations]]
+id = "recommendation-trace-dynamic-columns"
+logical_name = "RecommendationTrace"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {{col_def}}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[dynamic_sql_limitations]]
+id = "factor-registry-dynamic-columns"
+logical_name = "factor_registry"
+source = "trade_py/db/migrations.py"
+literal = 'f"ALTER TABLE factor_registry ADD COLUMN {{col}} REAL NOT NULL DEFAULT {{default}}"'
+limitation_kind = "dynamic_ddl"
+owning_child = "study-boundary"
+limitation = "The f-string column and default are dynamic DDL and are non-authorizing until the Study migration adds reviewed SQL-normalization or runtime migration evidence."
 
 [[interfaces]]
 id = "cli"
@@ -1384,6 +1480,7 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'SIGNALS_SQL = "CREATE TABLE IF NOT EXISTS signals"\n'
             'EVENT_LOG_SQL = "CREATE TABLE IF NOT EXISTS event_log"\n'
             'PIPELINE_DAG_SQL = "CREATE TABLE IF NOT EXISTS pipeline_dag"\n'
+            'ASSET_REGISTRY_SQL = "CREATE TABLE IF NOT EXISTS asset_registry"\n'
             'JOB_RUNS_SQL = "CREATE TABLE IF NOT EXISTS job_runs"\n'
             'EVENT_HANDLER_RUNS_SQL = "CREATE TABLE IF NOT EXISTS event_handler_runs"\n'
             'INSTRUMENTS_SQL = "CREATE TABLE IF NOT EXISTS instruments"\n'
@@ -1465,6 +1562,16 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'PIPELINE_DAG_SYNC_BACKFILL = "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?"\n'
             "PIPELINE_DAG_STREAM_MODE = \"UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'\"\n"
             "PIPELINE_DAG_BOTH_MODE = \"UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'\"\n"
+            'PIPELINE_DAG_DELETE = "DELETE FROM pipeline_dag"\n'
+            "PIPELINE_DAG_DISABLE_SENTIMENT = \"UPDATE pipeline_dag SET enabled=0 WHERE job_name='sentiment_pipeline'\"\n"
+            "PIPELINE_DAG_DISABLE_EVENT = \"UPDATE pipeline_dag SET enabled=0 WHERE job_name='event_pipeline'\"\n"
+            "PIPELINE_DAG_MOVE_CROSS_ASSET = \"UPDATE pipeline_dag SET source=?, emits='', description=?\"\n"
+            "PIPELINE_DAG_BTC_DESCRIPTION = \"UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'\"\n"
+            "PIPELINE_DAG_DISABLE_CROSS_ASSET = \"UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'\"\n"
+            'PIPELINE_DAG_CONFIG_BACKFILL = "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?"\n'
+            'ASSET_REGISTRY_INDEX = "CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)"\n'
+            'ASSET_REGISTRY_SEED = "INSERT INTO asset_registry"\n'
+            'ASSET_REGISTRY_CONFIG = "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?"\n'
             'EVENT_HANDLER_RUNS_SQL = "CREATE TABLE IF NOT EXISTS event_handler_runs"\n'
             'KG_CANDIDATES_SQL = "CREATE TABLE IF NOT EXISTS kg_edge_candidates"\n'
             'UI_SNAPSHOTS_SQL = "CREATE TABLE IF NOT EXISTS ui_snapshots"\n'
@@ -1478,6 +1585,9 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'FRESHNESS_STATUS_SQL = "CREATE TABLE IF NOT EXISTS FreshnessStatus"\n'
             'RECOMMENDATION_SQL = "CREATE TABLE IF NOT EXISTS Recommendation"\n'
             'RECOMMENDATION_TRACE_SQL = "CREATE TABLE IF NOT EXISTS RecommendationTrace"\n'
+            "RECOMMENDATION_DYNAMIC = 'conn.execute(f\"ALTER TABLE Recommendation ADD COLUMN {col_def}\")'\n"
+            "RECOMMENDATION_TRACE_DYNAMIC = 'conn.execute(f\"ALTER TABLE RecommendationTrace ADD COLUMN {col_def}\")'\n"
+            "FACTOR_REGISTRY_DYNAMIC = 'f\"ALTER TABLE factor_registry ADD COLUMN {col} REAL NOT NULL DEFAULT {default}\"'\n"
         ),
         "trade_py/intelligence/raw_record.py": "published_at: datetime\n",
         "trade_py/intelligence/feed_scorer.py": (
@@ -1489,6 +1599,7 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
         "trade_py/data/news/__init__.py": "",
         "trade_py/data/news/akshare_news.py": (
             "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)\n"
+            "pub = pub_raw.to_pydatetime().replace(tzinfo=CST)\n"
         ),
         "trade_py/data/news/rss/__init__.py": "",
         "trade_py/data/news/rss/base.py": "pub_time = datetime.now(timezone.utc)\n",
@@ -1645,11 +1756,17 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
     } <= table_names
     assert {
         "influence-signal-runtime-publication-time",
+        "eastmoney-stock-timezone-overwrite",
         "rss-provider-time-fallback",
         "gdelt-catalog-db-config",
         "gdelt-provider-time-fallback",
         "gdelt-streaming-local-state-and-refetch",
     } <= capture_risk_ids
+    assert {
+        "recommendation-dynamic-columns",
+        "recommendation-trace-dynamic-columns",
+        "factor-registry-dynamic-columns",
+    } == {item["id"] for item in baseline["dynamic_sql_limitations"]}
     assert "http-openapi" in interface_kinds
     for table_name, source, literal, role in (
         (
@@ -1796,24 +1913,37 @@ def test_non_python_comments_do_not_satisfy_source_evidence(
 
 
 @pytest.mark.parametrize(
-    "replacement",
+    ("original", "replacement"),
     (
-        'current_owner = "incorrect.owner"',
-        'required_child = "study-boundary"',
-        'risk_kind = "incorrect-risk-kind"',
+        (
+            'current_owner = "trade_py.data.news.rss"',
+            'current_owner = "incorrect.owner"',
+        ),
+        (
+            'required_child = "capture-boundary"',
+            'required_child = "study-boundary"',
+        ),
+        (
+            'risk_kind = "provider-timestamp-absence-substitution"',
+            'risk_kind = "incorrect-risk-kind"',
+        ),
+        (
+            'current_behavior = "RSS entries without a provider timestamp substitute the local collection clock."',
+            'current_behavior = "Generic timestamp behavior."',
+        ),
+        (
+            'required_migration_proof = "Persist provider precision separately from observed and received time, and prohibit synthetic event-time PIT claims."',
+            'required_migration_proof = "Generic migration proof."',
+        ),
     ),
 )
-def test_required_capture_risk_bindings_reject_owner_child_and_kind_mutation(
+def test_required_capture_risk_bindings_reject_semantic_mutation(
     tmp_path: Path,
+    original: str,
     replacement: str,
 ) -> None:
     repo = _init_repo(tmp_path, _sources())
     baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
-    original = 'current_owner = "trade_py.data.news.rss"'
-    if replacement.startswith("required_child"):
-        original = 'required_child = "capture-boundary"'
-    elif replacement.startswith("risk_kind"):
-        original = 'risk_kind = "provider-timestamp-absence-substitution"'
     _write_baseline(repo, baseline.replace(original, replacement, 1))
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
@@ -1821,13 +1951,14 @@ def test_required_capture_risk_bindings_reject_owner_child_and_kind_mutation(
 
 def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, _sources())
-    source = repo / "trade_py/approved_binding.py"
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
     source.write_text(
         'APPROVED_RECORD_SQL = "CREATE TABLE approved_records"\n'
-        'WRITER_PROOF = "writer"\n'
-        'READER_PROOF = "reader"\n'
-        'TRANSACTION_PROOF = "transaction"\n'
-        'COMPATIBILITY_PROOF = "compatibility"\n',
+        'WRITER_PROOF = "write approved_records"\n'
+        'READER_PROOF = "read approved_records"\n'
+        'TRANSACTION_PROOF = "datasets.adapters.persistence.warehouse transaction"\n'
+        'COMPATIBILITY_PROOF = "compatibility approved_records"\n',
         encoding="utf-8",
     )
     baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
@@ -1841,12 +1972,12 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
         'reason = "Fixture approved binding."\n'
         'required_child = "dataset-product-boundary"\n'
         'adapter_scope = "datasets.adapters.persistence.warehouse"\n'
-        'writer_evidence = { source = "trade_py/approved_binding.py", literal = "WRITER_PROOF" }\n'
-        'reader_evidence = { source = "trade_py/approved_binding.py", literal = "READER_PROOF" }\n'
-        'transaction_evidence = { source = "trade_py/approved_binding.py", literal = "TRANSACTION_PROOF" }\n'
-        'compatibility_evidence = { source = "trade_py/approved_binding.py", literal = "COMPATIBILITY_PROOF" }\n'
+        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }\n'
+        'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }\n'
+        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "TRANSACTION_PROOF" }\n'
+        'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility approved_records" }\n'
         "provenance = [\n"
-        '  { source = "trade_py/approved_binding.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
+        '  { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
         "]"
     )
     approved_baseline = baseline + "\n" + approved
@@ -1874,7 +2005,7 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
     _write_baseline(
         repo,
         approved_baseline.replace(
-            'writer_evidence = { source = "trade_py/approved_binding.py", literal = "WRITER_PROOF" }',
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }',
             'writer_evidence = "arbitrary prose"',
             1,
         ),
@@ -1884,22 +2015,91 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
     _write_baseline(
         repo,
         approved_baseline.replace(
-            'reader_evidence = { source = "trade_py/approved_binding.py", literal = "READER_PROOF" }',
-            'reader_evidence = { source = "trade_py/approved_binding.py", literal = "STALE_READER_PROOF" }',
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }',
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "STALE_READER_PROOF" }',
             1,
         ),
     )
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
 
     source.write_text(
-        '# WRITER_PROOF = "writer"\n'
-        'READER_PROOF = "reader"\n'
-        'TRANSACTION_PROOF = "transaction"\n'
-        'COMPATIBILITY_PROOF = "compatibility"\n',
+        '# WRITER_PROOF = "write approved_records"\n'
+        'READER_PROOF = "read approved_records"\n'
+        'TRANSACTION_PROOF = "datasets.adapters.persistence.warehouse transaction"\n'
+        'COMPATIBILITY_PROOF = "compatibility approved_records"\n',
         encoding="utf-8",
     )
     _write_baseline(repo, approved_baseline)
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        (
+            "writer_evidence",
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write unrelated_records" }',
+        ),
+        (
+            "reader_evidence",
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read unrelated_records" }',
+        ),
+        (
+            "compatibility_evidence",
+            'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility unrelated_records" }',
+        ),
+    ),
+)
+def test_approved_binding_rejects_same_adapter_proof_for_different_table(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'APPROVED_RECORD_SQL = "CREATE TABLE approved_records"\n'
+        'WRITE_APPROVED = "write approved_records"\n'
+        'READ_APPROVED = "read approved_records"\n'
+        'TRANSACTION = "datasets.adapters.persistence.warehouse transaction"\n'
+        'COMPATIBILITY_APPROVED = "compatibility approved_records"\n'
+        'WRITE_UNRELATED = "write unrelated_records"\n'
+        'READ_UNRELATED = "read unrelated_records"\n'
+        'COMPATIBILITY_UNRELATED = "compatibility unrelated_records"\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    approved = (
+        "\n[[tables]]\n"
+        'logical_name = "approved_records"\n'
+        'current_owner = "legacy"\n'
+        'semantic_kind = "approved-fixture-record"\n'
+        'classification = "approved_binding"\n'
+        'target_context = "datasets"\n'
+        'reason = "Fixture approved binding."\n'
+        'required_child = "dataset-product-boundary"\n'
+        'adapter_scope = "datasets.adapters.persistence.warehouse"\n'
+        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }\n'
+        'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }\n'
+        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "TRANSACTION" }\n'
+        'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility approved_records" }\n'
+        "provenance = [\n"
+        '  { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
+        "]\n"
+    )
+    approved_baseline = baseline + approved
+    _write_baseline(repo, approved_baseline)
+    assert validate_architecture_baseline(repo).ok
+
+    original = {
+        "writer_evidence": 'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "write approved_records" }',
+        "reader_evidence": 'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "read approved_records" }',
+        "compatibility_evidence": 'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "compatibility approved_records" }',
+    }[field]
+    _write_baseline(repo, approved_baseline.replace(original, replacement, 1))
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
 
 def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path) -> None:
@@ -1937,6 +2137,54 @@ def test_audited_schema_evolution_provenance_fails_closed(
     provenance_record = f'  {{ source = "{source}", literal = "{literal}", role = "{role}" }},\n'
     assert provenance_record in baseline, f"{table_name}: {provenance_record}"
     _write_baseline(repo, baseline.replace(provenance_record, "", 1))
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    "limitation_id",
+    (
+        "recommendation-dynamic-columns",
+        "recommendation-trace-dynamic-columns",
+        "factor-registry-dynamic-columns",
+    ),
+)
+def test_required_dynamic_sql_limitations_fail_closed(
+    tmp_path: Path,
+    limitation_id: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline.replace(f'id = "{limitation_id}"', 'id = "removed"', 1))
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    (
+        (
+            'limitation_kind = "dynamic_ddl"',
+            'limitation_kind = "dynamic_data_transform"',
+        ),
+        (
+            'owning_child = "decision-support-boundary"',
+            'owning_child = "study-boundary"',
+        ),
+        (
+            "non-authorizing until the Decision Support migration adds reviewed SQL-normalization",
+            "authorizing immediately",
+        ),
+    ),
+)
+def test_required_dynamic_sql_limitations_reject_binding_mutation(
+    tmp_path: Path,
+    original: str,
+    replacement: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline.replace(original, replacement, 1))
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
 
@@ -2008,6 +2256,8 @@ def test_baseline_schema_and_non_authorizing_states_fail_closed(
     (
         "# LEGACY_DB = 1\n",
         '"""LEGACY_DB = 1"""\n',
+        'f"LEGACY_DB = {1}"\n',
+        'b"LEGACY_DB = 1"\n',
     ),
 )
 def test_comments_and_inert_strings_do_not_satisfy_source_evidence(
@@ -2455,6 +2705,44 @@ required_child = "dataset-product-boundary"
     assert parses == 1
     # One pass admits the token budget, and one pass masks executable text.
     assert tokenizations == 2
+
+
+def test_source_evidence_literals_are_batched_once_per_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    repeated_source = "\n".join(f'FACT_{index} = "evidence-{index}"' for index in range(128)) + "\n"
+    (repo / "tests/repeated_literals.py").write_text(repeated_source, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    declarations = "\n".join(
+        (
+            "[[source_facts]]\n"
+            f'id = "repeated-literal-{index}"\n'
+            'source = "tests/repeated_literals.py"\n'
+            f'literal = "evidence-{index}"\n'
+            'current_owner = "legacy"\n'
+            'required_child = "dataset-product-boundary"\n'
+        )
+        for index in range(128)
+    )
+    _write_baseline(repo, baseline + "\n" + declarations)
+    original = guard._literal_matches_for_source
+    source_scans = 0
+
+    def record_matches(text: str, literals: set[str]) -> Mapping[str, bool]:
+        nonlocal source_scans
+        if text == repeated_source:
+            source_scans += 1
+        return original(text, literals)
+
+    monkeypatch.setattr(guard, "_literal_matches_for_source", record_matches)
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert source_scans == 1
 
 
 def test_many_inert_strings_are_masked_with_linear_span_progress(
