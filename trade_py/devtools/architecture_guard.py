@@ -1299,6 +1299,7 @@ class _SourceSignature:
     inode: int
     size: int
     mtime_ns: int
+    ctime_ns: int
 
 
 @dataclass(frozen=True)
@@ -3226,36 +3227,31 @@ class _CallableProofVisitor:
                 continue
             if isinstance(statement, ast.Assign):
                 self._visit_direct_expression(statement.value)
+                self._invalidate_transaction_target_mutation(statement.targets)
                 self._invalidate_transaction_receivers(
                     _assignment_target_root_names(statement.targets)
                 )
             elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
                 self._visit_direct_expression(statement.value)
+                self._invalidate_transaction_target_mutation((statement.target,))
                 self._invalidate_transaction_receivers(
                     _assignment_target_root_names((statement.target,))
                 )
             elif isinstance(statement, ast.AugAssign):
                 self._visit_direct_expression(statement.value)
+                self._invalidate_transaction_target_mutation((statement.target,))
                 self._invalidate_transaction_receivers(
                     _assignment_target_root_names((statement.target,))
                 )
             elif isinstance(statement, ast.Delete):
+                self._invalidate_transaction_target_mutation(statement.targets)
                 self._invalidate_transaction_receivers(
                     _assignment_target_root_names(statement.targets)
                 )
             elif isinstance(statement, ast.Import):
-                self._invalidate_transaction_receivers(
-                    frozenset(
-                        alias.asname or alias.name.split(".", 1)[0] for alias in statement.names
-                    )
-                )
+                self._transaction_receivers[-1] = frozenset()
             elif isinstance(statement, ast.ImportFrom):
-                if any(alias.name == "*" for alias in statement.names):
-                    self._transaction_receivers[-1] = frozenset()
-                else:
-                    self._invalidate_transaction_receivers(
-                        frozenset(alias.asname or alias.name for alias in statement.names)
-                    )
+                self._transaction_receivers[-1] = frozenset()
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 self._invalidate_transaction_receivers(frozenset((statement.name,)))
                 return True
@@ -3295,6 +3291,13 @@ class _CallableProofVisitor:
             self._transaction_receivers[-1] = frozenset(
                 receiver for receiver in self._transaction_receivers[-1] if receiver[0] not in roots
             )
+
+    def _invalidate_transaction_target_mutation(
+        self,
+        targets: Sequence[ast.expr | None],
+    ) -> None:
+        if any(_assignment_target_has_side_effects(target) for target in targets):
+            self._transaction_receivers[-1] = frozenset()
 
     def _visit_direct_expression(self, expression: ast.expr) -> None:
         """Visit immediate call chains without following deferred or conditional AST nodes."""
@@ -3397,8 +3400,11 @@ def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
     receiver = _expression_identity(expression.func.value)
     if receiver is None:
         return frozenset()
-    alias = _expression_identity(item.optional_vars)
-    return frozenset((receiver, alias)) if alias is not None else frozenset((receiver,))
+    if item.optional_vars is None:
+        return frozenset((receiver,))
+    if not isinstance(item.optional_vars, ast.Name):
+        return frozenset()
+    return frozenset((receiver, (item.optional_vars.id,)))
 
 
 def _transaction_receivers_for_items(
@@ -3435,6 +3441,16 @@ def _assignment_target_root_names(targets: Sequence[ast.expr | None]) -> frozens
         elif isinstance(target, (ast.Tuple, ast.List)):
             pending.extend(target.elts)
     return frozenset(roots)
+
+
+def _assignment_target_has_side_effects(target: ast.expr | None) -> bool:
+    if target is None or isinstance(target, ast.Name):
+        return False
+    if isinstance(target, ast.Starred):
+        return _assignment_target_has_side_effects(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return any(_assignment_target_has_side_effects(element) for element in target.elts)
+    return True
 
 
 def _static_string_expression(node: ast.AST) -> str | None:
@@ -4005,10 +4021,20 @@ def _safe_read_relative(root: Path, relative: str, *, max_bytes: int) -> bytes:
         verify_fd = _open_relative_file(root_fd, relative, directory_flags, file_flags)
         try:
             verified = _regular_signature(verify_fd, relative)
+            if verified != before:
+                raise _unsafe_source_error(
+                    relative, "source identity changed after descriptor read"
+                )
+            verified_payload = _read_descriptor(verify_fd, verified.size, relative)
+            verified_after = _regular_signature(verify_fd, relative)
         finally:
             os.close(verify_fd)
-        if verified != before:
-            raise _unsafe_source_error(relative, "source identity changed after descriptor read")
+        if (
+            verified_after != verified
+            or len(verified_payload) != verified.size
+            or verified_payload != payload
+        ):
+            raise _unsafe_source_error(relative, "source content changed after descriptor read")
         return payload
     except _GuardError:
         raise
@@ -4050,6 +4076,7 @@ def _regular_signature(descriptor: int, path: str) -> _SourceSignature:
         inode=metadata.st_ino,
         size=metadata.st_size,
         mtime_ns=metadata.st_mtime_ns,
+        ctime_ns=metadata.st_ctime_ns,
     )
 
 

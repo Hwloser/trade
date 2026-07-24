@@ -2445,6 +2445,22 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
             'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
             'with session.transaction() as tx:\n        vars(tx)["execute"] = unrelated\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
         ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as holder.tx:\n        holder.tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as holder.inner.tx:\n        holder.inner.tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as tx:\n        import unrelated\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as tx:\n        type(tx).execute = replacement\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
     ),
 )
 def test_approved_binding_rejects_dynamic_transaction_receiver_rebinding(
@@ -3788,6 +3804,43 @@ def test_symlink_and_replaced_source_are_rejected(
 
     monkeypatch.setattr(guard, "_read_descriptor", replace_then_read)
     assert PRODUCER_UNSAFE_SOURCE in _rule_ids(repo)
+
+
+def test_in_place_source_swap_with_restored_mtime_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "trade_py/app.py"
+    approved = source.read_text(encoding="utf-8")
+    invalid = "x" * len(approved)
+    source.write_text(invalid, encoding="utf-8")
+    original_stat = source.stat()
+
+    import trade_py.devtools.architecture_guard as guard
+
+    original = guard._read_descriptor
+    reads = 0
+
+    def swap_during_read(descriptor: int, size: int, path: str) -> bytes:
+        nonlocal reads
+        if path != "trade_py/app.py" or reads:
+            return original(descriptor, size, path)
+        reads += 1
+        source.write_text(approved, encoding="utf-8")
+        try:
+            return original(descriptor, size, path)
+        finally:
+            source.write_text(invalid, encoding="utf-8")
+            os.utime(
+                source,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+
+    monkeypatch.setattr(guard, "_read_descriptor", swap_during_read)
+
+    assert PRODUCER_UNSAFE_SOURCE in _rule_ids(repo)
+    assert source.read_text(encoding="utf-8") == invalid
+    assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
 
 
 def test_fifo_source_is_rejected_without_blocking(tmp_path: Path) -> None:

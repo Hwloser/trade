@@ -91,9 +91,10 @@ persistence call; reader and compatibility evidence SHALL occur as one static re
 statement in that same position. A string only in a persistence parameter or
 keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
 direct transaction `with` block containing a static table-specific write on that
-transaction receiver or its explicit `as` alias. No direct-scope binding
-or object-namespace mutation, or unmodelled dynamic call, may alter that
-receiver root or alias before the operation.
+transaction receiver or one explicit local-name `as` alias. No direct-scope
+binding or object-namespace mutation, import, non-local assignment/deletion
+target, or unmodelled dynamic call may alter that receiver root or alias before
+the operation.
 The declared proof literal SHALL exactly equal the static first SQL argument
 captured from the named callable, rather than merely occurring elsewhere in the
 adapter; an operation mismatch SHALL identify the adapter callable line.
@@ -330,9 +331,11 @@ scanner SHALL reject a symlink, non-regular file, path escape, unavailable
 no-follow primitive, unreadable source, or any pre-read/post-read/post-path
 identity mismatch with `architecture.producer_discovery_unsafe_source`; its
 remediation requires a regular, repository-confined source stable for the
-check. The identity SHALL include device, inode, size, and nanosecond mtime,
-and the source contents SHALL be read only from the verified descriptor. This
-prevents a symlink or replacement from becoming source evidence or an
+check. The identity SHALL include device, inode, size, and nanosecond mtime and
+ctime. The source contents SHALL be read only from the verified descriptor,
+then boundedly reread from a reopened same-identity descriptor; the second
+payload SHALL exactly equal the first. This prevents a symlink, replacement,
+or in-place metadata-restored content swap from becoming source evidence or an
 inconsistent producer inventory.
 
 The current capacity measurement is 306 included paths and 3,102,353 source

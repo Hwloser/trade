@@ -124,7 +124,8 @@ transaction proof must be one write statement. The declared proof literal must
 exactly equal that direct SQL argument, not merely occur elsewhere in the
 adapter. A transaction receiver or explicit alias remains valid only until a
 direct-scope binding or object-namespace mutation, or an unmodelled dynamic
-call. A proof is admitted
+call. An alias must be one local name; imports and non-local assignment or
+deletion targets in the transaction block invalidate proof. A proof is admitted
 only from its straight-line callable prefix and a direct transaction `with`
 block in that prefix; nested `with` blocks, branches, loops, exception
 handlers, assertions, matches, and deferred comprehensions never authorize
@@ -203,8 +204,9 @@ The declared source literal must exactly equal that static SQL argument and a
 mismatch points to the named adapter callable line.
 Transaction proof must be a static table-specific write inside one direct
 transaction `with` block using the same receiver or that context manager's
-explicit `as` alias, and that receiver identity and object namespace must remain
-unmodified from transaction entry to the call. Any unmodelled direct-scope call invalidates
+explicit local-name `as` alias, and that receiver identity and object namespace
+must remain unmodified from transaction entry to the call. Imports and
+non-local assignment or deletion targets, as well as any unmodelled direct-scope call, invalidate
 transaction receiver proof rather than being interpreted dynamically. Writer
 and transaction proof reject a semicolon-separated second statement after
 comments and values are masked. SQL table identifiers match at supported
@@ -260,8 +262,9 @@ owning child.
 
 The checker reads UTF-8 text through repository-confined no-follow descriptors
 and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
-non-regular files, source identity drift, duplicate declarations, and source
-facts that no longer match an executable source literal. Per invocation, it
+non-regular files, source identity or bounded reread-content drift, duplicate
+declarations, and source facts that no longer match an executable source
+literal. Per invocation, it
 caches each decoded and comment/inert-string-masked evidence source, batches
 all pending literals for one source into one deterministic Aho-Corasick
 multi-pattern source scan, and so does not rescan the whole source for every
@@ -421,9 +424,10 @@ path bytes, each source is bounded to 1 MiB, and aggregate source is bounded to
 32 MiB.
 Repository-confined directory-descriptor traversal and `O_NOFOLLOW`-equivalent
 file reads reject symlinks, non-regular entries, escapes, unsupported safe-read
-primitives, and pre-read/post-read/post-path identity drift as
-`architecture.producer_discovery_unsafe_source`; the identity tuple is device,
-inode, size, and nanosecond mtime. Raw/included path overflow reports
+primitives, pre-read/post-read/post-path identity drift, and a reopened
+same-identity payload mismatch as `architecture.producer_discovery_unsafe_source`;
+the identity tuple is device, inode, size, and nanosecond mtime and ctime.
+Raw/included path overflow reports
 `architecture.producer_discovery_path_budget_exceeded`; source overflow reports
 `architecture.producer_discovery_budget_exceeded`. All failures occur before
 an incomplete inventory can be emitted. It resolves only
@@ -516,7 +520,8 @@ dynamic-DDL inventories, independent intelligence/projection declarations,
 producer-derived warehouse artifacts, missing/deleted/unsafe source evidence,
 direct-scope reachable/receiver-matched/exact-identifier approved-binding
 proofs, SQL-only-in-parameter rejection, mutable reader/compatibility rejection,
-transaction root and alias rebinding rejection, wildcard and dynamic
+transaction root, local alias, import, and assignment-target invalidation,
+wildcard and dynamic
 module-rebinding rejection, exact operation-literal provenance and adapter-line
 diagnostics, proof budgets, Git-index non-regular rejection, neutral cold
 import, negative-I/O admission, and the current-tree legacy baseline.
