@@ -20,18 +20,22 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
 
 - Add the `scripts/mutation-test changed|core|full` developer entrypoint.
 - Add a typed Python controller under `trade_py/devtools/mutation_testing/` that:
-  - uses Cosmic Ray 8.x operator implementations for deterministic first-order
+  - pins Cosmic Ray 8.4.6 and uses only `get_operator` plus `mutate_code` for
+    deterministic first-order
     Python mutation generation;
-  - applies exactly one mutation to a worker-owned temporary source copy;
-  - selects only configured core business modules and explicitly mapped unit tests;
+  - applies exactly one position-verified mutation to a worker-owned temporary
+    source tree and proves pytest imported that tree;
+  - selects only the closed v1 source-to-test matrix and requires baseline line
+    coverage before mutant execution;
   - prioritizes changed lines, then changed definitions, then configured core paths;
   - enforces mutant, candidate-scan, worker, per-mutant, output, and wall-clock
     budgets;
-  - terminates the mutant test process group and descendants on timeout or global
-    cancellation;
-  - distinguishes killed, survived, timeout, no-coverage, invalid, and
-    infrastructure-error outcomes;
-  - writes deterministic JSON, Markdown, and HTML reports.
+  - lets the controller process directly own and terminate every mutant test process
+    group and descendant on timeout, worker failure, signal, or global cancellation;
+  - denies network, provider credentials, and real-data paths in mutation workers;
+  - distinguishes killed, survived, timeout, mapping/line no-coverage,
+    baseline-unavailable, invalid, and infrastructure-error outcomes;
+  - publishes deterministic JSON, Markdown, and HTML as one atomic run generation.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
@@ -65,8 +69,8 @@ In scope:
 
 - Python core business unit-test mutation only.
 - Deterministic changed/core/full planning and execution.
-- Bounded concurrency, process-tree termination, partial reporting, trend artifacts,
-  and precise exceptions.
+- Bounded concurrency, source/AST/dependency limits, process-tree termination,
+  partial reporting, comparable trend artifacts, and exact mutant exceptions.
 - GitHub Actions because the authoritative remote is GitHub.
 
 Out of scope:
@@ -83,9 +87,10 @@ Out of scope:
 
 The main risks are runaway test processes, excessive enumeration, incorrect
 test-to-source mapping, false kills from infrastructure failures, and score gaming
-through broad exclusions. Hard limits, process groups, temporary source copies,
-closed operator/source maps, bounded output, explicit no-coverage outcomes, and
-location-precise exception validation address those risks.
+through broad exclusions. Invocation-wide deadlines, parent-owned process groups,
+source/AST/dependency limits, private source trees, mandatory line coverage, closed
+operator/source maps, bounded generation-atomic output, exact status algebra, and
+mutant-ID exception validation address those risks.
 
 Rollback removes the optional mutation dependency group, controller, wrapper,
 configuration, workflows, documentation, and tests. Generated reports and caches are
