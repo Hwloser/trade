@@ -163,34 +163,43 @@ one-or-more source facts with `bootstrap`, `migration`, `alter`, or
 `data_transform` role, an audit-only `candidate` or `deferred` classification,
 semantic kind, target Context/defer reason, and required child. Neither
 `candidate` nor `deferred` authorizes persistence access. Only a later
-implementation child may add an explicit `approved_binding` that names one
-Context and one non-empty, dot-delimited persistence-adapter scope using
+implementation child may add an explicit table `approved_binding` that names
+one Context and one non-empty, dot-delimited persistence-adapter scope using
 identifier segments beneath `<context>.adapters.` after proving writer, reader,
-transaction, compatibility, and owner behavior. Each of its writer, reader,
-transaction, and compatibility proofs is a distinct
+transaction, compatibility, and owner behavior. Artifacts and warehouse
+producers remain candidate or deferred until a future child defines their
+separate authorization contract. Each table proof is a distinct
 `{ source, literal, callable }` record verified through the same
 repository-confined source-only reader. Every proof is located in the named
 `src/trade/<adapter_scope path>.py` implementation and in its named module-level
-callable. Writer proof must be a table-specific write passed to a persistence
-call; reader and compatibility proof must be table-specific reads passed to a
-persistence call; transaction proof must be a table-specific persistence call
-inside a transaction context. Thus a valid but unrelated legacy literal,
-cross-adapter proof, or top-level constant cannot authorize the table. Prose,
-comments, stale literals, unnamed or malformed adapter scopes, and data/artifact
-paths cannot authorize a binding.
+callable's direct lexical scope; nested function, async-function, lambda, and
+class bodies do not count. Writer proof must be a static table-specific write
+passed to a persistence call; reader and compatibility proof must be static
+table-specific reads passed to a persistence call; transaction proof must be a
+static table-specific persistence call inside a transaction context using the
+same receiver or that context manager's explicit `as` alias. SQL table
+identifiers match at supported statement positions with identifier boundaries,
+not by substring. Thus a valid but unrelated legacy literal, suffix-named
+table, cross-adapter proof, uncalled nested helper, top-level constant, or
+unrelated transaction receiver cannot authorize the table. Prose, comments,
+stale literals, unnamed or malformed adapter scopes, and data/artifact paths
+cannot authorize a binding.
 
 Static provenance is intentionally a bounded, named audit inventory, not a
 claim to discover or semantically normalize every legacy SQL statement. The
 guard fails closed when any required table/source/literal/role record for the
-inventory changes, including the governed `pipeline_dag` and `asset_registry`
-records. The three reviewed f-string construction sites for `Recommendation`,
+inventory changes, including required catalog projection table declarations
+and the governed `pipeline_dag` and `asset_registry` records. The three
+reviewed f-string construction sites for `Recommendation`,
 `RecommendationTrace`, and `factor_registry` are recorded separately as
 non-authorizing `dynamic_sql_limitations`, bound to their logical table,
 construction-site literal, limitation kind, owning child, exact rationale, and
 `non_authorizing = true` marker. A limitation cannot attach to an
 `approved_binding` table. It remains a limitation until an owning migration
 child introduces an AST-aware SQL-normalization or runtime migration-evidence
-design.
+design. This Task 2.1 inventory admits only the bounded reviewed
+`dynamic_ddl` sites; it does not claim to discover or govern dynamic DML or
+data transforms, which require a separate owning child.
 
 The checker reads UTF-8 text through repository-confined no-follow descriptors
 and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
@@ -253,7 +262,7 @@ and `architecture_guard.py` reads repository text and temporary test fixtures
 only. The existing `TradeDB`, pipeline databases, catalog SQLite projection,
 Parquet artifacts, and their runtime transaction boundaries remain
 authoritative and unchanged. No guard result grants a table write: a
-`candidate` or `deferred` record is non-authorizing, while a future
+`candidate` or `deferred` record is non-authorizing, while a future table
 `approved_binding` needs table-specific, adapter-local writer, reader,
 transaction, and compatibility proof. Dynamic SQL is recorded only as an
 explicit non-authorizing limitation.
@@ -671,9 +680,10 @@ source-protection guarantee and avoids duplicate Git traversal.
   `Recommendation`, `RecommendationTrace`, and `factor_registry` construction
   sites. `non_authorizing = true` is a required machine-checked field and a
   limitation cannot authorize an approved table. The guard does not invent
-  normalized provenance or claim source-wide static DDL/DML completeness. Their
-  owning migration children must add AST-aware normalized or runtime-backed
-  evidence before broadening schema-provenance claims.
+  normalized provenance, govern dynamic DML/data transforms, or claim
+  source-wide static DDL/DML completeness. Their owning migration children
+  must add AST-aware normalized or runtime-backed evidence before broadening
+  schema-provenance claims.
 - **Guard volume or noisy diagnostics** -> Per-file, per-batch, total-scope,
   and concurrent-wave source-byte budgets; argv limits; timeout; versioned
   bounded envelope; stable sort; and explicit count-only truncation make

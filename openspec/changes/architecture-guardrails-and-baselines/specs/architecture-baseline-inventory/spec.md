@@ -24,21 +24,23 @@ DDL/DML or prove the complete semantics of a SQL expression; a later owning
 migration child needs AST-aware normalization or runtime-backed evidence before
 making that broader claim.
 
-Dynamic SQL or f-string-derived DDL is outside the static-literal evidence
-contract and SHALL be recorded as a non-authorizing
+The bounded reviewed dynamic SQL/f-string-derived DDL inventory is outside the
+static-literal evidence contract and SHALL be recorded as a non-authorizing
 `dynamic_sql_limitations` record rather than represented by an invented
-normalized literal. Every such record SHALL name a unique `id`, existing
+normalized literal. Each Task 2.1 limitation SHALL name a unique `id`, existing
 `logical_name`, repository `source`, executable construction-site `literal`,
-`limitation_kind`, the table's `owning_child`, and an explicit limitation
-rationale, and SHALL declare `non_authorizing = true`. A limitation SHALL
-never be attached to an `approved_binding` table and cannot authorize a
+the `dynamic_ddl` limitation kind, the table's `owning_child`, and an explicit
+limitation rationale, and SHALL declare `non_authorizing = true`. A limitation
+SHALL never be attached to an `approved_binding` table and cannot authorize a
 table, persistence adapter, SQL statement, or schema shape. The mandatory
 audited dynamic-DDL set is the `Recommendation`,
 `RecommendationTrace`, and `factor_registry` construction sites in
 `trade_py/db/migrations.py`; their declaration, limitation kind, owning child,
 non-authorizing marker, and rationale SHALL match the governed binding. A
 dynamic limitation neither authorizes persistence access nor proves
-physical-schema completeness.
+physical-schema completeness. Dynamic DML/data-transform discovery and
+governance are outside this bounded Task 2.1 inventory and require a later
+owning child.
 
 The validator SHALL transform executable source evidence, including a terminal
 transformation failure, at most once per source per invocation. It SHALL batch
@@ -53,22 +55,28 @@ Python evidence-token budget, failing closed when the limit is exceeded.
 classification SHALL carry a semantic kind, target Context or `deferred`,
 reason, required owning child, and explicit activation state. `candidate` and
 `deferred` are audit-only classifications and SHALL never authorize target
-persistence access. Only a later, separately reviewed `approved_binding` with
-one target Context and a non-empty, dot-delimited persistence-adapter scope
+persistence access. Only a later, separately reviewed table `approved_binding`
+with one target Context and a non-empty, dot-delimited persistence-adapter scope
 matching `<context>.adapters.<identifier>[.<identifier>...]` authorizes a
-literal SQL table reference. An `approved_binding` SHALL also declare separate
+literal SQL table reference. Artifact and warehouse-producer declarations SHALL
+remain candidate or deferred until their separate authorization contracts
+exist. A table `approved_binding` SHALL also declare separate
 `writer_evidence`, `reader_evidence`, `transaction_evidence`, and
 `compatibility_evidence` records; each record SHALL contain a repository source
 an executable source literal, and one named module-level Python `callable`
 accepted by the same source-only admission and no-follow validation as other
 baseline evidence. Every proof SHALL be in the one named target adapter module
-`src/trade/<adapter_scope path>.py` and within the named callable. Writer
-evidence SHALL occur as a table-specific write statement passed to a
-persistence call; reader and compatibility evidence SHALL occur as
-table-specific read statements passed to a persistence call; transaction
-evidence SHALL occur inside a transaction context containing a table-specific
-persistence operation. `candidate` and `deferred` declarations SHALL reject
-every persistence-binding field.
+`src/trade/<adapter_scope path>.py` and within the named callable's direct
+lexical scope; nested function, async-function, lambda, and class bodies SHALL
+not satisfy a proof. Writer evidence SHALL occur as a static table-specific
+write statement passed to a persistence call; reader and compatibility evidence
+SHALL occur as static table-specific read statements passed to a persistence
+call; transaction evidence SHALL occur inside a transaction context containing
+a static table-specific persistence operation on that transaction receiver or
+its explicit `as` alias. Every accepted SQL table identifier SHALL match at a
+supported statement position with identifier boundaries, not as a substring.
+`candidate` and `deferred` declarations SHALL reject every persistence-binding
+field.
 
 #### Scenario: A baseline table source changes
 
@@ -96,10 +104,10 @@ every persistence-binding field.
 #### Scenario: An approved binding has unverified proof
 
 - **WHEN** an owning child supplies prose, a comment-only literal, an unsafe
-  path, a stale literal, a proof from another adapter or callable, a top-level
+  path, a stale literal, a suffix-named table, a proof from another adapter or
+  callable, an uncalled nested function/lambda/class helper, a top-level
   constant, a writer/reader/compatibility literal that does not identify the
-  declared logical table, or a named callable without the required
-  persistence/transaction operation
+  declared logical table, or a transaction context with an unrelated receiver
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
 

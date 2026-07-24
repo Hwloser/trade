@@ -68,7 +68,7 @@ _RESULT_TRUNCATED = "architecture.guard_result_truncated"
 
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
 _CLASSIFICATIONS = frozenset({"candidate", "deferred", "approved_binding"})
-_DYNAMIC_SQL_LIMITATION_KINDS = frozenset({"dynamic_ddl", "dynamic_data_transform"})
+_DYNAMIC_SQL_LIMITATION_KINDS = frozenset({"dynamic_ddl"})
 _REQUIRED_DYNAMIC_SQL_LIMITATIONS = {
     (
         "Recommendation",
@@ -112,17 +112,49 @@ _APPROVED_BINDING_EVIDENCE_FIELDS = (
     "transaction_evidence",
     "compatibility_evidence",
 )
-_CREATE_TABLE_LITERAL = re.compile(
-    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z_][A-Za-z0-9_]*"
-)
 _NAMED_ADAPTER_SCOPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 _NAMED_CALLABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SQL_WRITE_OPERATION = re.compile(r"\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE)\b", re.IGNORECASE)
-_SQL_READ_OPERATION = re.compile(r"\s*SELECT\b", re.IGNORECASE)
-_SQL_PERSISTENCE_OPERATION = re.compile(
-    r"\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|SELECT)\b",
+_SQL_IDENTIFIER = r'"(?:[^"]|"")+"|`[^`]+`|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_$])'
+_SQL_INSERT_TABLE = re.compile(
+    rf"^\s*INSERT\s+(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)\s+)?"
+    rf"INTO\s+(?P<table>{_SQL_IDENTIFIER})",
     re.IGNORECASE,
 )
+_SQL_REPLACE_TABLE = re.compile(
+    rf"^\s*REPLACE\s+(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)\s+)?"
+    rf"INTO\s+(?P<table>{_SQL_IDENTIFIER})",
+    re.IGNORECASE,
+)
+_SQL_UPDATE_TABLE = re.compile(
+    rf"^\s*UPDATE\s+(?:OR\s+(?:ABORT|FAIL|IGNORE|REPLACE|ROLLBACK)\s+)?"
+    rf"(?P<table>{_SQL_IDENTIFIER})",
+    re.IGNORECASE,
+)
+_SQL_DELETE_TABLE = re.compile(
+    rf"^\s*DELETE\s+FROM\s+(?P<table>{_SQL_IDENTIFIER})",
+    re.IGNORECASE,
+)
+_SQL_CREATE_TABLE = re.compile(
+    rf"^\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    rf"(?P<table>{_SQL_IDENTIFIER})",
+    re.IGNORECASE,
+)
+_SQL_DROP_TABLE = re.compile(
+    rf"^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?P<table>{_SQL_IDENTIFIER})",
+    re.IGNORECASE,
+)
+_SQL_SELECT_TABLE = re.compile(
+    rf"\b(?:FROM|JOIN)\s+(?P<table>{_SQL_IDENTIFIER})",
+    re.IGNORECASE,
+)
+_SQL_WRITE_TABLE_PATTERNS = (
+    _SQL_INSERT_TABLE,
+    _SQL_REPLACE_TABLE,
+    _SQL_UPDATE_TABLE,
+    _SQL_DELETE_TABLE,
+    _SQL_CREATE_TABLE,
+)
+_SQL_TABLE_OPERATION_PATTERNS = (*_SQL_WRITE_TABLE_PATTERNS, _SQL_DROP_TABLE)
 _PERSISTENCE_CALL_NAMES = frozenset(
     {"execute", "executemany", "executescript", "fetch", "fetchall", "fetchone", "query"}
 )
@@ -1278,6 +1310,18 @@ class _Baseline:
     producers: tuple[Mapping[str, Any], ...]
 
 
+@dataclass(frozen=True)
+class _PersistenceOperation:
+    sql: str
+    receiver: tuple[str, ...]
+    transaction_receivers: frozenset[tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class _CallableProofSummary:
+    operations: tuple[_PersistenceOperation, ...]
+
+
 @dataclass
 class _EvidenceReader:
     """Memoize descriptor-verified and executable source evidence for one run."""
@@ -1288,6 +1332,7 @@ class _EvidenceReader:
     _decoded_text: dict[str, str]
     _executable_text: dict[str, str]
     _python_trees: dict[str, ast.Module]
+    _callable_proof_summaries: dict[tuple[str, str], _CallableProofSummary]
     _executable_failures: dict[str, ArchitectureFinding]
     _literal_matches: dict[tuple[str, str], bool]
     _aggregate_bytes: int = 0
@@ -1299,6 +1344,7 @@ class _EvidenceReader:
         self._decoded_text = {}
         self._executable_text = {}
         self._python_trees = {}
+        self._callable_proof_summaries = {}
         self._executable_failures = {}
         self._literal_matches = {}
 
@@ -1432,6 +1478,24 @@ class _EvidenceReader:
             ) from exc
         self._python_trees[relative] = tree
         return tree
+
+    def callable_proof_summary(
+        self,
+        relative: str,
+        callable_name: str,
+    ) -> _CallableProofSummary | None:
+        """Return one direct-scope persistence summary for an adapter callable."""
+
+        key = (relative, callable_name)
+        cached = self._callable_proof_summaries.get(key)
+        if cached is not None:
+            return cached
+        callable_node = _adapter_callable(self.python_tree(relative), callable_name)
+        if callable_node is None:
+            return None
+        summary = _summarize_callable_proof(callable_node)
+        self._callable_proof_summaries[key] = summary
+        return summary
 
     def prime_literal_matches(self, queries: Sequence[tuple[str, str]]) -> None:
         """Evaluate each declared source's pending literals in one source scan."""
@@ -1775,8 +1839,7 @@ def _validate_baseline_facts(
                             _BASELINE_INCOMPLETE_PROVENANCE,
                             BASELINE_FILENAME,
                             f"dynamic SQL limitation has unsupported kind {limitation_kind!r}",
-                            "Use dynamic_ddl or dynamic_data_transform for nonliteral SQL "
-                            "evidence limitations.",
+                            "Use dynamic_ddl only for the bounded reviewed nonliteral DDL inventory.",
                         )
                     _require_text(fact, "owning_child", category)
                     _require_text(fact, "limitation", category)
@@ -1936,7 +1999,10 @@ def _validate_baseline_facts(
         except _GuardError as exc:
             findings.append(exc.finding)
 
-    missing_table_names = sorted(set(_REQUIRED_TABLE_BINDINGS) - set(tables_by_name))
+    required_table_names = set(_REQUIRED_TABLE_BINDINGS) | set(
+        _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE
+    )
+    missing_table_names = sorted(required_table_names - set(tables_by_name))
     invalid_table_bindings = [
         name
         for name, (
@@ -2405,17 +2471,25 @@ def _validate_source_literal(
 def _literal_is_present(text: str, literal: str) -> bool:
     """Match a literal against cached executable source evidence."""
 
-    match = _CREATE_TABLE_LITERAL.fullmatch(literal)
-    if match is None:
-        return literal in text
-    return any(candidate.group(0) == literal for candidate in _CREATE_TABLE_LITERAL.finditer(text))
+    start = text.find(literal)
+    requires_boundary = _requires_sql_table_boundary(literal)
+    while start != -1:
+        end = start + len(literal)
+        if (
+            not requires_boundary
+            or end == len(text)
+            or not _is_sql_identifier_continuation(text[end])
+        ):
+            return True
+        start = text.find(literal, end)
+    return False
 
 
 def _literal_matches_for_source(text: str, literals: set[str]) -> Mapping[str, bool]:
     """Match pending literals in one deterministic Aho-Corasick source scan."""
 
-    create_table_literals = {
-        literal for literal in literals if _CREATE_TABLE_LITERAL.fullmatch(literal) is not None
+    table_boundary_literals = {
+        literal for literal in literals if _requires_sql_table_boundary(literal)
     }
     transitions: list[dict[str, int]] = [{}]
     failures = [0]
@@ -2476,10 +2550,9 @@ def _literal_matches_for_source(text: str, literals: set[str]) -> Mapping[str, b
             literal = terminals[output]
             assert literal is not None
             if (
-                literal in create_table_literals
+                literal in table_boundary_literals
                 and index + 1 < len(text)
-                and (next_character := text[index + 1]).isascii()
-                and (next_character.isalnum() or next_character == "_")
+                and _is_sql_identifier_continuation(text[index + 1])
             ):
                 output = output_links[output]
                 continue
@@ -2489,6 +2562,18 @@ def _literal_matches_for_source(text: str, literals: set[str]) -> Mapping[str, b
             break
 
     return {literal: literal in matched for literal in literals}
+
+
+def _requires_sql_table_boundary(literal: str) -> bool:
+    for pattern in (*_SQL_TABLE_OPERATION_PATTERNS, _SQL_SELECT_TABLE):
+        match = pattern.search(literal)
+        if match is not None and match.end("table") == len(literal):
+            return True
+    return False
+
+
+def _is_sql_identifier_continuation(character: str) -> bool:
+    return character.isascii() and (character.isalnum() or character in {"_", "$"})
 
 
 def _live_python_source_text(text: str, *, source: str, max_tokens: int) -> str:
@@ -2749,6 +2834,15 @@ def _validate_classification(
     if classification == "candidate":
         _reject_non_authorizing_binding(fact, category)
         return
+    if category != "tables":
+        raise _GuardError(
+            _BASELINE_NONAUTHORIZING,
+            BASELINE_FILENAME,
+            f"{category} approved binding is unsupported without a table-specific "
+            "authorization contract",
+            "Keep artifacts and warehouse producers candidate or deferred until their "
+            "owning child introduces a separately reviewed authorization contract.",
+        )
     _require_text(fact, "adapter_scope", category)
     adapter_scope = str(fact["adapter_scope"])
     adapter_scope_prefix = f"{target_context}.adapters."
@@ -2773,12 +2867,11 @@ def _validate_classification(
                 "Use a repository source and executable literal for every approved-binding proof.",
             )
         _validate_source_literal(root, proof, evidence)
-    if category == "tables":
-        _validate_approved_table_binding(
-            fact,
-            adapter_scope=adapter_scope,
-            evidence=evidence,
-        )
+    _validate_approved_table_binding(
+        fact,
+        adapter_scope=adapter_scope,
+        evidence=evidence,
+    )
 
 
 def _reject_non_authorizing_binding(fact: Mapping[str, Any], category: str) -> None:
@@ -2806,7 +2899,6 @@ def _validate_approved_table_binding(
 
     table_name = _require_text(fact, "logical_name", "tables")
     adapter_source = f"src/trade/{adapter_scope.replace('.', '/')}.py"
-    adapter_tree = evidence.python_tree(adapter_source)
     for field in _APPROVED_BINDING_EVIDENCE_FIELDS:
         proof = fact[field]
         assert isinstance(proof, Mapping)
@@ -2821,15 +2913,13 @@ def _validate_approved_table_binding(
                 f"its adapter scope {adapter_scope}",
                 "Bind every approved table proof to the named target adapter module.",
             )
-        if field in {"writer_evidence", "reader_evidence", "compatibility_evidence"} and (
-            table_name not in literal
-        ):
+        if not _sql_targets_table(literal, table_name, field):
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
                 BASELINE_FILENAME,
-                f"approved table binding for {table_name} has {field} that does not "
-                "identify the logical table",
-                "Use a table-specific writer, reader, or compatibility proof literal.",
+                f"approved table binding for {table_name} has {field} without a "
+                "table-specific SQL operation",
+                "Use a static table-specific SQL proof with an exact SQL table identifier.",
             )
         if _NAMED_CALLABLE.fullmatch(callable_name) is None:
             raise _GuardError(
@@ -2839,8 +2929,8 @@ def _validate_approved_table_binding(
                 f"{callable_name!r}",
                 "Name one function or async function in the target adapter module.",
             )
-        callable_node = _adapter_callable(adapter_tree, callable_name)
-        if callable_node is None:
+        summary = evidence.callable_proof_summary(adapter_source, callable_name)
+        if summary is None:
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
                 BASELINE_FILENAME,
@@ -2848,30 +2938,15 @@ def _validate_approved_table_binding(
                 f"{callable_name!r} outside its adapter module",
                 "Bind each proof to a declared function or async function in the target adapter.",
             )
-        if not _callable_contains_literal(callable_node, literal):
+        if not _summary_has_persistence_operation(summary, literal, table_name, field):
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
                 BASELINE_FILENAME,
-                f"approved table binding for {table_name} has {field} literal outside "
-                f"callable {callable_name}",
-                "Place the declared proof literal in its named adapter callable.",
-            )
-        if field == "transaction_evidence":
-            if not _callable_opens_transaction(callable_node, literal):
-                raise _GuardError(
-                    _BASELINE_CLASSIFICATION,
-                    BASELINE_FILENAME,
-                    f"approved table binding for {table_name} transaction callable "
-                    f"{callable_name} has no transaction context",
-                    "Use a transaction/context-manager operation in the named adapter callable.",
-                )
-        elif not _callable_has_persistence_operation(callable_node, literal, field):
-            raise _GuardError(
-                _BASELINE_CLASSIFICATION,
-                BASELINE_FILENAME,
-                f"approved table binding for {table_name} {field} callable "
-                f"{callable_name} has no matching persistence operation",
-                "Use a table-specific persistence call in the named adapter callable.",
+                f"approved table binding for {table_name} {field} callable {callable_name} "
+                "has no matching direct-scope persistence operation",
+                "Use a static table-specific persistence call in the named adapter "
+                "callable; transaction evidence must use its transaction receiver or "
+                "explicit transaction alias.",
             )
 
 
@@ -2885,63 +2960,197 @@ def _adapter_callable(tree: ast.Module, name: str) -> ast.FunctionDef | ast.Asyn
     return None
 
 
-def _callable_contains_literal(
-    callable_node: ast.AST,
-    literal: str,
-) -> bool:
-    return any(
-        isinstance(node, ast.Constant) and isinstance(node.value, str) and literal in node.value
-        for node in ast.walk(callable_node)
-    )
+def _summarize_callable_proof(
+    callable_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> _CallableProofSummary:
+    """Collect direct-scope static SQL operations without descending into closures."""
+
+    visitor = _CallableProofVisitor()
+    for statement in callable_node.body:
+        visitor.visit(statement)
+    return _CallableProofSummary(tuple(visitor.operations))
 
 
-def _callable_opens_transaction(
-    callable_node: ast.FunctionDef | ast.AsyncFunctionDef, literal: str
-) -> bool:
-    for node in ast.walk(callable_node):
-        if not isinstance(node, ast.With | ast.AsyncWith):
-            continue
-        for item in node.items:
-            expression = item.context_expr
-            if (
-                isinstance(expression, ast.Call)
-                and _call_attribute_name(expression) == "transaction"
-                and _callable_has_persistence_operation(
-                    node,
-                    literal,
-                    field="transaction_evidence",
+class _CallableProofVisitor(ast.NodeVisitor):
+    """Track static persistence calls and enclosing direct-scope transactions."""
+
+    def __init__(self) -> None:
+        self.operations: list[_PersistenceOperation] = []
+        self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        del node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        del node
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        del node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        del node
+
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_transaction_block(node.items, node.body)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._visit_transaction_block(node.items, node.body)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self._record_persistence_operation(node)
+        self.generic_visit(node)
+
+    def _visit_transaction_block(
+        self,
+        items: list[ast.withitem],
+        body: list[ast.stmt],
+    ) -> None:
+        transaction_receivers = set(self._transaction_receivers[-1])
+        for item in items:
+            transaction_receivers.update(_transaction_receivers(item))
+        self._transaction_receivers.append(frozenset(transaction_receivers))
+        for statement in body:
+            self.visit(statement)
+        self._transaction_receivers.pop()
+
+    def _record_persistence_operation(self, node: ast.Call) -> None:
+        if _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES:
+            return
+        receiver = _persistence_receiver(node)
+        if receiver is None:
+            return
+        for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                self.operations.append(
+                    _PersistenceOperation(
+                        sql=argument.value,
+                        receiver=receiver,
+                        transaction_receivers=self._transaction_receivers[-1],
+                    )
                 )
-            ):
-                return True
-    return False
 
 
-def _callable_has_persistence_operation(
-    callable_node: ast.AST,
+def _summary_has_persistence_operation(
+    summary: _CallableProofSummary,
     literal: str,
+    table_name: str,
     field: str,
 ) -> bool:
-    if field == "writer_evidence":
-        expected_operation = _SQL_WRITE_OPERATION
-    elif field == "transaction_evidence":
-        expected_operation = _SQL_PERSISTENCE_OPERATION
-    else:
-        expected_operation = _SQL_READ_OPERATION
-    for node in ast.walk(callable_node):
-        if (
-            not isinstance(node, ast.Call)
-            or _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES
-        ):
+    for operation in summary.operations:
+        if literal not in operation.sql or not _sql_targets_table(operation.sql, table_name, field):
             continue
-        for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
-            if (
-                isinstance(argument, ast.Constant)
-                and isinstance(argument.value, str)
-                and literal in argument.value
-                and expected_operation.search(argument.value) is not None
-            ):
-                return True
+        if field != "transaction_evidence" or operation.receiver in operation.transaction_receivers:
+            return True
     return False
+
+
+def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
+    expression = item.context_expr
+    if (
+        not isinstance(expression, ast.Call)
+        or _call_attribute_name(expression) != "transaction"
+        or not isinstance(expression.func, ast.Attribute)
+    ):
+        return frozenset()
+    receiver = _expression_identity(expression.func.value)
+    if receiver is None:
+        return frozenset()
+    alias = _expression_identity(item.optional_vars)
+    return frozenset((receiver, alias)) if alias is not None else frozenset((receiver,))
+
+
+def _persistence_receiver(node: ast.Call) -> tuple[str, ...] | None:
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    return _expression_identity(node.func.value)
+
+
+def _expression_identity(node: ast.AST | None) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        parent = _expression_identity(node.value)
+        return (*parent, node.attr) if parent is not None else None
+    return None
+
+
+def _sql_targets_table(sql: str, table_name: str, field: str) -> bool:
+    """Require the expected table at a supported SQL statement position."""
+
+    statement = _sql_without_values_and_comments(sql)
+    if field in {"reader_evidence", "compatibility_evidence"}:
+        return any(
+            _sql_identifier_matches(match.group("table"), table_name)
+            for match in _SQL_SELECT_TABLE.finditer(statement)
+        )
+    if field in {"writer_evidence", "transaction_evidence"}:
+        write_match = next(
+            (
+                match
+                for pattern in _SQL_WRITE_TABLE_PATTERNS
+                if (match := pattern.search(statement)) is not None
+            ),
+            None,
+        )
+        if write_match is not None and _sql_identifier_matches(
+            write_match.group("table"),
+            table_name,
+        ):
+            return True
+        if field == "writer_evidence":
+            return False
+    if field == "transaction_evidence":
+        return any(
+            _sql_identifier_matches(match.group("table"), table_name)
+            for match in _SQL_SELECT_TABLE.finditer(statement)
+        )
+    return False
+
+
+def _sql_identifier_matches(identifier: str, table_name: str) -> bool:
+    if identifier.startswith('"') and identifier.endswith('"'):
+        identifier = identifier[1:-1].replace('""', '"')
+    elif identifier.startswith("`") and identifier.endswith("`"):
+        identifier = identifier[1:-1]
+    elif identifier.startswith("[") and identifier.endswith("]"):
+        identifier = identifier[1:-1]
+    return identifier.casefold() == table_name.casefold()
+
+
+def _sql_without_values_and_comments(sql: str) -> str:
+    """Mask SQL values and comments before locating table identifiers."""
+
+    characters = list(sql)
+    index = 0
+    while index < len(characters):
+        character = characters[index]
+        if character == "'":
+            end = index + 1
+            while end < len(characters):
+                if characters[end] == "'":
+                    end += 1
+                    if end < len(characters) and characters[end] == "'":
+                        end += 1
+                        continue
+                    break
+                end += 1
+            _mask_source_span(characters, index, end)
+            index = end
+        elif character == "-" and index + 1 < len(characters) and characters[index + 1] == "-":
+            end = index + 2
+            while end < len(characters) and characters[end] not in "\r\n":
+                end += 1
+            _mask_source_span(characters, index, end)
+            index = end
+        elif character == "/" and index + 1 < len(characters) and characters[index + 1] == "*":
+            end = index + 2
+            while end + 1 < len(characters) and characters[end : end + 2] != ["*", "/"]:
+                end += 1
+            _mask_source_span(characters, index, min(len(characters), end + 2))
+            index = end + 2
+        else:
+            index += 1
+    return "".join(characters)
 
 
 def _call_attribute_name(node: ast.Call) -> str | None:
