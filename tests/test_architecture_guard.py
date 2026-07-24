@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -28,6 +29,7 @@ from trade_py.devtools.architecture_guard import (
     PRODUCER_UNSAFE_SOURCE,
     DiscoveryLimits,
     _call_digest,
+    _iter_git_index,
     validate_architecture_baseline,
 )
 from trade_py.devtools.toml_compat import tomllib
@@ -5041,3 +5043,42 @@ def test_git_discovery_stops_continuous_stderr_at_diagnostic_budget(
         time.sleep(0.01)
     else:
         pytest.fail("stderr-overflow Git process still exists after process-group cleanup")
+
+
+def test_git_index_generator_cleanup_stops_stderr_thread_without_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    child_pid_path = tmp_path / "generator-cleanup-child.pid"
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\n" "$$" > "$ARCH_GUARD_CHILD_PID_FILE"\n'
+        "printf '100644 deadbeef 0\\ttrade_py/app.py\\000'\n"
+        "while :; do\n"
+        '  printf "diagnostic" >&2\n'
+        "done\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("ARCH_GUARD_CHILD_PID_FILE", str(child_pid_path))
+    thread_exceptions: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", thread_exceptions.append)
+
+    records = _iter_git_index(repo)
+    assert next(records) == ("100644", "trade_py/app.py")
+    records.close()
+
+    assert thread_exceptions == []
+    child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+    for _ in range(100):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("generator-cleanup Git process still exists after process-group cleanup")

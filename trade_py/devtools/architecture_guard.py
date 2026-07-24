@@ -22,7 +22,7 @@ import time
 import tokenize
 from array import array
 from collections import deque
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -3730,7 +3730,7 @@ def _require_string_list(mapping: Mapping[str, Any], key: str, path: str) -> tup
 
 def _iter_git_index(
     root: Path, *, limits: DiscoveryLimits = DEFAULT_LIMITS
-) -> Iterator[tuple[str, str]]:
+) -> Generator[tuple[str, str], None, None]:
     environment = os.environ.copy()
     for key in _GIT_ENVIRONMENT_OVERRIDES:
         environment.pop(key, None)
@@ -3759,35 +3759,65 @@ def _iter_git_index(
     stderr_lock = threading.Lock()
     stderr_done = threading.Event()
     stderr_overflow = threading.Event()
+    stderr_stop = threading.Event()
+    stderr_error: OSError | ValueError | None = None
+    poll_interval_seconds = 0.05
 
     def drain_stderr() -> None:
-        nonlocal stderr_size
+        nonlocal stderr_error, stderr_size
         diagnostic_limit = max(0, limits.max_git_stderr_bytes)
         try:
-            while True:
-                with stderr_lock:
-                    read_size = (
-                        1
-                        if stderr_size >= diagnostic_limit
-                        else min(8_192, diagnostic_limit - stderr_size)
+            while not stderr_stop.is_set():
+                try:
+                    ready, _, _ = select.select(
+                        [stderr_stream],
+                        [],
+                        [],
+                        poll_interval_seconds,
                     )
-                chunk = os.read(stderr_stream.fileno(), read_size)
+                    if not ready or stderr_stop.is_set():
+                        continue
+                    with stderr_lock:
+                        read_size = (
+                            1
+                            if stderr_size >= diagnostic_limit
+                            else min(8_192, diagnostic_limit - stderr_size)
+                        )
+                    chunk = os.read(stderr_stream.fileno(), read_size)
+                except (OSError, ValueError) as exc:
+                    if stderr_stop.is_set():
+                        return
+                    with stderr_lock:
+                        stderr_error = exc
+                    return
                 if not chunk:
                     break
+                overflow = False
                 with stderr_lock:
                     if stderr_size >= diagnostic_limit:
-                        stderr_overflow.set()
-                        _terminate_process_group(process)
-                        return
-                    stderr_chunks.append(chunk)
-                    stderr_size += len(chunk)
+                        overflow = True
+                    else:
+                        stderr_chunks.append(chunk)
+                        stderr_size += len(chunk)
+                if overflow:
+                    stderr_overflow.set()
+                    _terminate_process_group(process)
+                    return
         finally:
             stderr_done.set()
+
+    def stderr_terminal_error() -> _GuardError | None:
+        with stderr_lock:
+            read_error = stderr_error
+        if read_error is not None:
+            return _git_stderr_read_error(read_error)
+        if stderr_overflow.is_set():
+            return _git_stderr_budget_error()
+        return None
 
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
     stderr_thread.start()
     deadline = time.monotonic() + limits.git_timeout_seconds
-    poll_interval_seconds = 0.05
     record_limit = min(
         limits.max_git_record_bytes,
         limits.max_raw_path_bytes + 512,
@@ -3795,8 +3825,8 @@ def _iter_git_index(
     buffer = b""
     try:
         while True:
-            if stderr_overflow.is_set():
-                raise _git_stderr_budget_error()
+            if terminal_error := stderr_terminal_error():
+                raise terminal_error
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _git_timeout_error()
@@ -3806,8 +3836,8 @@ def _iter_git_index(
                 [],
                 min(remaining, poll_interval_seconds),
             )
-            if stderr_overflow.is_set():
-                raise _git_stderr_budget_error()
+            if terminal_error := stderr_terminal_error():
+                raise terminal_error
             if not ready:
                 continue
             chunk = os.read(stdout.fileno(), 8_192)
@@ -3836,8 +3866,8 @@ def _iter_git_index(
                     continue
                 yield _parse_index_record(raw)
         while True:
-            if stderr_overflow.is_set():
-                raise _git_stderr_budget_error()
+            if terminal_error := stderr_terminal_error():
+                raise terminal_error
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _git_timeout_error()
@@ -3852,8 +3882,8 @@ def _iter_git_index(
                 poll_interval_seconds,
             )
         ):
-            if stderr_overflow.is_set():
-                raise _git_stderr_budget_error()
+            if terminal_error := stderr_terminal_error():
+                raise terminal_error
             if time.monotonic() >= deadline:
                 raise _GuardError(
                     PRODUCER_TOOL_FAILURE,
@@ -3861,8 +3891,8 @@ def _iter_git_index(
                     "Git index discovery did not close its stderr stream before the deadline",
                     "Repair the Git environment before running source-only discovery.",
                 )
-        if stderr_overflow.is_set():
-            raise _git_stderr_budget_error()
+        if terminal_error := stderr_terminal_error():
+            raise terminal_error
         with stderr_lock:
             stderr = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
         if buffer or return_code != 0:
@@ -3875,10 +3905,11 @@ def _iter_git_index(
                 "Repair Git availability or the repository index before running source-only discovery.",
             )
     finally:
+        stderr_stop.set()
         _terminate_process_group(process)
         stdout.close()
+        stderr_thread.join()
         stderr_stream.close()
-        stderr_thread.join(timeout=1)
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
@@ -5045,6 +5076,15 @@ def _git_stderr_budget_error() -> _GuardError:
         "trade_py",
         "Git index discovery exceeded the configured stderr diagnostic budget",
         "Repair the Git environment or make a reviewed governed stderr budget increase.",
+    )
+
+
+def _git_stderr_read_error(error: OSError | ValueError) -> _GuardError:
+    return _GuardError(
+        PRODUCER_TOOL_FAILURE,
+        "trade_py",
+        f"Git index discovery could not read stderr: {error}",
+        "Repair the Git environment before running source-only discovery.",
     )
 
 
