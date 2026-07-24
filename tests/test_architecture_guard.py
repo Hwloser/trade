@@ -2021,14 +2021,14 @@ required_child = "dataset-product-boundary"
             tokenizations += 1
         return original_tokens(readline)
 
-    def record_live_source(text: str) -> str:
+    def record_live_source(text: str, *, source: str, max_tokens: int) -> str:
         nonlocal transformations, transforming_repeated_source
         if text != repeated_source:
-            return original_live_source(text)
+            return original_live_source(text, source=source, max_tokens=max_tokens)
         transformations += 1
         transforming_repeated_source = True
         try:
-            return original_live_source(text)
+            return original_live_source(text, source=source, max_tokens=max_tokens)
         finally:
             transforming_repeated_source = False
 
@@ -2041,7 +2041,8 @@ required_child = "dataset-product-boundary"
     assert report.ok, report.findings
     assert transformations == 1
     assert parses == 1
-    assert tokenizations == 1
+    # One pass admits the token budget, and one pass masks executable text.
+    assert tokenizations == 2
 
 
 def test_many_inert_strings_are_masked_with_linear_span_progress(
@@ -2113,6 +2114,38 @@ def test_same_line_inert_strings_reuse_utf8_column_mapping(
     assert report.ok, report.findings
     assert mapped_lines.count("'é' " * inert_expression_count + "\n") == 1
     assert elapsed_seconds < 3.0
+
+
+def test_high_cardinality_python_evidence_fails_before_ast_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    source = repo / "trade_py/db.py"
+    source.write_text(
+        'LEGACY_DB = 1\nSQL = "CREATE TABLE legacy_records"\n' + ("'é';" * 200_000) + "\n",
+        encoding="utf-8",
+    )
+    original_parse = guard.ast.parse
+    parsed_sources: list[str] = []
+
+    def record_parse(source: str, *args: object, **kwargs: object) -> ast.AST:
+        parsed_sources.append(source)
+        return original_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(guard.ast, "parse", record_parse)
+
+    report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_evidence_python_tokens=1_000),
+    )
+
+    assert {finding.rule_id for finding in report.findings} == {
+        "architecture.baseline_evidence_budget_exceeded"
+    }
+    assert report.producers == ()
+    assert not any("'é';" in source_text for source_text in parsed_sources)
 
 
 def test_git_discovery_ignores_inherited_index_override(

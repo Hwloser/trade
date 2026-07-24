@@ -652,6 +652,7 @@ class DiscoveryLimits:
     max_source_bytes: int = 32 * 1024 * 1024
     max_file_bytes: int = 1 * 1024 * 1024
     max_evidence_bytes: int = 1 * 1024 * 1024
+    max_evidence_python_tokens: int = 100_000
     max_baseline_entries: int = 512
     max_total_baseline_entries: int = 1_024
     max_evidence_sources: int = 512
@@ -829,7 +830,11 @@ class _EvidenceReader:
             decoded = self.read(relative).decode("utf-8")
             self._decoded_text[relative] = decoded
         if PurePosixPath(relative).suffix in {".py", ".pyi"}:
-            executable = _live_python_source_text(decoded)
+            executable = _live_python_source_text(
+                decoded,
+                source=relative,
+                max_tokens=self.limits.max_evidence_python_tokens,
+            )
         else:
             executable = _live_non_python_source_text(decoded, source=relative)
         self._executable_text[relative] = executable
@@ -1619,9 +1624,10 @@ def _literal_is_present(text: str, literal: str) -> bool:
     return any(candidate.group(0) == literal for candidate in _CREATE_TABLE_LITERAL.finditer(text))
 
 
-def _live_python_source_text(text: str) -> str:
+def _live_python_source_text(text: str, *, source: str, max_tokens: int) -> str:
     """Mask comments and bare string expressions without changing code offsets."""
 
+    _validate_python_evidence_token_budget(text, source=source, max_tokens=max_tokens)
     tree = ast.parse(text)
     line_offsets = _source_line_offsets(text)
     utf8_column_maps = _source_utf8_column_maps(text)
@@ -1645,6 +1651,18 @@ def _live_python_source_text(text: str) -> str:
             continue
         _mask_source_span(characters, token_start, token_end)
     return "".join(characters)
+
+
+def _validate_python_evidence_token_budget(text: str, *, source: str, max_tokens: int) -> None:
+    for token_count, _ in enumerate(
+        tokenize.generate_tokens(io.StringIO(text).readline),
+        start=1,
+    ):
+        if token_count > max_tokens:
+            raise _baseline_evidence_budget_error(
+                source,
+                f"declared Python evidence exceeds the {max_tokens} token pre-parse budget",
+            )
 
 
 def _source_line_offsets(text: str) -> tuple[int, ...]:

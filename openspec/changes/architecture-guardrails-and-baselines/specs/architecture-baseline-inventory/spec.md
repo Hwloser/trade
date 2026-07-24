@@ -20,7 +20,9 @@ declaration with a known bootstrap and migration DDL SHALL record both exact
 source/literal/role facts. The validator SHALL transform executable source
 evidence at most once per source per invocation; Python inert-string masking
 SHALL advance through ordered spans without a repeated whole-span scan and
-reuse one UTF-8 byte-to-character mapping per non-ASCII physical line.
+reuse one UTF-8 byte-to-character mapping per non-ASCII physical line. Before
+constructing a Python AST, the validator SHALL stream and enforce the governed
+Python evidence-token budget, failing closed when the limit is exceeded.
 classification SHALL carry a semantic kind, target Context or `deferred`,
 reason, required owning child, and explicit activation state. `candidate` and
 `deferred` are audit-only classifications and SHALL never authorize target

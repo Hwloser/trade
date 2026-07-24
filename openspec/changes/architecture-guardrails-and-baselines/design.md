@@ -179,9 +179,11 @@ facts that no longer match an executable source literal. Per invocation, it
 caches each decoded and comment/inert-string-masked evidence source, so
 repeated facts do not reparse or retokenize the same file; the Python masking
 pass advances monotonically through sorted inert-string spans and translates
-AST UTF-8 columns through one compact per-non-ASCII-line map. Python comments
-and bare string expressions, and admitted shell/CMake/C-family comments, cannot
-satisfy evidence. It does not load modules, initialize `TradeDB`, read an
+AST UTF-8 columns through one compact per-non-ASCII-line map. Before Python
+AST construction, a streamed token admission budget rejects high-cardinality
+evidence. Python comments and bare string expressions, and admitted
+shell/CMake/C-family comments, cannot satisfy evidence. It does not load
+modules, initialize `TradeDB`, read an
 artifact directory, or accept arbitrary paths outside the repository. The
 focused source-only fixture permits reads only of the baseline, declared source
 evidence, and verified regular descriptors in the bounded production-Python
@@ -551,9 +553,10 @@ source-protection guarantee and avoids duplicate Git traversal.
   Descriptor-verified executable text is transformed once per source per guard
   invocation, and Python token masking advances through sorted inert spans with
   a monotonic cursor while reusing one UTF-8 byte-to-character map per non-ASCII
-  physical line. Focused regressions pin transformation reuse and large
-  line-separated and same-line inert-string fixtures without adding runtime
-  application I/O.
+  physical line. A streamed pre-parse token ceiling rejects high-cardinality
+  inputs before AST/span allocation. Focused regressions pin transformation
+  reuse and large line-separated, same-line, and token-over-budget inert-string
+  fixtures without adding runtime application I/O.
 - **A source-text rule cannot prove runtime ownership** -> The guard blocks
   direct architectural bypasses and fail-closes unknown table/artifact,
   dynamic-loading, and process-spawn paths, but does not claim dynamic behavior
