@@ -75,6 +75,7 @@ _APPROVED_BINDING_EVIDENCE_FIELDS = (
 _CREATE_TABLE_LITERAL = re.compile(
     r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z_][A-Za-z0-9_]*"
 )
+_NAMED_ADAPTER_SCOPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 _EXCLUDED_SOURCE_SEGMENTS = frozenset(
     {"vendor", "third_party", "generated", "cache", "__pycache__"}
 )
@@ -523,6 +524,44 @@ _REQUIRED_TABLE_BINDINGS = {
         "process-manager-and-platform-boundary",
     ),
 }
+_REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
+    "event_handler_runs": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS event_handler_runs",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS event_handler_runs",
+            "migration",
+        ),
+    ),
+    "kg_edge_candidates": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+            "migration",
+        ),
+    ),
+    "ui_snapshots": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS ui_snapshots",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS ui_snapshots",
+            "migration",
+        ),
+    ),
+}
 _REQUIRED_ARTIFACT_BINDINGS = {
     "warehouse-parquet": (
         "trade_py/data/warehouse/io.py",
@@ -716,17 +755,21 @@ class _Baseline:
 
 @dataclass
 class _EvidenceReader:
-    """Memoize only descriptor-verified source evidence for one guard invocation."""
+    """Memoize descriptor-verified and executable source evidence for one run."""
 
     root: Path
     limits: DiscoveryLimits
     _payloads: dict[str, bytes]
+    _decoded_text: dict[str, str]
+    _executable_text: dict[str, str]
     _aggregate_bytes: int = 0
 
     def __init__(self, root: Path, limits: DiscoveryLimits) -> None:
         self.root = root
         self.limits = limits
         self._payloads = {}
+        self._decoded_text = {}
+        self._executable_text = {}
 
     def read(self, relative: str) -> bytes:
         cached = self._payloads.get(relative)
@@ -763,6 +806,21 @@ class _EvidenceReader:
         self._payloads[relative] = payload
         self._aggregate_bytes += len(payload)
         return payload
+
+    def executable_text(self, relative: str) -> str:
+        cached = self._executable_text.get(relative)
+        if cached is not None:
+            return cached
+        decoded = self._decoded_text.get(relative)
+        if decoded is None:
+            decoded = self.read(relative).decode("utf-8")
+            self._decoded_text[relative] = decoded
+        if PurePosixPath(relative).suffix in {".py", ".pyi"}:
+            executable = _live_python_source_text(decoded)
+        else:
+            executable = _live_non_python_source_text(decoded, source=relative)
+        self._executable_text[relative] = executable
+        return executable
 
 
 def validate_architecture_baseline(
@@ -1214,6 +1272,15 @@ def _validate_baseline_facts(
             or not _has_provenance_literal(tables_by_name[name], source, literal)
         )
     ]
+    invalid_table_bindings.extend(
+        name
+        for name, requirements in _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE.items()
+        if name in tables_by_name
+        and any(
+            not _has_provenance_record(tables_by_name[name], source, literal, role)
+            for source, literal, role in requirements
+        )
+    )
     if missing_table_names or invalid_table_bindings:
         details = []
         if missing_table_names:
@@ -1295,9 +1362,21 @@ def _validate_baseline_facts(
 
 
 def _has_provenance_literal(table: Mapping[str, Any], source: str, literal: str) -> bool:
+    return _has_provenance_record(table, source, literal, role=None)
+
+
+def _has_provenance_record(
+    table: Mapping[str, Any],
+    source: str,
+    literal: str,
+    role: str | None,
+) -> bool:
     provenance = table.get("provenance")
     return isinstance(provenance, list) and any(
-        isinstance(item, dict) and item.get("source") == source and item.get("literal") == literal
+        isinstance(item, dict)
+        and item.get("source") == source
+        and item.get("literal") == literal
+        and (role is None or item.get("role") == role)
         for item in provenance
     )
 
@@ -1474,7 +1553,7 @@ def _validate_source_literal(
             "artifacts, manifests, pointers, receipts, or database files.",
         )
     try:
-        payload = evidence.read(source)
+        evidence.read(source)
     except _GuardError as exc:
         if exc.__cause__ and isinstance(exc.__cause__, FileNotFoundError):
             raise _GuardError(
@@ -1492,7 +1571,8 @@ def _validate_source_literal(
             ) from exc
         raise
     try:
-        text = payload.decode("utf-8")
+        text = evidence.executable_text(source)
+        literal_is_present = _literal_is_present(text, literal)
     except UnicodeDecodeError as exc:
         raise _GuardError(
             _BASELINE_UNSAFE_SOURCE,
@@ -1500,8 +1580,6 @@ def _validate_source_literal(
             "declared evidence source is not valid UTF-8",
             "Keep declared evidence as stable UTF-8 source inside the repository.",
         ) from exc
-    try:
-        literal_is_present = _source_literal_is_present(text, literal, source=source)
     except (RecursionError, SyntaxError, tokenize.TokenError) as exc:
         raise _GuardError(
             _BASELINE_INVALID_SOURCE,
@@ -1519,13 +1597,8 @@ def _validate_source_literal(
         )
 
 
-def _source_literal_is_present(text: str, literal: str, *, source: str) -> bool:
-    """Match evidence in admitted executable source, excluding comments."""
-
-    if PurePosixPath(source).suffix in {".py", ".pyi"}:
-        text = _live_python_source_text(text)
-    else:
-        text = _live_non_python_source_text(text, source=source)
+def _literal_is_present(text: str, literal: str) -> bool:
+    """Match a literal against cached executable source evidence."""
 
     match = _CREATE_TABLE_LITERAL.fullmatch(literal)
     if match is None:
@@ -1540,21 +1613,23 @@ def _live_python_source_text(text: str) -> str:
     line_offsets = _source_line_offsets(text)
     inert_string_spans = _inert_python_string_spans(tree, text, line_offsets)
     characters = list(text)
+    inert_span_index = 0
     for token in tokenize.generate_tokens(io.StringIO(text).readline):
-        if token.type != tokenize.COMMENT and (
-            token.type != tokenize.STRING
-            or not _offset_overlaps_any(
-                _source_position_offset(line_offsets, token.start),
-                _source_position_offset(line_offsets, token.end),
-                inert_string_spans,
-            )
+        token_start = _source_position_offset(line_offsets, token.start)
+        token_end = _source_position_offset(line_offsets, token.end)
+        while (
+            inert_span_index < len(inert_string_spans)
+            and inert_string_spans[inert_span_index][1] <= token_start
         ):
-            continue
-        _mask_source_span(
-            characters,
-            _source_position_offset(line_offsets, token.start),
-            _source_position_offset(line_offsets, token.end),
+            inert_span_index += 1
+        is_inert_string = (
+            token.type == tokenize.STRING
+            and inert_span_index < len(inert_string_spans)
+            and inert_string_spans[inert_span_index][0] < token_end
         )
+        if token.type != tokenize.COMMENT and not is_inert_string:
+            continue
+        _mask_source_span(characters, token_start, token_end)
     return "".join(characters)
 
 
@@ -1600,7 +1675,7 @@ def _inert_python_string_spans(
                     ),
                 )
             )
-    return tuple(spans)
+    return tuple(sorted(spans))
 
 
 def _ast_source_position_offset(
@@ -1616,14 +1691,6 @@ def _ast_source_position_offset(
     line_start = line_offsets[line - 1]
     encoded_prefix = text[line_start : line_offsets[line]].encode("utf-8")[:column]
     return line_start + len(encoded_prefix.decode("utf-8"))
-
-
-def _offset_overlaps_any(
-    start: int,
-    end: int,
-    spans: Sequence[tuple[int, int]],
-) -> bool:
-    return any(start < span_end and span_start < end for span_start, span_end in spans)
 
 
 def _mask_source_span(characters: list[str], start: int, end: int) -> None:
@@ -1745,12 +1812,17 @@ def _validate_classification(
         return
     _require_text(fact, "adapter_scope", category)
     adapter_scope = str(fact["adapter_scope"])
-    if not adapter_scope.startswith(f"{target_context}.adapters."):
+    adapter_scope_prefix = f"{target_context}.adapters."
+    adapter_scope_suffix = adapter_scope[len(adapter_scope_prefix) :]
+    if (
+        not adapter_scope.startswith(adapter_scope_prefix)
+        or _NAMED_ADAPTER_SCOPE.fullmatch(adapter_scope_suffix) is None
+    ):
         raise _GuardError(
             _BASELINE_CLASSIFICATION,
             BASELINE_FILENAME,
-            f"{category} approved binding adapter_scope must belong to {target_context}.adapters",
-            "Name a persistence adapter scope beneath the approved target Context.",
+            f"{category} approved binding adapter_scope must name a persistence adapter beneath {target_context}.adapters",
+            "Use <target_context>.adapters.<identifier>[.<identifier>...].",
         )
     for field in _APPROVED_BINDING_EVIDENCE_FIELDS:
         proof = fact.get(field)

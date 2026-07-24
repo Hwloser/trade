@@ -58,7 +58,7 @@ reason = "Legacy idempotency state requires an owned outbox and delivery migrati
 required_child = "process-manager-and-platform-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "bootstrap" },
-  { source = "trade_py/db/migrations.py", literal = "def _migrate_v21", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "migration" },
 ]
 
 [[tables]]
@@ -374,6 +374,7 @@ reason = "Knowledge-graph candidate review needs Study evidence and Decision Sup
 required_child = "study-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "migration" },
 ]
 
 [[tables]]
@@ -663,6 +664,7 @@ reason = "UI snapshots are interface cache projections pending BFF cache and inv
 required_child = "cli-http-sdk-compatibility"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS ui_snapshots", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS ui_snapshots", role = "migration" },
 ]
 
 [[tables]]

@@ -181,6 +181,15 @@ _REQUIRED_TABLE_FIXTURES = (
         "migration",
     ),
 )
+_REQUIRED_TABLE_EXTRA_PROVENANCE = {
+    "ui_snapshots": (
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS ui_snapshots",
+            "migration",
+        ),
+    ),
+}
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -240,6 +249,15 @@ def _required_table_declarations() -> str:
         required_child,
         role,
     ) in _REQUIRED_TABLE_FIXTURES:
+        provenance = [f'  {{ source = "{source}", literal = "{literal}", role = "{role}" }},']
+        provenance.extend(
+            f'  {{ source = "{extra_source}", literal = "{extra_literal}", '
+            f'role = "{extra_role}" }},'
+            for extra_source, extra_literal, extra_role in _REQUIRED_TABLE_EXTRA_PROVENANCE.get(
+                name, ()
+            )
+        )
+        provenance_text = "\n".join(provenance)
         declarations.append(
             f'''
 [[tables]]
@@ -251,7 +269,7 @@ target_context = "{target_context}"
 reason = "Fixture declaration."
 required_child = "{required_child}"
 provenance = [
-  {{ source = "{source}", literal = "{literal}", role = "{role}" }},
+{provenance_text}
 ]
 '''.strip()
         )
@@ -302,6 +320,19 @@ required_child = "dataset-product-boundary"
 provenance = [
   {{ source = "trade_py/db.py", literal = "CREATE TABLE legacy_records", role = "bootstrap" }},
   {{ source = "trade_py/migrations.py", literal = "ALTER TABLE legacy_records", role = "alter" }},
+]
+
+[[tables]]
+logical_name = "event_handler_runs"
+current_owner = "legacy"
+semantic_kind = "event-delivery-state"
+classification = "candidate"
+target_context = "platform"
+reason = "Target ownership requires a reviewed Platform migration."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "bootstrap" }},
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "migration" }},
 ]
 
 [[tables]]
@@ -398,6 +429,7 @@ reason = "Target ownership requires a reviewed Study migration."
 required_child = "study-boundary"
 provenance = [
   {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "bootstrap" }},
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "migration" }},
 ]
 
 [[tables]]
@@ -987,6 +1019,7 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'WATCHLIST_SQL = "CREATE TABLE IF NOT EXISTS watchlist"\n'
             'SIGNALS_SQL = "CREATE TABLE IF NOT EXISTS signals"\n'
             'JOB_RUNS_SQL = "CREATE TABLE IF NOT EXISTS job_runs"\n'
+            'EVENT_HANDLER_RUNS_SQL = "CREATE TABLE IF NOT EXISTS event_handler_runs"\n'
             'INSTRUMENTS_SQL = "CREATE TABLE IF NOT EXISTS instruments"\n'
             'SECTOR_MEMBERS_SQL = "CREATE TABLE IF NOT EXISTS sector_members"\n'
             'SYNC_STATE_SQL = "CREATE TABLE IF NOT EXISTS sync_state"\n'
@@ -1019,6 +1052,9 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'MIGRATIONS_SQL = "CREATE TABLE IF NOT EXISTS schema_migrations"\n'
             'SIGNAL_CACHE_SQL = "CREATE TABLE IF NOT EXISTS signal_cache_v2"\n'
             'BUS_EVENTS_SQL = "CREATE TABLE IF NOT EXISTS bus_events"\n'
+            'EVENT_HANDLER_RUNS_SQL = "CREATE TABLE IF NOT EXISTS event_handler_runs"\n'
+            'KG_CANDIDATES_SQL = "CREATE TABLE IF NOT EXISTS kg_edge_candidates"\n'
+            'UI_SNAPSHOTS_SQL = "CREATE TABLE IF NOT EXISTS ui_snapshots"\n'
             'ARTICLE_EVENT_SQL = "CREATE TABLE IF NOT EXISTS ArticleEvent"\n'
             'INFLUENCE_SIGNAL_SQL = "CREATE TABLE IF NOT EXISTS InfluenceSignal"\n'
             'EVIDENCE_SQL = "CREATE TABLE IF NOT EXISTS Evidence"\n'
@@ -1140,6 +1176,7 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
     from trade_py.devtools.quality.toml_compat import tomllib
 
     baseline = tomllib.loads((REPO_ROOT / BASELINE_FILENAME).read_text(encoding="utf-8"))
+    tables_by_name = {table["logical_name"]: table for table in baseline["tables"]}
     table_names = {table["logical_name"] for table in baseline["tables"]}
     capture_risk_ids = {risk["id"] for risk in baseline["capture_risks"]}
     interface_kinds = {item["surface_kind"] for item in baseline["interfaces"]}
@@ -1201,6 +1238,31 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
         "gdelt-streaming-local-state-and-refetch",
     } <= capture_risk_ids
     assert "http-openapi" in interface_kinds
+    for table_name, source, literal, role in (
+        (
+            "event_handler_runs",
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS event_handler_runs",
+            "migration",
+        ),
+        (
+            "kg_edge_candidates",
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+            "migration",
+        ),
+        (
+            "ui_snapshots",
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS ui_snapshots",
+            "migration",
+        ),
+    ):
+        assert {
+            "source": source,
+            "literal": literal,
+            "role": role,
+        } in tables_by_name[table_name]["provenance"]
 
 
 def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path) -> None:
@@ -1379,6 +1441,23 @@ def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> Non
     _write_baseline(repo, approved_baseline)
     assert validate_architecture_baseline(repo).ok
 
+    for invalid_scope in (
+        "datasets.adapters.",
+        "datasets.adapters.persistence.",
+        "datasets.adapters.persistence..warehouse",
+        "datasets.adapters.persistence.warehouse-invalid",
+        "capture.adapters.persistence.warehouse",
+    ):
+        _write_baseline(
+            repo,
+            approved_baseline.replace(
+                'adapter_scope = "datasets.adapters.persistence.warehouse"',
+                f'adapter_scope = "{invalid_scope}"',
+                1,
+            ),
+        )
+        assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
     _write_baseline(
         repo,
         approved_baseline.replace(
@@ -1423,6 +1502,30 @@ def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path)
     )
 
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("table_name", "literal"),
+    (
+        ("event_handler_runs", "CREATE TABLE IF NOT EXISTS event_handler_runs"),
+        ("kg_edge_candidates", "CREATE TABLE IF NOT EXISTS kg_edge_candidates"),
+        ("ui_snapshots", "CREATE TABLE IF NOT EXISTS ui_snapshots"),
+    ),
+)
+def test_required_multi_source_table_provenance_fails_closed(
+    tmp_path: Path,
+    table_name: str,
+    literal: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    migration_record = (
+        '  { source = "trade_py/db/migrations.py", '
+        f'literal = "{literal}", role = "migration" }},\n'
+    )
+    _write_baseline(repo, baseline.replace(migration_record, "", 1))
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
 
 
 @pytest.mark.parametrize(
@@ -1866,6 +1969,118 @@ def test_source_evidence_is_memoized_and_aggregate_budgeted(
         finding.rule_id for finding in budget_report.findings
     }
     assert budget_report.producers == ()
+
+
+def test_source_evidence_executable_text_is_transformed_once_per_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    repeated_source = "REPEATED_EVIDENCE = True\n"
+    repeated_path = repo / "tests/repeated_evidence.py"
+    repeated_path.write_text(repeated_source, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + """
+[[source_facts]]
+id = "repeated-evidence-one"
+source = "tests/repeated_evidence.py"
+literal = "REPEATED_EVIDENCE"
+current_owner = "legacy"
+required_child = "dataset-product-boundary"
+
+[[source_facts]]
+id = "repeated-evidence-two"
+source = "tests/repeated_evidence.py"
+literal = "REPEATED_EVIDENCE"
+current_owner = "legacy"
+required_child = "dataset-product-boundary"
+""",
+    )
+    original_parse = guard.ast.parse
+    original_tokens = guard.tokenize.generate_tokens
+    original_live_source = guard._live_python_source_text
+    parses = 0
+    tokenizations = 0
+    transformations = 0
+    transforming_repeated_source = False
+
+    def record_parse(source: str, *args: object, **kwargs: object) -> ast.AST:
+        nonlocal parses
+        if source == repeated_source:
+            parses += 1
+        return original_parse(source, *args, **kwargs)
+
+    def record_tokens(readline):
+        nonlocal tokenizations
+        if transforming_repeated_source:
+            tokenizations += 1
+        return original_tokens(readline)
+
+    def record_live_source(text: str) -> str:
+        nonlocal transformations, transforming_repeated_source
+        if text != repeated_source:
+            return original_live_source(text)
+        transformations += 1
+        transforming_repeated_source = True
+        try:
+            return original_live_source(text)
+        finally:
+            transforming_repeated_source = False
+
+    monkeypatch.setattr(guard.ast, "parse", record_parse)
+    monkeypatch.setattr(guard.tokenize, "generate_tokens", record_tokens)
+    monkeypatch.setattr(guard, "_live_python_source_text", record_live_source)
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert transformations == 1
+    assert parses == 1
+    assert tokenizations == 1
+
+
+def test_many_inert_strings_are_masked_with_linear_span_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    source = repo / "trade_py/db.py"
+    source.write_text(
+        "LEGACY_DB = 1\n"
+        'SQL = "CREATE TABLE legacy_records"\n' + ("'inert evidence text'\n" * 4_000),
+        encoding="utf-8",
+    )
+    original_spans = guard._inert_python_string_spans
+    span_iteration_calls = 0
+
+    def record_spans(
+        tree: ast.AST,
+        text: str,
+        line_offsets: tuple[int, ...],
+    ) -> tuple[tuple[int, int], ...]:
+        spans = original_spans(tree, text, line_offsets)
+
+        class CountingSpans(tuple):
+            def __iter__(self):
+                nonlocal span_iteration_calls
+                span_iteration_calls += 1
+                return super().__iter__()
+
+        return CountingSpans(spans)
+
+    monkeypatch.setattr(guard, "_inert_python_string_spans", record_spans)
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    # The monotonic index uses len/index access; it must not rescan every span
+    # for every STRING token as the former overlap predicate did.
+    assert span_iteration_calls == 0
 
 
 def test_git_discovery_ignores_inherited_index_override(

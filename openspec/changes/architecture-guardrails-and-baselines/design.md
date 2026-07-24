@@ -164,18 +164,23 @@ one-or-more source facts with `bootstrap`, `migration`, `alter`, or
 semantic kind, target Context/defer reason, and required child. Neither
 `candidate` nor `deferred` authorizes persistence access. Only a later
 implementation child may add an explicit `approved_binding` that names one
-Context and one persistence-adapter scope after proving writer, reader,
+Context and one non-empty, dot-delimited persistence-adapter scope using
+identifier segments beneath `<context>.adapters.` after proving writer, reader,
 transaction, compatibility, and owner behavior. Each of its writer, reader,
 transaction, and compatibility proofs is a distinct `{ source, literal }`
 record verified through the same repository-confined source-only reader; prose,
-comments, stale literals, and data/artifact paths cannot authorize a binding.
+comments, stale literals, unnamed or malformed adapter scopes, and
+data/artifact paths cannot authorize a binding.
 
 The checker reads UTF-8 text through repository-confined no-follow descriptors
 and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
 non-regular files, source identity drift, duplicate declarations, and source
-facts that no longer match an executable source literal. Python comments and
-bare string expressions, and admitted shell/CMake/C-family comments, cannot
-satisfy evidence. It does not load modules, initialize `TradeDB`, read an
+facts that no longer match an executable source literal. Per invocation, it
+caches each decoded and comment/inert-string-masked evidence source, so
+repeated facts do not reparse or retokenize the same file; the Python masking
+pass advances monotonically through sorted inert-string spans. Python comments
+and bare string expressions, and admitted shell/CMake/C-family comments,
+cannot satisfy evidence. It does not load modules, initialize `TradeDB`, read an
 artifact directory, or accept arbitrary paths outside the repository. The
 focused source-only fixture permits reads only of the baseline, declared source
 evidence, and verified regular descriptors in the bounded production-Python
@@ -541,6 +546,11 @@ source-protection guarantee and avoids duplicate Git traversal.
   and source paths on every evidence/native/target/guard-triggered run,
   including rename/deletion; a child must update it in the same reviewed change
   when audited facts legitimately move.
+- **Repeated evidence or pathological inert strings exhaust review capacity** ->
+  Descriptor-verified executable text is transformed once per source per guard
+  invocation, and Python token masking advances through sorted inert spans with
+  a monotonic cursor. Focused regressions pin transformation reuse and a large
+  inert-string fixture without adding runtime application I/O.
 - **A source-text rule cannot prove runtime ownership** -> The guard blocks
   direct architectural bypasses and fail-closes unknown table/artifact,
   dynamic-loading, and process-spawn paths, but does not claim dynamic behavior

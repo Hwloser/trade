@@ -16,12 +16,17 @@ one-or-more provenance records, and a classification. A provenance record
 SHALL name a repository source, an exact source literal, and one of
 `bootstrap`, `migration`, `alter`, or `data_transform`; a single bootstrap DDL
 location SHALL not be treated as complete physical-schema evidence. A
+declaration with a known bootstrap and migration DDL SHALL record both exact
+source/literal/role facts. The validator SHALL transform executable source
+evidence at most once per source per invocation; Python inert-string masking
+SHALL advance through ordered spans without a repeated whole-span scan.
 classification SHALL carry a semantic kind, target Context or `deferred`,
 reason, required owning child, and explicit activation state. `candidate` and
 `deferred` are audit-only classifications and SHALL never authorize target
 persistence access. Only a later, separately reviewed `approved_binding` with
-one target Context and a named persistence-adapter scope authorizes a literal
-SQL table reference. An `approved_binding` SHALL also declare separate
+one target Context and a non-empty, dot-delimited persistence-adapter scope
+matching `<context>.adapters.<identifier>[.<identifier>...]` authorizes a
+literal SQL table reference. An `approved_binding` SHALL also declare separate
 `writer_evidence`, `reader_evidence`, `transaction_evidence`, and
 `compatibility_evidence` records; each record SHALL contain a repository source
 and an executable source literal accepted by the same source-only admission
