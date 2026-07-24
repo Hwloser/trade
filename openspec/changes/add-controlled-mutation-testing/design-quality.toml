@@ -1,0 +1,259 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "Adds the developer-facing scripts/mutation-test changed|core|full command, trade.mutation.report.v1 JSON/Markdown/HTML contract, configuration schemas, exit codes, and GitHub Actions routing without changing runtime product interfaces."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "The controller writes only ignored developer reports, temporary source copies, and disposable content-addressed caches; it never writes runtime databases, parquet, manifests, model state, or production data."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No business database, payload, parquet, API, or runtime schema changes; versioned mutation report/config formats are additive developer contracts rather than migrated production state."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "The change does not compute forecasts, labels, rankings, backtests, snapshots, or point-in-time data and excludes model/research execution from mutation tests."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No model, recommendation, score, calibration, promotion, or trading decision behavior changes; mutation only challenges existing unit tests in temporary source copies."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "Mutation workers use synthetic/local unit tests only and do not fetch, ingest, replay, or process news, social, macro, on-chain, provider, or other external event data."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "The developer controller owns a bounded worker pool plus independently terminable pytest process groups, global/per-mutant deadlines, cancellation, backpressure, and partial result aggregation."
+
+[evidence.contract]
+contract = "scripts/mutation-test changed|core|full with explicit base/output/budget/worker/plan/cache options; exit 0 report/zero-work, exit 1 future established policy regression only, exit 2 invocation/config/tool/baseline/report infrastructure failure; trade.mutation.report.v1 JSON plus Markdown and HTML."
+consumers = "Repository developers, pull-request GitHub Actions, nightly/manual operators, and future baseline reviewers. Existing runtime CLI, HTTP, Web, SDK, scheduler, event, database, artifact, model, C++ and frontend consumers are unchanged."
+compatibility = "The surface is additive and initially non-blocking. Existing pytest remains the test framework. Optional mutation dependencies are not runtime dependencies. Missing or invalid explicit changed base fails closed and never broadens to core/full."
+migration = "No migration is required. Reports and caches use versioned schemas/keys and are generated only after explicit invocation. The baseline starts unestablished rather than treating the first run as historical truth."
+rollback = "Remove the workflow, wrapper, controller, optional dependency group, configuration, tests and documentation. Ignored reports/caches are disposable; no runtime state or data restoration is needed."
+
+[evidence.concurrency]
+ownership = "One mutation controller process owns deterministic planning, one bounded worker pool, active process-group registry, monotonic global deadline, signal handling, partial report finalization, and cleanup. Each worker owns one private source copy and one pytest process group."
+bound = "Mode limits are 150/1000/5000 selected mutants and 600/1800/5400 wall seconds for changed/core/full; candidate scans are 3000/20000/100000; workers are at most min(4,max(1,floor(CPU/2))); per-mutant output is 64 KiB and total reports are bounded by mode."
+ordering = "Planning order is changed line, changed definition, configured core/defect priority, then repository-relative path, line, column, operator priority/name and occurrence. Completion order never changes serialized report order."
+atomicity = "Workers share no mutable source tree. One first-order mutation is applied to a private copy. Cache entries and JSON/Markdown/HTML reports are written through temporary siblings and atomically replaced; partial reports identify not-run work."
+timeout_cancellation = "Each pytest starts in a new process session/group. Timeout, global deadline or signal sends TERM to the full group, waits bounded grace, sends KILL, reaps, stops new admission and writes partial reports. Timeout remains distinct from killed."
+backpressure = "The parent admits at most the bounded worker count, retains a finite queue no larger than selected work, stops AST enumeration at the candidate ceiling, stops admission at wall deadline, and truncates output without blocking pipes."
+partial_failure = "Baseline failure disables only its exact affected-test tuple and is infrastructure failure. Individual invalid, timeout, no-coverage and infrastructure outcomes remain separate and do not increase mutation score; completed outcomes survive global cancellation."
+capacity_validation = "Tests force worker saturation, child-process timeout, output overflow, candidate/mutant/time/report ceilings, global cancellation, partial report generation, deterministic truncation and zero-work changed scope. Real smoke runs use lower explicit limits without weakening normative maxima."
+
+[[obligations]]
+id = "mutation.bounded-execution"
+owner = "trade_py/devtools/mutation_testing selection and executor"
+paths = [
+  "trade_py/devtools/mutation_testing/config.py",
+  "trade_py/devtools/mutation_testing/git_scope.py",
+  "trade_py/devtools/mutation_testing/selection.py",
+  "trade_py/devtools/mutation_testing/executor.py",
+  "config/mutation-testing.toml",
+  "tests/test_mutation_selection.py",
+  "tests/test_mutation_executor.py",
+]
+contracts = [
+  "changed 150 mutants and 600 seconds",
+  "core 1000 mutants and 1800 seconds",
+  "full 5000 mutants and 5400 seconds",
+  "worker max min(4, CPU half)",
+  "finite candidate scan and no scope broadening",
+]
+failure_states = [
+  "unresolved base",
+  "candidate or mutant budget exhausted",
+  "global deadline",
+  "unsafe or excluded source",
+  "excessive worker request",
+  "partial execution",
+]
+spec_requirements = [
+  "controlled-mutation-testing:Mutation execution SHALL be bounded by mode",
+  "controlled-mutation-testing:Mutation target and test selection SHALL remain narrow",
+]
+validation_tasks = ["1.1", "1.2", "2.2", "2.3", "4.1", "4.2", "4.4"]
+
+[[obligations]]
+id = "mutation.first-order-selection"
+owner = "trade_py/devtools/mutation_testing engine adapter"
+paths = [
+  "trade_py/devtools/mutation_testing/engine.py",
+  "trade_py/devtools/mutation_testing/selection.py",
+  "config/mutation-testing.toml",
+  "tests/test_mutation_engine.py",
+  "tests/test_mutation_selection.py",
+]
+contracts = [
+  "exact Cosmic Ray operator allowlist",
+  "one mutation specification per work item",
+  "deterministic location-prioritized selection",
+  "no random or higher-order mutation",
+]
+failure_states = [
+  "unknown operator",
+  "multiple-location work item",
+  "unsupported Cosmic Ray version",
+  "unsafe loop mutator",
+  "nondeterministic truncation",
+]
+spec_requirements = [
+  "controlled-mutation-testing:Only deterministic first-order high-value mutations SHALL run",
+]
+validation_tasks = ["2.1", "2.2", "4.2"]
+
+[[obligations]]
+id = "mutation.narrow-scope"
+owner = "trade_py/devtools/mutation_testing source and test mapping"
+paths = [
+  "trade_py/devtools/mutation_testing/git_scope.py",
+  "trade_py/devtools/mutation_testing/selection.py",
+  "config/mutation-testing.toml",
+  "tests/test_mutation_git_scope.py",
+  "tests/test_mutation_selection.py",
+]
+contracts = [
+  "changed production lines/files only",
+  "closed core and full eligible roots",
+  "explicit affected unit-test mapping",
+  "no full pytest fallback",
+]
+failure_states = [
+  "documentation-only change",
+  "unmapped source",
+  "excluded DTO, migration, generated, vendor, test, logging or startup source",
+  "deleted source",
+  "path escape or non-regular source",
+]
+spec_requirements = [
+  "controlled-mutation-testing:Mutation target and test selection SHALL remain narrow",
+]
+validation_tasks = ["2.2", "4.3"]
+
+[[obligations]]
+id = "mutation.isolated-execution"
+owner = "trade_py/devtools/mutation_testing executor"
+paths = [
+  "trade_py/devtools/mutation_testing/engine.py",
+  "trade_py/devtools/mutation_testing/executor.py",
+  "tests/test_mutation_executor.py",
+]
+contracts = [
+  "private source copy per mutant",
+  "selected pytest only",
+  "new process group",
+  "max(10 seconds, 2.5 times baseline) timeout",
+  "full descendant termination and reaping",
+]
+failure_states = [
+  "baseline test failure",
+  "test failure",
+  "timeout",
+  "launch failure",
+  "mutation failure",
+  "global cancellation",
+  "orphan descendant",
+]
+spec_requirements = [
+  "controlled-mutation-testing:Test execution SHALL be isolated and truthfully classified",
+]
+validation_tasks = ["1.2", "2.3", "4.1", "4.4"]
+
+[[obligations]]
+id = "mutation.truthful-report"
+owner = "trade_py/devtools/mutation_testing report and baseline"
+paths = [
+  "trade_py/devtools/mutation_testing/report.py",
+  "trade_py/devtools/mutation_testing/baseline.py",
+  "config/mutation-baseline.json",
+  "tests/test_mutation_report.py",
+  "tests/test_mutation_baseline.py",
+]
+contracts = [
+  "trade.mutation.report.v1",
+  "atomic JSON, Markdown and HTML",
+  "separate killed, survived, timeout, no-coverage, invalid and infrastructure counts",
+  "survivor source, line, operator and tests",
+  "partial report at every budget boundary",
+]
+failure_states = [
+  "timeout miscounted killed",
+  "infrastructure miscounted killed",
+  "report too large",
+  "write interruption",
+  "budget-exhausted partial run",
+  "non-comparable baseline",
+]
+spec_requirements = [
+  "controlled-mutation-testing:Reports SHALL be complete, machine-readable, and resumable",
+  "controlled-mutation-testing:Mutation quality policy SHALL be gradual and auditable",
+]
+validation_tasks = ["1.1", "1.2", "2.3", "2.4", "4.1", "4.2", "4.4"]
+
+[[obligations]]
+id = "mutation.gradual-policy"
+owner = "mutation baseline and exception governance"
+paths = [
+  "config/mutation-baseline.json",
+  "config/mutation-exceptions.toml",
+  "trade_py/devtools/mutation_testing/baseline.py",
+  "docs/mutation-testing.md",
+  "tests/test_mutation_baseline.py",
+  "tests/test_mutation_config.py",
+]
+contracts = [
+  "initial report-only policy",
+  "future comparable five-point regression advisory",
+  "70 percent changed core target and future 80 percent mature target",
+  "exact expiring source-digest exceptions",
+]
+failure_states = [
+  "fabricated initial baseline",
+  "broad wildcard exception",
+  "expired or stale exception",
+  "score inflation by no-coverage or timeout",
+]
+spec_requirements = [
+  "controlled-mutation-testing:Mutation quality policy SHALL be gradual and auditable",
+]
+validation_tasks = ["2.1", "2.4", "3.2"]
+
+[[obligations]]
+id = "mutation.ci-routing"
+owner = "GitHub Actions mutation workflow"
+paths = [
+  ".github/workflows/mutation-testing.yml",
+  "scripts/mutation-test",
+  "tests/test_mutation_workflow.py",
+  "docs/mutation-testing.md",
+]
+contracts = [
+  "PR changed only",
+  "nightly and manual core",
+  "weekly and manual full",
+  "non-blocking jobs",
+  "summary and report artifact upload",
+]
+failure_states = [
+  "PR full or core execution",
+  "missing explicit base SHA",
+  "documentation-only mutation execution",
+  "job timeout below cleanup allowance",
+  "missing report upload",
+]
+spec_requirements = [
+  "controlled-mutation-testing:CI SHALL route bounded modes without making them universal PR gates",
+]
+validation_tasks = ["1.2", "3.1", "3.2", "4.3", "4.4"]
