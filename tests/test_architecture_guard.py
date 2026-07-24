@@ -3843,6 +3843,52 @@ def test_in_place_source_swap_with_restored_mtime_is_rejected(
     assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
 
 
+def test_reopened_source_payload_mismatch_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "trade_py/app.py"
+    approved = source.read_text(encoding="utf-8")
+    invalid = "x" * len(approved)
+
+    import trade_py.devtools.architecture_guard as guard
+
+    initial_metadata = source.stat()
+    stable_signature = guard._SourceSignature(
+        device=initial_metadata.st_dev,
+        inode=initial_metadata.st_ino,
+        size=initial_metadata.st_size,
+        mtime_ns=initial_metadata.st_mtime_ns,
+        ctime_ns=initial_metadata.st_ctime_ns,
+    )
+    original_read = guard._read_descriptor
+    original_signature = guard._regular_signature
+    reads = 0
+
+    def mutate_after_first_read(descriptor: int, size: int, path: str) -> bytes:
+        nonlocal reads
+        payload = original_read(descriptor, size, path)
+        if path == "trade_py/app.py" and not reads:
+            reads += 1
+            source.write_text(invalid, encoding="utf-8")
+            os.utime(
+                source,
+                ns=(initial_metadata.st_atime_ns, initial_metadata.st_mtime_ns),
+            )
+        return payload
+
+    def preserve_app_identity(descriptor: int, path: str):
+        if path == "trade_py/app.py":
+            return stable_signature
+        return original_signature(descriptor, path)
+
+    monkeypatch.setattr(guard, "_read_descriptor", mutate_after_first_read)
+    monkeypatch.setattr(guard, "_regular_signature", preserve_app_identity)
+
+    assert PRODUCER_UNSAFE_SOURCE in _rule_ids(repo)
+    assert source.read_text(encoding="utf-8") == invalid
+
+
 def test_fifo_source_is_rejected_without_blocking(tmp_path: Path) -> None:
     if not hasattr(os, "mkfifo"):
         pytest.skip("FIFO support is unavailable")
