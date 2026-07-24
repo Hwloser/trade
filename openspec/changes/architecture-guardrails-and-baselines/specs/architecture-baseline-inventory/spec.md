@@ -91,10 +91,12 @@ persistence call; reader and compatibility evidence SHALL occur as one static re
 statement in that same position. A string only in a persistence parameter or
 keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
 direct transaction `with` block containing a static table-specific write on that
-transaction receiver or one explicit local-name `as` alias. No direct-scope
-binding or object-namespace mutation, import, non-local assignment/deletion
-target, or unmodelled dynamic call may alter that receiver root or alias before
-the operation.
+transaction receiver or one explicit local-name `as` alias. A receiver root or
+alias declared `global` or `nonlocal` anywhere in the named callable's direct
+lexical scope SHALL NOT authorize transaction evidence. No direct-scope binding
+or object-namespace mutation, import, non-local assignment/deletion target, or
+unmodelled dynamic call may alter that receiver root or alias before the
+operation.
 The declared proof literal SHALL exactly equal the static first SQL argument
 captured from the named callable, rather than merely occurring elsewhere in the
 adapter; an operation mismatch SHALL identify the adapter callable line.
@@ -110,6 +112,13 @@ construct. It SHALL fail closed before retaining more than the governed callable
 proof operation, SQL-byte, AST-node, or AST-depth budgets.
 `candidate` and `deferred` declarations SHALL reject every persistence-binding
 field.
+
+Schema version 1 closes top-level declarations and authorization-bearing fields,
+but does not yet close arbitrary unknown descriptive keys within non-table
+source-fact, Capture-risk, dynamic-SQL-limitation, interface, or native-binding
+records. The `capture-risk-taxonomy` child SHALL define per-record key closure,
+backward-compatible mappings, and focused unknown-key allow/deny tests before
+any such record family expands its vocabulary.
 
 Task 2.1 SHALL NOT authorize a non-table artifact, provider, stream, object
 store, vector index, or other heterogeneous resource. Before an owning Context
@@ -171,7 +180,8 @@ runtime-behavior claim.
   reference, a transaction-only read, a wildcard/dynamic proof-callable rebind,
   compound writer or transaction SQL, any module-scope import or executable
   call, a PEP 695 type alias, lambda or non-inert module declaration, a rebound
-  or dynamically mutated transaction receiver or alias, a class or
+  or dynamically mutated transaction receiver or alias, a transaction receiver
+  root or alias declared `global` or `nonlocal`, a class or
   definition-time metadata that can execute while defining an unrelated
   module-level declaration, a literal that is present only elsewhere in the
   adapter or differs from the named operation's first SQL

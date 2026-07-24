@@ -29,7 +29,9 @@ from trade_py.devtools.architecture_guard import (
     PRODUCER_UNSAFE_SOURCE,
     DiscoveryLimits,
     _call_digest,
+    _callable_external_binding_names,
     _iter_git_index,
+    _summarize_callable_proof,
     validate_architecture_baseline,
 )
 from trade_py.devtools.toml_compat import tomllib
@@ -2422,6 +2424,72 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
     _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
 
     assert validate_architecture_baseline(repo).ok
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        (
+            "def persist_approved(session):\n"
+            "    global tx\n"
+            "    with session.transaction() as tx:\n"
+            '        tx.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        ),
+        (
+            "def persist_approved(connection):\n"
+            "    global session\n"
+            "    with session.transaction():\n"
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        ),
+    ),
+)
+def test_approved_binding_rejects_global_transaction_alias_or_receiver(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    source.write_text(
+        _approved_adapter_source().replace(original, replacement, 1),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+def test_transaction_proof_excludes_nonlocal_alias_from_receiver_set() -> None:
+    tree = ast.parse(
+        "def outer():\n"
+        "    tx = None\n"
+        "    def persist_approved(session):\n"
+        "        nonlocal tx\n"
+        "        with session.transaction() as tx:\n"
+        '            tx.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    outer_callable = tree.body[0]
+    assert isinstance(outer_callable, ast.FunctionDef)
+    nested_callable = outer_callable.body[1]
+    assert isinstance(nested_callable, ast.FunctionDef)
+
+    summary = _summarize_callable_proof(
+        nested_callable,
+        source="temporary.py",
+        limits=DEFAULT_LIMITS,
+    )
+
+    assert _callable_external_binding_names(nested_callable) == frozenset({"tx"})
+    assert len(summary.operations) == 1
+    operation = summary.operations[0]
+    assert operation.receiver == ("tx",)
+    assert operation.receiver not in operation.transaction_receivers
 
 
 @pytest.mark.parametrize(

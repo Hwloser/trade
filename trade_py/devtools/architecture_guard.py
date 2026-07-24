@@ -3176,9 +3176,31 @@ def _summarize_callable_proof(
     """Collect reachable direct-scope static SQL operations without closures."""
 
     _validate_callable_proof_shape(callable_node, source=source, limits=limits)
-    visitor = _CallableProofVisitor(source=source, limits=limits)
+    visitor = _CallableProofVisitor(
+        source=source,
+        limits=limits,
+        external_binding_names=_callable_external_binding_names(callable_node),
+    )
     visitor.visit_statements(callable_node.body)
     return _CallableProofSummary(callable_node.lineno, tuple(visitor.operations))
+
+
+def _callable_external_binding_names(
+    callable_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> frozenset[str]:
+    """Return names declared global or nonlocal in this callable's lexical scope."""
+
+    names: set[str] = set()
+    pending: list[ast.AST] = list(callable_node.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return frozenset(names)
 
 
 def _validate_callable_proof_shape(
@@ -3201,9 +3223,16 @@ def _validate_callable_proof_shape(
 class _CallableProofVisitor:
     """Track only straight-line direct-call evidence for approved bindings."""
 
-    def __init__(self, *, source: str, limits: DiscoveryLimits) -> None:
+    def __init__(
+        self,
+        *,
+        source: str,
+        limits: DiscoveryLimits,
+        external_binding_names: frozenset[str],
+    ) -> None:
         self._source = source
         self._limits = limits
+        self._external_binding_names = external_binding_names
         self.operations: list[_PersistenceOperation] = []
         self._operation_sql_bytes = 0
         self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
@@ -3216,7 +3245,10 @@ class _CallableProofVisitor:
                 if (
                     self._transaction_receivers[-1]
                     or len(statement.items) != 1
-                    or not _transaction_receivers_for_items(statement.items)
+                    or not _transaction_receivers_for_items(
+                        statement.items,
+                        external_binding_names=self._external_binding_names,
+                    )
                 ):
                     return True
                 if self._visit_transaction_block(statement.items, statement.body):
@@ -3252,6 +3284,8 @@ class _CallableProofVisitor:
                 self._transaction_receivers[-1] = frozenset()
             elif isinstance(statement, ast.ImportFrom):
                 self._transaction_receivers[-1] = frozenset()
+            elif isinstance(statement, (ast.Global, ast.Nonlocal)):
+                self._invalidate_transaction_receivers(frozenset(statement.names))
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 self._invalidate_transaction_receivers(frozenset((statement.name,)))
                 return True
@@ -3334,7 +3368,12 @@ class _CallableProofVisitor:
                 for receiver in transaction_receivers
                 if receiver[0] not in _assignment_target_root_names((item.optional_vars,))
             }
-            transaction_receivers.update(_transaction_receivers(item))
+            transaction_receivers.update(
+                _transaction_receivers(
+                    item,
+                    external_binding_names=self._external_binding_names,
+                )
+            )
         self._transaction_receivers.append(frozenset(transaction_receivers))
         try:
             return self.visit_statements(body)
@@ -3389,7 +3428,11 @@ def _summary_persistence_operation(
     return None
 
 
-def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
+def _transaction_receivers(
+    item: ast.withitem,
+    *,
+    external_binding_names: frozenset[str] = frozenset(),
+) -> frozenset[tuple[str, ...]]:
     expression = item.context_expr
     if (
         not isinstance(expression, ast.Call)
@@ -3398,21 +3441,30 @@ def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
     ):
         return frozenset()
     receiver = _expression_identity(expression.func.value)
-    if receiver is None:
+    if receiver is None or receiver[0] in external_binding_names:
         return frozenset()
     if item.optional_vars is None:
         return frozenset((receiver,))
     if not isinstance(item.optional_vars, ast.Name):
         return frozenset()
+    if item.optional_vars.id in external_binding_names:
+        return frozenset((receiver,))
     return frozenset((receiver, (item.optional_vars.id,)))
 
 
 def _transaction_receivers_for_items(
     items: Sequence[ast.withitem],
+    *,
+    external_binding_names: frozenset[str] = frozenset(),
 ) -> frozenset[tuple[str, ...]]:
     receivers: set[tuple[str, ...]] = set()
     for item in items:
-        receivers.update(_transaction_receivers(item))
+        receivers.update(
+            _transaction_receivers(
+                item,
+                external_binding_names=external_binding_names,
+            )
+        )
     return frozenset(receivers)
 
 
