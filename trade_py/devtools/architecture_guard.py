@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from trade_py.devtools.quality.toml_compat import tomllib
+from trade_py.devtools.toml_compat import tomllib
 
 BASELINE_FILENAME = "architecture-baseline.toml"
 
@@ -69,6 +69,7 @@ _RESULT_TRUNCATED = "architecture.guard_result_truncated"
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
 _CLASSIFICATIONS = frozenset({"candidate", "deferred", "approved_binding"})
 _DYNAMIC_SQL_LIMITATION_KINDS = frozenset({"dynamic_ddl"})
+_REGULAR_GIT_FILE_MODES = frozenset({"100644", "100755"})
 _REQUIRED_DYNAMIC_SQL_LIMITATIONS = {
     (
         "Recommendation",
@@ -1199,6 +1200,8 @@ class DiscoveryLimits:
     max_aggregate_evidence_bytes: int = 8 * 1024 * 1024
     max_evidence_literals_per_source: int = 256
     max_evidence_literal_bytes_per_source: int = 64 * 1024
+    max_callable_proof_operations: int = 256
+    max_callable_proof_sql_bytes: int = 64 * 1024
     max_discovered_producers: int = 1_024
     max_producer_literal_bytes: int = 8 * 1024
     max_producer_report_bytes: int = 256 * 1024
@@ -1333,6 +1336,7 @@ class _EvidenceReader:
     _executable_text: dict[str, str]
     _python_trees: dict[str, ast.Module]
     _callable_proof_summaries: dict[tuple[str, str], _CallableProofSummary]
+    _callable_proof_failures: dict[tuple[str, str], ArchitectureFinding]
     _executable_failures: dict[str, ArchitectureFinding]
     _literal_matches: dict[tuple[str, str], bool]
     _aggregate_bytes: int = 0
@@ -1345,6 +1349,7 @@ class _EvidenceReader:
         self._executable_text = {}
         self._python_trees = {}
         self._callable_proof_summaries = {}
+        self._callable_proof_failures = {}
         self._executable_failures = {}
         self._literal_matches = {}
 
@@ -1490,10 +1495,27 @@ class _EvidenceReader:
         cached = self._callable_proof_summaries.get(key)
         if cached is not None:
             return cached
+        failure = self._callable_proof_failures.get(key)
+        if failure is not None:
+            raise _GuardError(
+                failure.rule_id,
+                failure.path,
+                failure.message,
+                failure.remediation,
+                line=failure.line,
+            )
         callable_node = _adapter_callable(self.python_tree(relative), callable_name)
         if callable_node is None:
             return None
-        summary = _summarize_callable_proof(callable_node)
+        try:
+            summary = _summarize_callable_proof(
+                callable_node,
+                source=relative,
+                limits=self.limits,
+            )
+        except _GuardError as exc:
+            self._callable_proof_failures[key] = exc.finding
+            raise
         self._callable_proof_summaries[key] = summary
         return summary
 
@@ -1599,6 +1621,11 @@ def discover_warehouse_producers(
             )
         if path.startswith("trade_py/") and not _is_safe_relative_path(path):
             raise _unsafe_source_error(path, "Git index path escapes the repository")
+        if _is_production_python_candidate_path(path) and mode not in _REGULAR_GIT_FILE_MODES:
+            raise _unsafe_source_error(
+                path,
+                "Git index production Python source is not a regular file",
+            )
         if not _is_production_python_path(path, mode):
             continue
         if path in included_paths:
@@ -1874,10 +1901,13 @@ def _validate_baseline_facts(
             except _GuardError as exc:
                 findings.append(exc.finding)
 
-    capture_risks_by_id = {
-        fact.get("id"): fact for fact in baseline.capture_risks if isinstance(fact.get("id"), str)
-    }
+    capture_risks_by_id: dict[str, Mapping[str, Any]] = {}
+    for fact in baseline.capture_risks:
+        risk_id = fact.get("id")
+        if isinstance(risk_id, str):
+            capture_risks_by_id[risk_id] = fact
     missing_capture_risks = sorted(_REQUIRED_CAPTURE_RISK_IDS - set(capture_risks_by_id))
+    unexpected_capture_risks = sorted(set(capture_risks_by_id) - _REQUIRED_CAPTURE_RISK_IDS)
     invalid_capture_risks = [
         risk_id
         for risk_id, (
@@ -1901,10 +1931,12 @@ def _validate_baseline_facts(
             != required_migration_proof
         )
     ]
-    if missing_capture_risks or invalid_capture_risks:
+    if missing_capture_risks or unexpected_capture_risks or invalid_capture_risks:
         risk_details: list[str] = []
         if missing_capture_risks:
             risk_details.append("missing " + ", ".join(missing_capture_risks))
+        if unexpected_capture_risks:
+            risk_details.append("ungoverned " + ", ".join(unexpected_capture_risks))
         if invalid_capture_risks:
             risk_details.append("misbound " + ", ".join(sorted(invalid_capture_risks)))
         findings.append(
@@ -1914,9 +1946,9 @@ def _validate_baseline_facts(
                 None,
                 "baseline omits or misbinds required Capture-risk declarations: "
                 + "; ".join(risk_details),
-                "Record each audited Capture temporal, replay, and quarantine risk with its "
-                "reviewed source, literal, owner, child change, risk kind, current behavior, "
-                "and required migration proof.",
+                "Keep the Task 2.1 Capture-risk inventory exactly governed; add a new "
+                "record only through its owning child with separately reviewed source scope "
+                "and a refreshed binding.",
             )
         )
 
@@ -2330,7 +2362,7 @@ def _validate_dynamic_sql_limitations(
     tables_by_name: Mapping[str, Mapping[str, Any]],
     findings: list[ArchitectureFinding],
 ) -> None:
-    """Ensure known dynamic SQL stays explicitly non-authorizing."""
+    """Ensure the closed Task 2.1 dynamic-DDL set stays non-authorizing."""
 
     seen: set[tuple[str, str, str]] = set()
     declared: dict[tuple[str, str, str], Mapping[str, Any]] = {}
@@ -2405,6 +2437,19 @@ def _validate_dynamic_sql_limitations(
                 + ", ".join(sorted(invalid)),
                 "Record each reviewed dynamic SQL construction site with its table, source, "
                 "limitation kind, owning child, and non-authorizing limitation rationale.",
+            )
+        )
+    unexpected = sorted(set(declared) - set(_REQUIRED_DYNAMIC_SQL_LIMITATIONS))
+    if unexpected:
+        findings.append(
+            ArchitectureFinding(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                None,
+                "baseline contains ungoverned dynamic SQL limitations: "
+                + ", ".join(f"{logical_name}@{source}" for logical_name, source, _ in unexpected),
+                "Keep Task 2.1 limited to its reviewed dynamic-DDL construction sites; "
+                "govern dynamic DML or data transforms in their owning child.",
             )
         )
 
@@ -2962,21 +3007,35 @@ def _adapter_callable(tree: ast.Module, name: str) -> ast.FunctionDef | ast.Asyn
 
 def _summarize_callable_proof(
     callable_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    source: str,
+    limits: DiscoveryLimits,
 ) -> _CallableProofSummary:
-    """Collect direct-scope static SQL operations without descending into closures."""
+    """Collect reachable direct-scope static SQL operations without closures."""
 
-    visitor = _CallableProofVisitor()
-    for statement in callable_node.body:
-        visitor.visit(statement)
+    visitor = _CallableProofVisitor(source=source, limits=limits)
+    visitor.visit_statements(callable_node.body)
     return _CallableProofSummary(tuple(visitor.operations))
 
 
 class _CallableProofVisitor(ast.NodeVisitor):
     """Track static persistence calls and enclosing direct-scope transactions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, source: str, limits: DiscoveryLimits) -> None:
+        self._source = source
+        self._limits = limits
         self.operations: list[_PersistenceOperation] = []
+        self._operation_sql_bytes = 0
         self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
+
+    def visit_statements(self, statements: Sequence[ast.stmt]) -> bool:
+        """Visit conservatively reachable statements and return terminal status."""
+
+        for statement in statements:
+            self.visit(statement)
+            if _is_unconditional_terminal_statement(statement):
+                return True
+        return False
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         del node
@@ -2996,6 +3055,31 @@ class _CallableProofVisitor(ast.NodeVisitor):
     def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
         self._visit_transaction_block(node.items, node.body)
 
+    def visit_If(self, node: ast.If) -> None:
+        truth_value = _static_boolean_value(node.test)
+        if truth_value is True:
+            self.visit_statements(node.body)
+        elif truth_value is False:
+            self.visit_statements(node.orelse)
+        else:
+            self.visit_statements(node.body)
+            self.visit_statements(node.orelse)
+
+    def visit_While(self, node: ast.While) -> None:
+        if _static_boolean_value(node.test) is not False:
+            self.visit_statements(node.body)
+        self.visit_statements(node.orelse)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self.visit_statements(node.body)
+        self.visit_statements(node.orelse)
+        self.visit_statements(node.finalbody)
+
+    def visit_TryStar(self, node: ast.AST) -> None:
+        self.visit_statements(getattr(node, "body", ()))
+        self.visit_statements(getattr(node, "orelse", ()))
+        self.visit_statements(getattr(node, "finalbody", ()))
+
     def visit_Call(self, node: ast.Call) -> None:
         self._record_persistence_operation(node)
         self.generic_visit(node)
@@ -3009,8 +3093,7 @@ class _CallableProofVisitor(ast.NodeVisitor):
         for item in items:
             transaction_receivers.update(_transaction_receivers(item))
         self._transaction_receivers.append(frozenset(transaction_receivers))
-        for statement in body:
-            self.visit(statement)
+        self.visit_statements(body)
         self._transaction_receivers.pop()
 
     def _record_persistence_operation(self, node: ast.Call) -> None:
@@ -3021,6 +3104,21 @@ class _CallableProofVisitor(ast.NodeVisitor):
             return
         for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
             if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                encoded_size = len(argument.value.encode("utf-8"))
+                if (
+                    len(self.operations) >= self._limits.max_callable_proof_operations
+                    or self._operation_sql_bytes + encoded_size
+                    > self._limits.max_callable_proof_sql_bytes
+                ):
+                    raise _baseline_evidence_budget_error(
+                        self._source,
+                        "approved-binding callable proof exceeds the configured operation "
+                        "or SQL-byte budget",
+                        remediation=(
+                            "Split the adapter proof or make a reviewed approved-binding "
+                            "proof-budget increase."
+                        ),
+                    )
                 self.operations.append(
                     _PersistenceOperation(
                         sql=argument.value,
@@ -3028,6 +3126,7 @@ class _CallableProofVisitor(ast.NodeVisitor):
                         transaction_receivers=self._transaction_receivers[-1],
                     )
                 )
+                self._operation_sql_bytes += encoded_size
 
 
 def _summary_has_persistence_operation(
@@ -3042,6 +3141,34 @@ def _summary_has_persistence_operation(
         if field != "transaction_evidence" or operation.receiver in operation.transaction_receivers:
             return True
     return False
+
+
+def _static_boolean_value(node: ast.expr) -> bool | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return node.value
+    return None
+
+
+def _is_unconditional_terminal_statement(statement: ast.stmt) -> bool:
+    if isinstance(statement, (ast.Return, ast.Raise)):
+        return True
+    if not isinstance(statement, ast.If):
+        return False
+    truth_value = _static_boolean_value(statement.test)
+    if truth_value is True:
+        return _statements_end_in_terminal(statement.body)
+    if truth_value is False:
+        return _statements_end_in_terminal(statement.orelse)
+    return (
+        bool(statement.body)
+        and bool(statement.orelse)
+        and _statements_end_in_terminal(statement.body)
+        and _statements_end_in_terminal(statement.orelse)
+    )
+
+
+def _statements_end_in_terminal(statements: Sequence[ast.stmt]) -> bool:
+    return bool(statements) and _is_unconditional_terminal_statement(statements[-1])
 
 
 def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
@@ -3376,8 +3503,12 @@ def _parse_index_record(raw: bytes) -> tuple[str, str]:
 
 
 def _is_production_python_path(path: str, mode: str) -> bool:
-    if mode not in {"100644", "100755"}:
+    if mode not in _REGULAR_GIT_FILE_MODES:
         return False
+    return _is_production_python_candidate_path(path)
+
+
+def _is_production_python_candidate_path(path: str) -> bool:
     if not _is_safe_relative_path(path):
         return False
     pure = PurePosixPath(path)

@@ -38,9 +38,11 @@ audited dynamic-DDL set is the `Recommendation`,
 `trade_py/db/migrations.py`; their declaration, limitation kind, owning child,
 non-authorizing marker, and rationale SHALL match the governed binding. A
 dynamic limitation neither authorizes persistence access nor proves
-physical-schema completeness. Dynamic DML/data-transform discovery and
+physical-schema completeness. The Task 2.1 limitation set is closed: an
+additional limitation record SHALL fail validation rather than implicitly
+govern another dynamic SQL site. Dynamic DML/data-transform discovery and
 governance are outside this bounded Task 2.1 inventory and require a later
-owning child.
+owning child with an explicit source scope and reviewed binding.
 
 The validator SHALL transform executable source evidence, including a terminal
 transformation failure, at most once per source per invocation. It SHALL batch
@@ -75,6 +77,10 @@ call; transaction evidence SHALL occur inside a transaction context containing
 a static table-specific persistence operation on that transaction receiver or
 its explicit `as` alias. Every accepted SQL table identifier SHALL match at a
 supported statement position with identifier boundaries, not as a substring.
+Proof collection SHALL ignore statically false branches and statements after an
+unconditional `return` or `raise`; it SHALL conservatively retain only
+reachable direct-scope evidence. It SHALL fail closed before retaining more
+than the governed callable proof operation or SQL-byte budgets.
 `candidate` and `deferred` declarations SHALL reject every persistence-binding
 field.
 
@@ -107,18 +113,21 @@ field.
   path, a stale literal, a suffix-named table, a proof from another adapter or
   callable, an uncalled nested function/lambda/class helper, a top-level
   constant, a writer/reader/compatibility literal that does not identify the
-  declared logical table, or a transaction context with an unrelated receiver
+  declared logical table, a proof in an `if False` branch or after an
+  unconditional terminal statement, a proof above the governed operation or
+  SQL-byte budget, or a transaction context with an unrelated receiver
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
 
-#### Scenario: A mandatory dynamic SQL limitation is absent or misbound
+#### Scenario: A dynamic SQL limitation is absent, misbound, or unreviewed
 
 - **WHEN** the baseline omits or changes the reviewed dynamic-DDL limitation
-  for `Recommendation`, `RecommendationTrace`, or `factor_registry`
+  for `Recommendation`, `RecommendationTrace`, or `factor_registry`, or adds
+  any other Task 2.1 limitation record
 - **THEN** baseline validation fails until the exact construction site,
   limitation kind, owning child, explicit `non_authorizing = true` marker, and
-  non-authorizing rationale are restored; no normalized static provenance is
-  inferred
+  non-authorizing rationale are restored or the later owning child governs the
+  added site; no normalized static provenance is inferred
 
 #### Scenario: Historical DDL has two provenance roles
 
@@ -157,10 +166,13 @@ The baseline SHALL record a bounded, mandatory Capture-risk inventory for the
 named audited legacy `RawRecord` temporal model; RSS, GDELT, warehouse, archive,
 and date-only publication-time fallbacks; the EastMoney provider
 timezone/precision overwrite; and the `InfluenceSignal` runtime evaluation-time
-substitution for `published_at`. This is not a claim that every provider or
-temporal behavior in the repository has been exhaustively discovered. Each
-future child that migrates a Capture-related adapter SHALL audit its own source
-scope and add a separately reviewed binding before asserting broader coverage.
+substitution for `published_at`. This Task 2.1 inventory is closed: an
+additional Capture-risk declaration SHALL fail validation rather than silently
+asserting an unreviewed temporal, news, provider, capture, or replay behavior.
+This is not a claim that every provider or temporal behavior in the repository
+has been exhaustively discovered. Each future child that migrates a
+Capture-related adapter SHALL audit its own source scope and add a separately
+reviewed binding before asserting broader coverage.
 Every Capture-risk record SHALL state its repository source,
 exact literal, risk kind, current behavior, required child, and required
 migration proof. The governed binding SHALL pin every one of those fields, so
@@ -220,6 +232,10 @@ inclusion predicate is a unique NUL-delimited Git index path that begins
 ending `_test.py`, and is not inside a `vendor`, `third_party`, `generated`,
 `cache`, or `__pycache__` path segment; `trade_py/data/**.py` remains
 production source.
+Any Git-index entry whose path otherwise meets the production-Python path
+predicate but whose mode is not regular `100644` or `100755` SHALL fail with
+`architecture.producer_discovery_unsafe_source`; it SHALL not be silently
+excluded from the producer universe.
 The scanner SHALL consume the Git path stream incrementally, validate and
 deduplicate each record as received, and stop before materializing an
 unbounded path list. It SHALL refuse more than 1,024 raw index records or

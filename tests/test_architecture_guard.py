@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -29,6 +30,7 @@ from trade_py.devtools.architecture_guard import (
     _call_digest,
     validate_architecture_baseline,
 )
+from trade_py.devtools.toml_compat import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_WRITE_TABLE = "trade_py.data.warehouse.io.write_table"
@@ -1740,8 +1742,6 @@ def test_producer_call_digest_ignores_ast_context_metadata() -> None:
 
 
 def test_repository_baseline_includes_review_required_provenance_and_interfaces() -> None:
-    from trade_py.devtools.quality.toml_compat import tomllib
-
     baseline = tomllib.loads((REPO_ROOT / BASELINE_FILENAME).read_text(encoding="utf-8"))
     tables_by_name = {table["logical_name"]: table for table in baseline["tables"]}
     table_names = {table["logical_name"] for table in baseline["tables"]}
@@ -1970,6 +1970,29 @@ def test_required_capture_risk_bindings_fail_closed_on_removal(
     assert "architecture.baseline_malformed" in _rule_ids(repo)
 
 
+def test_capture_risk_inventory_rejects_unreviewed_record(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + """
+
+[[capture_risks]]
+id = "unreviewed-temporal-risk"
+source = "trade_py/intelligence/raw_record.py"
+literal = "published_at: datetime"
+current_owner = "trade_py.intelligence"
+required_child = "capture-boundary"
+risk_kind = "unreviewed-temporal-claim"
+current_behavior = "Unreviewed."
+required_migration_proof = "Unreviewed."
+""",
+    )
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
 @pytest.mark.parametrize(
     ("path", "source"),
     (
@@ -2131,6 +2154,28 @@ def _nested_approved_adapter_source(scope_kind: str) -> str:
         "def load_approved_compat(session):\n"
         f"{compatibility}"
     )
+
+
+def _unreachable_approved_adapter_callable(field: str, unreachable_kind: str) -> str:
+    callable_name = f"dead_{field}"
+    if field in {"writer_evidence", "transaction_evidence"}:
+        operation = (
+            "    with session.transaction():\n"
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        )
+    else:
+        operation = '    return session.execute("SELECT id FROM approved_records").fetchall()\n'
+
+    if unreachable_kind == "if_false":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    if False:\n{body}"
+    if unreachable_kind == "after_return":
+        return f"\n\ndef {callable_name}(session):\n    return None\n{operation}"
+    if unreachable_kind == "after_raise":
+        return (
+            f'\n\ndef {callable_name}(session):\n    raise RuntimeError("unreachable")\n{operation}'
+        )
+    raise AssertionError(f"unsupported unreachable proof kind: {unreachable_kind}")
 
 
 def _approved_binding_declaration() -> str:
@@ -2312,6 +2357,96 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
     _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
 
     assert validate_architecture_baseline(repo).ok
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("writer_evidence", "reader_evidence", "transaction_evidence", "compatibility_evidence"),
+)
+@pytest.mark.parametrize("unreachable_kind", ("if_false", "after_return", "after_raise"))
+def test_approved_binding_rejects_unreachable_direct_scope_proofs(
+    tmp_path: Path,
+    field: str,
+    unreachable_kind: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source()
+        + _unreachable_approved_adapter_callable(field, unreachable_kind),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    original = {
+        "writer_evidence": (
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/'
+            'warehouse.py", literal = "INSERT INTO approved_records", callable = '
+            '"persist_approved" }'
+        ),
+        "reader_evidence": (
+            'reader_evidence = { source = "src/trade/datasets/adapters/persistence/'
+            'warehouse.py", literal = "SELECT id FROM approved_records", callable = '
+            '"load_approved" }'
+        ),
+        "transaction_evidence": (
+            'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/'
+            'warehouse.py", literal = "INSERT INTO approved_records", callable = '
+            '"persist_approved" }'
+        ),
+        "compatibility_evidence": (
+            'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/'
+            'warehouse.py", literal = "SELECT id FROM approved_records", callable = '
+            '"load_approved_compat" }'
+        ),
+    }[field]
+    replacement = original.replace(
+        {
+            "writer_evidence": "persist_approved",
+            "reader_evidence": "load_approved",
+            "transaction_evidence": "persist_approved",
+            "compatibility_evidence": "load_approved_compat",
+        }[field],
+        f"dead_{field}",
+    )
+    _write_baseline(
+        repo, baseline + "\n" + _approved_binding_declaration().replace(original, replacement)
+    )
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    "limits",
+    (
+        DiscoveryLimits(max_callable_proof_operations=1),
+        DiscoveryLimits(max_callable_proof_sql_bytes=1),
+    ),
+)
+def test_approved_binding_proof_collection_is_budgeted(
+    tmp_path: Path,
+    limits: DiscoveryLimits,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source().replace(
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    report = validate_architecture_baseline(repo, limits=limits)
+
+    assert "architecture.baseline_evidence_budget_exceeded" in {
+        finding.rule_id for finding in report.findings
+    }
 
 
 def test_approved_binding_rejects_table_suffix_and_comment_only_proofs(
@@ -2544,6 +2679,29 @@ def test_dynamic_sql_limitations_reject_unbounded_data_transform_kind(tmp_path: 
     )
 
     assert "architecture.baseline_incomplete_provenance" in _rule_ids(repo)
+
+
+def test_dynamic_sql_limitations_reject_unreviewed_site(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + """
+
+[[dynamic_sql_limitations]]
+id = "unreviewed-dynamic-sql"
+logical_name = "Recommendation"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"UPDATE Recommendation SET state = {state}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+non_authorizing = true
+limitation = "Unreviewed."
+""",
+    )
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
 
 
 def test_dynamic_sql_limitations_require_explicit_non_authorizing_marker(
@@ -2878,6 +3036,25 @@ def test_fifo_source_is_rejected_without_blocking(tmp_path: Path) -> None:
     assert elapsed_seconds < 1.0
 
 
+def test_nonregular_production_python_index_entry_fails_closed(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "trade_py/index_symlink.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--", "trade_py/index_symlink.py"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},trade_py/index_symlink.py")
+
+    report = validate_architecture_baseline(repo)
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_UNSAFE_SOURCE}
+    assert report.producers == ()
+
+
 def test_validator_does_not_use_data_or_runtime_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2894,6 +3071,68 @@ def test_validator_does_not_use_data_or_runtime_io(
     report = validate_architecture_baseline(repo)
 
     assert report.ok, report.findings
+
+
+def test_validator_uses_only_admitted_source_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    original = guard._safe_read_relative
+    opened: list[str] = []
+
+    def record_read(root: Path, relative: str, *, max_bytes: int) -> bytes:
+        opened.append(relative)
+        return original(root, relative, max_bytes=max_bytes)
+
+    monkeypatch.setattr(guard, "_safe_read_relative", record_read)
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert BASELINE_FILENAME in opened
+    assert all(
+        relative == BASELINE_FILENAME
+        or relative.startswith("trade_py/")
+        or relative.startswith("trade_web/")
+        or relative.startswith("tests/")
+        or relative.startswith("engine/")
+        or relative == "trade"
+        for relative in opened
+    )
+    assert not any(
+        relative.startswith(("data/", "warehouse/", "market/"))
+        or relative.endswith((".db", ".sqlite", ".parquet"))
+        or any(
+            part
+            in {"artifacts", "manifest", "manifests", "pointer", "pointers", "receipt", "receipts"}
+            for part in relative.split("/")
+        )
+        for relative in opened
+    )
+
+
+def test_architecture_guard_cold_import_does_not_load_quality_runner(
+    tmp_path: Path,
+) -> None:
+    source_root = REPO_ROOT
+    script = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(source_root)!r})\n"
+        "import trade_py.devtools.architecture_guard\n"
+        "assert 'trade_py.devtools.quality.runner' not in sys.modules\n"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_unsafe_baseline_source_path_is_rejected(tmp_path: Path) -> None:

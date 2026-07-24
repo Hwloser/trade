@@ -13,13 +13,9 @@ children can replace one owner at a time with evidence and rollback.
 
 ## What Changes
 
-- Add a standard-library AST architecture guard to the existing read-only
-  `trade dev check` contributor pipeline.
-- Enforce declared dependency, contract-leakage, direct database-access,
-  direct artifact-client, Platform-vocabulary, legacy-bridge, dynamic-loading,
-  direct-process-creation, table-owner, and native-boundary rules for future
-  `src/trade` source paths only.
-- Add a versioned `architecture-baseline.toml` that records current Python
+- This delivery completes Task 2.1 only: add a versioned
+  `architecture-baseline.toml` and a standard-library, directly callable,
+  source-only baseline validator. It records current Python
   package roots, multi-source schema provenance, table classifications,
   warehouse artifact/pointer/receipt facts, Capture migration facts, native
   binding facts, source-derived CLI/HTTP/OpenAPI/SSE compatibility facts, and
@@ -30,15 +26,20 @@ children can replace one owner at a time with evidence and rollback.
   baseline validation fixture. The fixtures deny database/parquet connections,
   direct in-repository data/artifact reads, and out-of-repository reads while
   the checker runs.
-- Extend the shared quality-scope contract additively so the planner preserves
+- Keep Capture-risk and dynamic-DDL inventories closed to their reviewed Task
+  2.1 bindings; a later owning child must extend the binding and review
+  evidence before making a new temporal or dynamic-SQL claim.
+- Task 2.2 will add prospective `src/trade` dependency and ownership checks.
+- Task 2.3 will extend the shared quality-scope contract so the planner preserves
   canonical unfiltered delta, rename, and requested-filter metadata. The
-  architecture contributor uses that metadata, rather than rediscovering Git
+  architecture contributor will use that metadata, rather than rediscovering Git
   state, to emit a fail-closed `architecture.partial_scope` quality result.
 
 There are no breaking user-facing CLI, HTTP, Web, SDK, notebook, database,
-artifact, C++ ABI, or runtime behavior changes. The only public developer-tool
-effect is that `trade dev check` reports a deterministic quality failure when a
-changed future target module violates the approved architecture boundary.
+artifact, C++ ABI, runtime, or existing developer-command behavior changes.
+Task 2.1 is library-only: callers can invoke the baseline validator directly.
+`trade dev check` integration and its deterministic architecture quality
+failure are deferred to Task 2.3.
 
 The target filesystem and import namespaces are independently frozen for this
 guard: `target_source_root = "src/trade"` and `target_import_root = "trade"`.
@@ -64,22 +65,19 @@ responsible for distribution metadata and console-entry compatibility.
 
 ## Impact
 
-Affected implementation paths are the shared quality scope/model/planner
-contract, existing quality contributor registry, one narrow architecture-check
-module, its focused pytest coverage, and the new baseline file. `trade dev
-check` receives one additional read-only step only when its changed scope
-includes the baseline, future `src/trade` code, or any baseline-declared
-evidence source, guard implementation source, contributor integration source,
-recorded native binding source, or interface-baseline source. A filtered
-`--path` run fails closed when canonical unfiltered metadata shows that it
-excluded an architecture-sensitive delta, so it cannot be reported as full
-architecture acceptance.
+This delivery affects the source-only validator, neutral TOML compatibility
+reader, focused pytest coverage, and the versioned baseline file. Task 2.1
+does not alter the shared quality scope/model/planner contract, contributor
+registry, `trade dev check` plan/report output, or filtered `--path` behavior.
+Task 2.3 will add one read-only architecture step when its scoped trigger and
+canonical delta design are implemented; it will fail closed when `--path`
+excludes an architecture-sensitive delta.
 
-Design-quality governance applies. The contract profile applies because the
-developer quality command gains stable scope metadata, a bounded architecture
-diagnostic envelope, failure modes, and remediation paths. Developer-tool
-concurrency applies because the existing executor can run independent target
-batches under its bounded light-worker pool; application runtime concurrency
-does not change. Persistent writes, schema work, point-in-time semantics,
-predictive behavior, and external-event ingestion do not apply: this child
-uses only repository source text and temporary test trees.
+Design-quality governance applies. Task 2.1 provides deterministic direct
+validator findings and bounded source inspection. The planned Task 2.3
+developer-command contract will add scope metadata, a diagnostic envelope,
+failure modes, remediation paths, and bounded executor batches. Application
+runtime concurrency does not change. Persistent writes, schema work,
+point-in-time semantics, predictive behavior, and external-event ingestion do
+not apply: this child uses only repository source text and temporary test
+trees.

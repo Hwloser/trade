@@ -75,8 +75,9 @@ or ownership transition.
   imports or data-root access.
 - Give later child changes a stable baseline and a small prerequisite rather
   than authorizing a broad directory move.
-- Extend shared quality scope metadata once so filtered architecture checks can
-  fail closed from canonical delta facts without a second Git discovery path.
+- Specify the canonical scope metadata that Task 2.3 must add so filtered
+  architecture checks can later fail closed without a second Git discovery
+  path. Task 2.1 does not modify quality scope, planner, or contributor code.
 
 **Non-Goals:**
 
@@ -101,47 +102,43 @@ or ownership transition.
 
 ### Requirements and acceptance
 
-The existing `trade dev check` contributor mechanism gains one architecture
-step when the changed scope contains `architecture-baseline.toml`, an
-`src/trade/**/*.py` target module, any baseline-declared source fact, the
-guard/parser/contributor/registry integration, or the reviewed native binding
-definition, or a baseline-declared interface source. Rename and delete events
-are triggers. The step parses only selected Python source text and named
-repository source files. It produces `trade.architecture.guard.v1` structured
-diagnostics with stable path, line, rule, remediation, ordered findings, counts,
-scope identity, and partial-scope state; it never imports the inspected package.
+Task 2.1 delivers a directly callable source-only baseline validator. It reads
+only the reviewed baseline, declared source evidence, and bounded regular
+production-Python descriptors; it returns deterministic path, line, rule,
+remediation, ordered findings, and no partial producer inventory. It does not
+import inspected application modules, generate a quality envelope, or register
+a `trade dev check` contributor.
 
-Acceptance requires that a compliant target module passes, each prohibited
-relationship has a focused failing fixture, baseline source/table/pointer
-claims match the current repository text, and a normal legacy-only changed
-scope remains unaffected. The step must be represented as a quality failure,
-not a skip or a warning, when a target rule is violated.
+Acceptance for Task 2.1 requires baseline source/table/pointer claims to match
+the current repository text; all mandatory Capture-risk and dynamic-DDL
+inventories to be closed and non-authorizing; approved table-binding proof to
+be static, exact, direct-scope, conservatively reachable, receiver-matched,
+and bounded; and every rejected relationship to have a focused failing fixture.
 
-`--path` is a partial development selector, not a release-acceptance shortcut.
-`ScopeSelection` retains normalized requested filters and canonical unfiltered
-modified, added, deleted, rename-source, rename-target, and untracked delta
-metadata before deriving its existing filtered execution fields. It derives an
-immutable bounded `ProducerDiscoverySelection` for production-Python candidates
-and declared producer-source endpoints from that same metadata. The planner,
-not a contributor, compares architecture triggers against both selections. If
-filters exclude a target, baseline, or producer-discovery-sensitive changed
-source, planning fails closed as `architecture.partial_scope`, including both
-rename endpoints and deleted or untracked sources. A complete selected scope
-contains one baseline validation step, deterministic producer-prefilter batches,
-and all deterministic target-source batches.
+Task 2.3 will make `trade dev check` architecture-aware. It will trigger for
+the baseline, `src/trade/**/*.py`, declared evidence, guard/contributor/registry
+paths, native bindings, and interface sources. It will add
+`trade.architecture.guard.v1` output, `ScopeSelection` canonical delta/filter
+metadata, bounded `ProducerDiscoverySelection`, partial-scope refusal, ordered
+producer-prefilter/baseline/target batches, and a normal legacy-only
+non-triggering path. Those command, planner, batching, and executor behaviors
+are deliberately not asserted as delivered by Task 2.1.
 
 ### Ownership and boundaries
 
 `trade_py/devtools/architecture_guard.py` owns parsing, validation, bounded
-diagnostic-envelope formatting, and baseline fact semantics for this child.
-`trade_py/devtools/quality/models.py` and `scope.py` own the additive canonical
+direct-validator findings, and baseline fact semantics for Task 2.1.
+`trade_py/devtools/toml_compat.py` is its neutral framework-free TOML reader;
+the compatibility re-export keeps existing quality imports stable without
+loading the quality runner. Task 2.3 will assign
+`trade_py/devtools/quality/models.py` and `scope.py` the additive canonical
 unfiltered delta/filter and `ProducerDiscoverySelection` contracts; `planner.py`
-owns conversion of excluded architecture-sensitive delta facts, including
+will own conversion of excluded architecture-sensitive delta facts, including
 producer signals, into a fail-closed plan issue. The future
 `trade_py/devtools/quality/contributors/architecture.py` receives those
 canonical selections and only constructs deterministic bounded producer-prefilter,
 baseline, and target subprocess steps; it must not rediscover Git state. The
-existing quality registry owns contributor registration.
+existing quality registry will own contributor registration.
 `architecture-baseline.toml` is the authoritative declaration of audited source
 facts. It separately freezes `target_source_root = "src/trade"` and
 `target_import_root = "trade"`; the guard uses the latter for absolute and
@@ -179,11 +176,13 @@ table-specific reads passed to a persistence call; transaction proof must be a
 static table-specific persistence call inside a transaction context using the
 same receiver or that context manager's explicit `as` alias. SQL table
 identifiers match at supported statement positions with identifier boundaries,
-not by substring. Thus a valid but unrelated legacy literal, suffix-named
-table, cross-adapter proof, uncalled nested helper, top-level constant, or
-unrelated transaction receiver cannot authorize the table. Prose, comments,
-stale literals, unnamed or malformed adapter scopes, and data/artifact paths
-cannot authorize a binding.
+not by substring. Proof collection ignores a static-false branch and statements
+after an unconditional `return` or `raise`, and fails closed above its callable
+operation or retained-SQL-byte budget. Thus a valid but unrelated legacy
+literal, suffix-named table, cross-adapter proof, uncalled nested helper,
+top-level constant, dead proof, or unrelated transaction receiver cannot
+authorize the table. Prose, comments, stale literals, unnamed or malformed
+adapter scopes, and data/artifact paths cannot authorize a binding.
 
 Static provenance is intentionally a bounded, named audit inventory, not a
 claim to discover or semantically normalize every legacy SQL statement. The
@@ -197,9 +196,10 @@ construction-site literal, limitation kind, owning child, exact rationale, and
 `non_authorizing = true` marker. A limitation cannot attach to an
 `approved_binding` table. It remains a limitation until an owning migration
 child introduces an AST-aware SQL-normalization or runtime migration-evidence
-design. This Task 2.1 inventory admits only the bounded reviewed
-`dynamic_ddl` sites; it does not claim to discover or govern dynamic DML or
-data transforms, which require a separate owning child.
+design. This closed Task 2.1 inventory admits only the bounded reviewed
+`dynamic_ddl` sites and rejects an unreviewed addition; it does not claim to
+discover or govern dynamic DML or data transforms, which require a separate
+owning child.
 
 The checker reads UTF-8 text through repository-confined no-follow descriptors
 and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
@@ -232,11 +232,11 @@ The user-facing `trade` command, existing CLI command names, HTTP routes,
 OpenAPI output, SSE semantics, Web payloads, SDK imports, notebook behavior,
 table readers, BTC pointer format, and C++ ABI remain unchanged. The bounded
 baseline records where these CLI/HTTP/OpenAPI/SSE contracts are defined and
-tested, but it does not snapshot or alter their behavior. The developer-facing
-`trade dev check` contract gains stable scope metadata, a partial-scope refusal,
-and a versioned architecture diagnostic envelope only for in-scope changes.
-Its diagnostics identify a rule ID, source location, and the approved
-remediation direction; repository consumers can continue to use legacy import
+tested, but it does not snapshot or alter their behavior. Task 2.1 leaves the
+developer-facing `trade dev check` contract unchanged. Its direct validator
+findings identify a rule ID, source location, and remediation direction; Task
+2.3 will expose those facts through a versioned command envelope and
+partial-scope policy. Repository consumers can continue to use legacy import
 paths until their individual compatibility child supplies a replacement.
 
 The architecture baseline records, rather than replaces, the `trade_py`
@@ -301,24 +301,20 @@ compatibility cutover evidence.
 
 ### Failure and recovery
 
-Malformed source, unsupported relative import, malformed or oversized
-diagnostic envelope, malformed baseline, unlisted target Cell, missing baseline
-evidence, exceeded scope budget, partial scope, or a prohibited dependency is a
-fail-closed architecture result. A quality check failure has no side effect:
-the source tree and local data remain unchanged. A developer corrects the
-target module or updates the baseline through a reviewed child change. The
-guard does not automatically rewrite imports, infer table ownership, or
+Task 2.1 fails closed for malformed or unsafe baseline/source evidence,
+closed-inventory mutation, exceeded source/proof budget, missing provenance,
+unreachable or receiver-mismatched approved-binding proof, and producer
+discovery failure. It leaves the source tree and local data unchanged. A
+developer corrects the baseline or source evidence through a reviewed child
+change. It does not automatically rewrite imports, infer table ownership, or
 silently ignore an unknown file.
 
-The implementation supplies a concise developer runbook keyed by
-`architecture.*`, `dependency.*`, `persistence.*`, `artifacts.*`, and
-`execution.*` rule IDs. It states the matching `trade dev check --show-plan`
-and JSON-report commands, the expected owner, and the corrective action for a
-stale baseline, rename/delete, partial scope, scope budget, timeout, invalid
-envelope, or source rule violation. The runbook is developer tooling
-documentation, not an application operations system.
+Task 2.4 will provide the developer runbook keyed by `architecture.*`,
+`dependency.*`, `persistence.*`, `artifacts.*`, and `execution.*` rule IDs,
+including `trade dev check --show-plan` and JSON-report commands. That runbook
+is developer tooling documentation, not an application operations system.
 
-Rollback removes the contributor, guard, baseline, and focused tests together.
+Rollback removes the Task 2.1 guard, neutral TOML helper, baseline, and focused tests together.
 Because the child does not alter runtime behavior, database content, artifact
 content, or interface payloads, the previous quality plan remains usable
 immediately. A bad baseline fact is corrected in a small documentation/tooling
@@ -326,34 +322,26 @@ commit before any owner migration consumes it.
 
 ### Performance and capacity
 
-The contributor runs only for its explicit scope triggers. The checker walks
-the selected target Python files once, parses each with the standard-library
-AST, and reads only the finite set of baseline-declared source files. It has a
-finite subprocess timeout and output limit through the existing quality-step
-model. No network access, package installation, database scan, artifact hash,
-or recursive full-repository AST scan is permitted, except for the separately
-bounded producer-inventory pass below.
+Task 2.1 has no contributor, target-batch, subprocess, executor, timeout, or
+structured output-envelope lifecycle. It reads only the finite set of
+baseline-declared source files and one bounded producer-inventory pass. No
+network access, package installation, database scan, artifact hash, or
+recursive full-repository AST scan is permitted, except for the separately
+bounded producer-inventory pass below. Baseline validation groups declared
+evidence literals by source and scans each transformed source once for its
+pending literals using a deterministic multi-pattern automaton. It rejects a
+source with more than 256 distinct literals or more than 64 KiB of literal
+bytes before matching, and rejects a callable proof above 256 persistence
+operations or 64 KiB of retained SQL text. It caches terminal proof failures,
+so a repeated proof cannot expand work or turn a failure into partial
+authorization.
 
-The first target scope is expected to be small because Context children add
-bounded modules incrementally. The contributor explicitly uses
-`batched_paths()` and deterministic batch identifiers: producer-prefilter
-batches, exactly one baseline step after their admission, and target batches
-within the configured argv budget. Independent of that argv limit, the guard
-refuses a source over 1 MiB, a target batch over 128 files or 8 MiB aggregate
-source, and a selected architecture target scope over 512 files or 32 MiB
-aggregate source. It reports an explicit budget failure rather than silently
-dropping work. The existing executor runs at most four light steps
-concurrently; four maximum-size target batches are therefore bounded to 32 MiB
-source input at once. A 30-second step timeout, 64 emitted findings, bounded
-fields, reserved metadata space, count-only truncation fallback, and 32 KiB
-serialized envelope prevent an oversized structured report. Baseline validation
-groups declared evidence literals by source and scans each transformed source
-once for its pending literals using a deterministic multi-pattern automaton.
-It rejects a source with more than 256 distinct literals or more than 64 KiB of
-literal bytes before matching; this bound is exercised from a temporary fixture
-repository. When a finding limit reserves one emitted slot for the truncation
-record, `omitted_count` counts every hidden real finding, including the
-displaced final finding.
+Task 2.3 will add explicit contributor triggers, `batched_paths()`,
+deterministic producer-prefilter/baseline/target batch identifiers, target
+scope limits, executor worker-wave bounds, a 30-second timeout, a 32 KiB
+output envelope, and truncation semantics. These planned command integration
+and executor capacity claims require their own scope/planner/contributor tests
+before they can be considered delivered.
 
 Warehouse producer inventory is a distinct source-only baseline pass, not a
 target-Context dependency scan. Its initial universe is every Git-tracked
@@ -387,10 +375,10 @@ argument; `WarehouseLayout` does not own writer methods. A candidate call with
 an unresolved canonical import, layout binding, or literal layer/table is a
 failure, not an excluded producer.
 
-For ongoing changes, canonical unfiltered modified, added, rename-source,
+For future Task 2.3 ongoing changes, canonical unfiltered modified, added, rename-source,
 rename-target, and untracked metadata identify production Python files before
 ordinary path filters apply. `ScopeSelection` supplies them as the bounded
-canonical `ProducerDiscoverySelection`; the contributor transports openable
+canonical `ProducerDiscoverySelection`; the contributor will transport openable
 candidate paths through deterministic `batched_paths()` prefilter steps that
 honor the 65,536-byte argv limit, retaining rename/delete endpoint metadata
 without Git rescan or a temporary manifest. A single untransportable path or
@@ -404,8 +392,9 @@ targeted delta pass is bounded by the same path, file, and byte limits and
 never repeats a generic repository AST scan. The source-only test suite proves
 direct imports, package re-exports, aliases, a new production writer,
 declared-writer rename/deletion, test-only writer exclusion, streamed
-enumeration overflow, long argv path transport, over-cap delta selection,
-symlink/non-regular rejection, and source replacement during read.
+enumeration overflow, Git-index and worktree symlink/non-regular rejection,
+and source replacement during read. Task 2.3 owns long argv path transport,
+over-cap delta selection, and all partial-scope tests.
 
 Existing scope discovery and before/after full-worktree fingerprinting remain
 an owned quality-platform performance debt. The child records the named
@@ -417,7 +406,10 @@ walk.
 
 ### Observability and operations
 
-Every `trade.architecture.guard.v1` JSON envelope has required
+Task 2.1 returns direct `ArchitectureReport` findings only; it creates no
+`trade.architecture.guard.v1` envelope or terminal quality report. Task 2.3
+will require that every `trade.architecture.guard.v1` JSON envelope has
+required
 `schema_version`, `status`, `scope`, `partial_scope`, `findings`, `counts`,
 `emitted_count`, and `omitted_count` fields. `status` is `pass`, `fail`, or
 `invalid`; `scope` identifies the baseline or deterministic target batch; and
@@ -447,42 +439,33 @@ annotation, attribute, SQL literal, direct artifact client, dynamic loader,
 process spawn, vocabulary, or producer source occurs. They sort by path, line,
 rule, and message; truncation reports the emitted and omitted counts rather
 than hiding findings, with the omitted count equal to the number of hidden
-real findings.
+real findings. Task 2.1 already returns ordered bounded findings for baseline
+and producer failures; dependency, Cell, interface, execution, and envelope
+findings are Task 2.2 or 2.3 behavior.
 
-`trade dev check --show-plan` shows the architecture step when triggered. A
-clean legacy-only implementation change does not silently receive an unrelated
-new full-tree audit. The baseline itself is format-checked by the current
-shared TOML parser and its semantic source claims are checked by the
-architecture step whenever it changes.
+Task 2.3 will make `trade dev check --show-plan` show the architecture step
+when triggered. Until then, a clean legacy-only implementation change receives
+no new quality-plan behavior. The Task 2.1 baseline is format-checked by the
+neutral TOML reader and semantically checked only through direct validator
+invocation.
 
 ### Validation strategy
 
-Focused pytest uses temporary repositories and source files to prove the
-allowed Context graph and each forbidden rule. It covers absolute and relative
-imports under the declared `trade` import root, rejection of `src.trade.*`,
-Platform public API versus concrete adapter imports, the exact Bootstrap-to-
-Platform legacy schema bridge, legacy namespace imports, dynamic Python/file/
-native loaders, direct process creation and process pools, own-Cell direction,
-contract annotation leakage, Context/Interface database and artifact-client
-access, table owner and approved-binding decisions, Platform terminology, native
-import placement, malformed baseline, multi-source table provenance, independent
-intelligence/projection declarations, producer-derived warehouse artifacts,
-missing/deleted source evidence, precise Capture migration facts, source-only
-CLI/HTTP/OpenAPI/SSE facts, duplicate declarations, negative-I/O enforcement,
-and the current-tree legacy baseline.
+Focused pytest uses temporary repositories and source files to prove Task 2.1
+baseline parsing, multi-source table provenance, closed Capture-risk and
+dynamic-DDL inventories, independent intelligence/projection declarations,
+producer-derived warehouse artifacts, missing/deleted/unsafe source evidence,
+direct-scope reachable/receiver-matched/exact-identifier approved-binding
+proofs, proof budgets, Git-index non-regular rejection, neutral cold import,
+negative-I/O admission, and the current-tree legacy baseline.
 
-Contributor, scope, and planner tests assert triggering for target, baseline,
-every declared evidence path, guard/parser/contributor/registry integration,
-native binding, and interface source changes; they assert that a legacy-only
-scope adds no architecture step. They prove modified/deleted/renamed/untracked
-partial-scope failures using canonical preserved metadata; argv, file-count,
-per-file, batch-byte, total-scope, and four-worker wave budgets; deterministic
-batch IDs; timeout/output settings; valid worst-case structured truncation;
-invalid-envelope rejection; and check mode with no mutation step. The final
-implementation runs the focused tests, shared Python compile validation,
-`uv run ./trade dev check --show-plan`, `uv run ./trade dev check`, and
-`git diff --check`. No C++ build, frontend build, API smoke, or live-data
-validation is required because no component behavior changes.
+Task 2.2 will test the prospective target dependency graph. Task 2.3 will test
+triggers, canonical deltas, partial-scope failures, batching, executor
+capacity, timeout/output behavior, and check-mode non-mutation. Task 2.4 will
+test the runbook. The Task 2.1 delivery runs focused tests, shared Python
+compile validation, direct design diagnostics, and `git diff --check`; it does
+not claim a new `trade dev check` contributor, C++ build, frontend build, API
+smoke, or live-data validation.
 
 ### Alternatives and trade-offs
 
@@ -510,12 +493,13 @@ adapter before adding an explicit `approved_binding`.
 
 ### Rollout and rollback
 
+Task 2.1 follows this isolated rollout:
+
 1. Add and approve this child design before code implementation.
 2. Add the baseline parser/validator and fixture tests without registering it.
-3. Register the contributor and verify changed-scope plan behavior.
-4. Commit the baseline/guard unit, then run the focused and unified quality
+3. Commit the baseline/guard unit, then run the focused and unified quality
    gates.
-5. Run the six-role implementation review against the frozen diff and resolve
+4. Run the six-role implementation review against the frozen diff and resolve
    P0 findings before push/PR.
 
 The guard is prospective: later children create `src/trade` modules only after
@@ -523,6 +507,10 @@ their approved designs name an owner and compatibility bridge. A failing
 transition is rolled back by retaining the legacy path and removing the new
 target module from the child branch; this guard itself has no runtime state to
 restore.
+
+Task 2.3 will separately register the contributor and verify changed-scope
+planning. Its implementation, capacity evidence, approval, and rollback are
+not part of this Task 2.1 delivery.
 
 ## Decisions
 
@@ -627,15 +615,16 @@ business Context, Process, or Interface may import it. This preserves the
 parent's Bootstrap-only composition rule and avoids an ambiguous
 `trade.bootstrap.compat` ownership boundary.
 
-### Integrate through the existing quality contributor seam
+### Plan Task 2.3 integration through the existing quality contributor seam
 
 The existing `DesignQualityContributor` shows the project convention for
-scope-aware quality checks. A sibling `ArchitectureContributor` supplies one
-baseline check plus explicitly batched read-only target checks; normal provider
-ownership remains unchanged. The contributor never invokes the guard in fix
-mode and never makes the architecture checker a catch-all quality provider.
-Before contributor planning, the additive `ScopeSelection` fields preserve
-canonical unfiltered delta/filter facts. The shared planner computes
+scope-aware quality checks. In Task 2.3, a sibling `ArchitectureContributor`
+will supply one baseline check plus explicitly batched read-only target checks;
+normal provider ownership will remain unchanged. That contributor must never
+invoke the guard in fix mode or make the architecture checker a catch-all
+quality provider. Before contributor planning, the additive `ScopeSelection`
+fields will preserve canonical unfiltered delta/filter facts. The shared
+planner will compute
 `architecture.partial_scope` as an ordinary failed plan issue, allowing the
 existing runner and JSON/text reports to expose it consistently while
 independent checks remain observable. This preserves the quality runner's
@@ -723,24 +712,29 @@ source-protection guarantee and avoids duplicate Git traversal.
 
 ## Migration Plan
 
-The implementation is additive and order-preserving:
+The approved child roadmap is additive and order-preserving. Only phase 1 is
+delivered by Task 2.1; later phases require their own implementation, tests,
+review, and strict approval:
 
-1. Add the baseline and parser tests while all application paths remain in
+1. **Task 2.1:** add the baseline and parser tests while all application paths remain in
    their current locations.
-2. Add the additive shared scope/model/planner metadata and focused
+2. **Task 2.3:** add the additive shared scope/model/planner metadata and focused
    modified/delete/rename/untracked filtered-scope tests.
-3. Add the scoped guard and contributor registration, with tests that prove
+3. **Tasks 2.2 and 2.3:** add the scoped target guard and contributor
+   registration, with tests that prove
    no legacy-only source is newly audited.
-4. Freeze the baseline as the first architecture migration input.
-5. Require `kernel-and-public-contracts` to introduce any first `src/trade`
+4. **Later architecture children:** freeze the baseline as the first architecture
+   migration input.
+5. **`kernel-and-public-contracts`:** introduce any first `src/trade`
    paths under this guard.
 
-Rollback removes the guard components and baseline declaration, leaving source,
-database, artifact, native, and interface behavior untouched. If needed, the
-additive scope metadata and planner architecture-only plan issue are removed in
-the same isolated rollback, restoring the prior filtered selection behavior.
-Later child rollbacks retain legacy modules and update/restore baseline source
-facts before attempting another extraction.
+Task 2.1 rollback removes the direct validator, neutral TOML helper, baseline
+declaration, and focused tests, leaving source, database, artifact, native, and
+interface behavior untouched. A later Task 2.3 rollback would separately remove
+its additive scope metadata, planner architecture-only plan issue, and
+contributor registration, restoring the prior filtered selection behavior.
+Later child rollbacks retain legacy modules and update or restore baseline
+source facts before attempting another extraction.
 
 ## Open Questions
 
