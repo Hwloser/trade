@@ -2545,6 +2545,9 @@ def test_transaction_proof_excludes_nonlocal_alias_from_receiver_set() -> None:
     assert not summary.operations
     assert len(summary.transaction_rejections) == 1
     assert summary.transaction_rejections[0].with_line == 5
+    assert summary.transaction_rejections[0].candidate_sql == (
+        "INSERT INTO approved_records (id) VALUES (?)",
+    )
 
 
 def test_transaction_proof_excludes_receiver_for_nonlocal_alias() -> None:
@@ -2570,6 +2573,9 @@ def test_transaction_proof_excludes_receiver_for_nonlocal_alias() -> None:
     assert not summary.operations
     assert len(summary.transaction_rejections) == 1
     assert summary.transaction_rejections[0].target == "tx"
+    assert summary.transaction_rejections[0].candidate_sql == (
+        "INSERT INTO approved_records (id) VALUES (?)",
+    )
 
 
 def test_transaction_proof_does_not_report_external_alias_for_nontransaction_with() -> None:
@@ -2590,6 +2596,116 @@ def test_transaction_proof_does_not_report_external_alias_for_nontransaction_wit
 
     assert not summary.operations
     assert not summary.transaction_rejections
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        (
+            "def persist_approved(session):\n"
+            "    global tx\n"
+            '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+            "    with session.transaction() as tx:\n"
+            "        pass\n"
+        ),
+        (
+            "def persist_approved(session):\n"
+            "    global tx\n"
+            "    with session.transaction() as tx:\n"
+            '        tx.execute("INSERT INTO unrelated_records (id) VALUES (?)")\n'
+            "    with session.transaction():\n"
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        ),
+        (
+            "def persist_approved(session):\n"
+            "    global tx\n"
+            "    with lock, session.transaction() as tx:\n"
+            '        tx.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        ),
+        (
+            "def persist_approved(session):\n"
+            "    global tx\n"
+            "    with session.transaction():\n"
+            "        with session.transaction() as tx:\n"
+            '            tx.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        ),
+    ),
+)
+def test_approved_binding_does_not_blame_unrelated_external_transaction_alias(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    source.write_text(
+        _approved_adapter_source().replace(original, replacement, 1)
+        + "\n"
+        + "def persist_writer(session):\n"
+        + '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'callable = "persist_approved" }\nreader_evidence',
+            'callable = "persist_writer" }\nreader_evidence',
+            1,
+        ),
+    )
+
+    report = validate_architecture_baseline(repo)
+
+    finding = next(
+        item
+        for item in report.findings
+        if item.rule_id == "architecture.baseline_invalid_classification"
+    )
+    assert finding.path == "src/trade/datasets/adapters/persistence/warehouse.py"
+    assert "has no exact direct-scope static SQL operation" in finding.message
+    assert "external global transaction alias" not in finding.message
+    assert "first static SQL argument" in finding.remediation
+
+
+def test_external_alias_diagnostic_collection_obeys_proof_budget(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    replacement = (
+        "def persist_approved(session):\n"
+        "    global tx\n"
+        '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        "    with session.transaction() as tx:\n"
+        '        tx.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    source.write_text(
+        _approved_adapter_source().replace(original, replacement, 1),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_callable_proof_operations=1),
+    )
+
+    assert {finding.rule_id for finding in report.findings} == {
+        "architecture.baseline_evidence_budget_exceeded"
+    }
 
 
 @pytest.mark.parametrize(

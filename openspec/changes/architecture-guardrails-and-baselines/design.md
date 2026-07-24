@@ -764,8 +764,13 @@ source-protection guarantee and avoids duplicate Git traversal.
   expressed through the transaction receiver root. Task 2.1 collects
   declarations only from the proof callable's direct lexical scope, skips
   nested closure bodies, and rejects those contexts before adding transaction
-  receivers. Focused temporary-source fixtures cover global receiver, global
-  alias/root operation, and nested nonlocal alias/root-operation forms.
+  receivers. The cause-specific remediation is emitted only when its exact
+  declared transaction SQL is inside that rejected single-item direct context
+  and would otherwise be admitted with a callable-local alias; unrelated,
+  nested, multi-item, or independently invalid contexts retain the generic
+  proof diagnostic. Focused temporary-source fixtures cover global receiver,
+  global alias/root operation, nested nonlocal alias/root-operation, and
+  unrelated external-alias diagnostic suppression.
 - **An adapter-wide literal is mistaken for a callable proof** -> Every
   approved-binding literal must exactly equal the static first SQL argument
   captured from its named direct-scope operation. A mismatch reports the

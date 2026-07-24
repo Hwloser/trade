@@ -99,6 +99,13 @@ through its otherwise-local receiver root. No direct-scope binding or
 object-namespace mutation, import, non-local assignment/deletion target, or
 unmodelled dynamic call may alter that receiver root or alias before the
 operation.
+An external-alias-specific diagnostic SHALL identify that alias only when the
+declared exact transaction literal occurs inside the rejected single-item direct
+transaction block and the same bounded static proof would otherwise admit with
+that alias treated as callable-local. An operation outside that block, or a
+block independently rejected for nesting, multiple items, receiver ambiguity,
+or another proof constraint, SHALL retain the generic transaction-proof
+diagnostic rather than attributing failure to the alias.
 The declared proof literal SHALL exactly equal the static first SQL argument
 captured from the named callable, rather than merely occurring elsewhere in the
 adapter; an operation mismatch SHALL identify the adapter callable line.

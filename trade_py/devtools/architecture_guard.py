@@ -1361,6 +1361,7 @@ class _TransactionProofRejection:
     declaration: _ExternalBindingDeclaration
     target: str
     with_line: int
+    candidate_sql: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -3070,7 +3071,9 @@ def _validate_approved_table_binding(
         operation = _summary_persistence_operation(summary, literal, table_name, field)
         if operation is None:
             rejection = (
-                _transaction_proof_rejection(summary) if field == "transaction_evidence" else None
+                _transaction_proof_rejection(summary, literal, table_name)
+                if field == "transaction_evidence"
+                else None
             )
             if rejection is not None:
                 declaration = rejection.declaration
@@ -3266,14 +3269,20 @@ class _CallableProofVisitor:
         source: str,
         limits: DiscoveryLimits,
         external_bindings: Mapping[str, _ExternalBindingDeclaration],
+        initial_transaction_receivers: frozenset[tuple[str, ...]] = frozenset(),
+        initial_operation_count: int = 0,
+        initial_operation_sql_bytes: int = 0,
     ) -> None:
         self._source = source
         self._limits = limits
         self._external_bindings = external_bindings
         self.operations: list[_PersistenceOperation] = []
         self.transaction_rejections: list[_TransactionProofRejection] = []
-        self._operation_sql_bytes = 0
-        self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
+        self._operation_count = initial_operation_count
+        self._operation_sql_bytes = initial_operation_sql_bytes
+        self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [
+            initial_transaction_receivers
+        ]
 
     def visit_statements(self, statements: Sequence[ast.stmt]) -> bool:
         """Scan a straight-line prefix and stop before ambiguous control flow."""
@@ -3288,7 +3297,7 @@ class _CallableProofVisitor:
                         external_bindings=self._external_bindings,
                     )
                 ):
-                    self._record_transaction_rejection(statement.items)
+                    self._record_transaction_rejection(statement)
                     return True
                 if self._visit_transaction_block(statement.items, statement.body):
                     return True
@@ -3419,12 +3428,43 @@ class _CallableProofVisitor:
         finally:
             self._transaction_receivers.pop()
 
-    def _record_transaction_rejection(self, items: Sequence[ast.withitem]) -> None:
-        for item in items:
-            rejection = _external_alias_transaction_rejection(item, self._external_bindings)
-            if rejection is not None:
-                self.transaction_rejections.append(rejection)
-                return
+    def _record_transaction_rejection(self, statement: ast.With | ast.AsyncWith) -> None:
+        """Retain an alias cause only when it blocks otherwise-admissible SQL."""
+
+        if self._transaction_receivers[-1] or len(statement.items) != 1:
+            return
+        item = statement.items[0]
+        rejection = _external_alias_transaction_rejection(item, self._external_bindings)
+        if rejection is None:
+            return
+        local_bindings = dict(self._external_bindings)
+        del local_bindings[rejection.target]
+        local_receivers = _transaction_receivers(item, external_bindings=local_bindings)
+        if not local_receivers:
+            return
+        candidate_visitor = _CallableProofVisitor(
+            source=self._source,
+            limits=self._limits,
+            external_bindings=local_bindings,
+            initial_transaction_receivers=local_receivers,
+            initial_operation_count=self._operation_count,
+            initial_operation_sql_bytes=self._operation_sql_bytes,
+        )
+        candidate_visitor.visit_statements(statement.body)
+        candidate_sql = tuple(
+            operation.sql
+            for operation in candidate_visitor.operations
+            if operation.receiver in operation.transaction_receivers
+        )
+        if candidate_sql:
+            self.transaction_rejections.append(
+                _TransactionProofRejection(
+                    rejection.declaration,
+                    rejection.target,
+                    rejection.with_line,
+                    candidate_sql,
+                )
+            )
 
     def _record_persistence_operation(self, node: ast.Call) -> None:
         if _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES:
@@ -3437,7 +3477,7 @@ class _CallableProofVisitor:
             return
         encoded_size = len(statement.value.encode("utf-8"))
         if (
-            len(self.operations) >= self._limits.max_callable_proof_operations
+            self._operation_count >= self._limits.max_callable_proof_operations
             or self._operation_sql_bytes + encoded_size > self._limits.max_callable_proof_sql_bytes
         ):
             raise _baseline_evidence_budget_error(
@@ -3457,6 +3497,7 @@ class _CallableProofVisitor:
                 transaction_receivers=self._transaction_receivers[-1],
             )
         )
+        self._operation_count += 1
         self._operation_sql_bytes += encoded_size
 
 
@@ -3476,8 +3517,20 @@ def _summary_persistence_operation(
 
 def _transaction_proof_rejection(
     summary: _CallableProofSummary,
+    literal: str,
+    table_name: str,
 ) -> _TransactionProofRejection | None:
-    return summary.transaction_rejections[0] if summary.transaction_rejections else None
+    return next(
+        (
+            rejection
+            for rejection in summary.transaction_rejections
+            if any(
+                literal == sql and _sql_targets_table(sql, table_name, "transaction_evidence")
+                for sql in rejection.candidate_sql
+            )
+        ),
+        None,
+    )
 
 
 def _external_alias_transaction_rejection(
@@ -3496,7 +3549,7 @@ def _external_alias_transaction_rejection(
     declaration = external_bindings.get(item.optional_vars.id)
     if declaration is None:
         return None
-    return _TransactionProofRejection(declaration, item.optional_vars.id, expression.lineno)
+    return _TransactionProofRejection(declaration, item.optional_vars.id, expression.lineno, ())
 
 
 def _transaction_receivers(
