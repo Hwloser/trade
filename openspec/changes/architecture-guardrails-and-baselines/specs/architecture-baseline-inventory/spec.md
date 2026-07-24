@@ -74,25 +74,30 @@ not satisfy a proof. The callable SHALL be exactly one undecorated top-level
 function or async function and SHALL have no other executable module binding,
 including a duplicate definition, assignment, deletion, import, or nested
 control-flow rebind, wildcard import, module-namespace mutation, or dynamic
-execution. Writer evidence SHALL occur as a static table-specific write
+execution. An adapter containing an approved proof SHALL reject every
+additional module-scope executable call because its namespace effect cannot be
+proven safely. Writer evidence SHALL occur as a static table-specific write
 statement passed as the first positional argument to a persistence call; reader
 and compatibility evidence SHALL occur as one static read-only `SELECT`
 statement in that same position. A string only in a persistence parameter or
 keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
-transaction context containing a static table-specific persistence operation on
-that transaction receiver or its explicit `as` alias, and no direct-scope
-binding mutation may alter that receiver root or alias before the operation.
+direct transaction `with` block containing a static table-specific write on that
+transaction receiver or its explicit `as` alias. No direct-scope binding
+mutation or unmodelled dynamic call may alter that receiver root or alias before
+the operation.
 The declared proof literal SHALL exactly equal the static first SQL argument
 captured from the named callable, rather than merely occurring elsewhere in the
 adapter; an operation mismatch SHALL identify the adapter callable line.
 Every accepted SQL table identifier SHALL match at a supported statement
-position with identifier boundaries, not as a substring. Proof collection SHALL
-retain only direct calls in the callable's straight-line statement prefix and
-directly nested transaction `with` blocks. It SHALL stop before a conditional,
-loop, exception handler, assertion, match, or deferred comprehension rather
-than inferring a control-flow path through that construct. It SHALL fail closed
-before retaining more than the governed callable proof operation, SQL-byte,
-AST-node, or AST-depth budgets.
+position with identifier boundaries, not as a substring. Reader and
+compatibility matching SHALL ignore SQL comments, string values, and quoted
+alias text before recognizing a `FROM` or `JOIN` table identifier. Proof
+collection SHALL retain only direct calls in the callable's straight-line
+statement prefix and one direct transaction `with` block. It SHALL stop before
+a nested `with`, conditional, loop, exception handler, assertion, match, or
+deferred comprehension rather than inferring a control-flow path through that
+construct. It SHALL fail closed before retaining more than the governed callable
+proof operation, SQL-byte, AST-node, or AST-depth budgets.
 `candidate` and `deferred` declarations SHALL reject every persistence-binding
 field.
 
@@ -104,6 +109,11 @@ owner Context, adapter scope, operation set, source-local callable proof,
 replay/compatibility evidence, and capability-specific static matcher. It SHALL
 reject an unrecognized resource kind or cross-provider adapter scope and SHALL
 NOT reuse table `approved_binding`.
+Schema version 1 SHALL reject every unknown top-level declaration, including a
+provider, stream, object-store, vector, or unstructured-resource array, and
+every source fact, Capture risk, dynamic SQL limitation, interface, or native
+binding SHALL reject classification, target-context, adapter, and persistence
+proof fields.
 
 The artifact, pointer, interface, and Capture-risk records are non-authorizing
 lexical migration inputs. Their source/literal bindings and pinned descriptive
@@ -147,21 +157,24 @@ runtime-behavior claim.
   deferred comprehension, a proof after an unconditional terminal statement, a
   proof above the governed operation, SQL-byte, AST-node, or AST-depth budget,
   SQL only in a persistence parameter or keyword, mutable or multi-statement
-  reader/compatibility SQL, a wildcard/dynamic proof-callable rebind, a rebound
-  transaction receiver or alias, a literal that is present only elsewhere in
-  the adapter or differs from the named operation's first SQL argument, or a
-  transaction context with an unrelated receiver
+  reader/compatibility SQL, a quoted alias or comment/string pseudo-table
+  reference, a transaction-only read, a wildcard/dynamic proof-callable rebind,
+  any additional module-scope executable call, a rebound or dynamically
+  mutated transaction receiver or alias, a literal that is present only
+  elsewhere in the adapter or differs from the named operation's first SQL
+  argument, a nested `with` proof, or a transaction context with an unrelated
+  receiver
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
 
 #### Scenario: A non-SQL resource asks to reuse a table approval
 
-- **WHEN** a Capture or Dataset child attempts to classify an artifact,
-  provider, stream, object-store, vector, or unstructured resource as a table
-  `approved_binding`
+- **WHEN** a Capture or Dataset child attempts to add an unknown provider,
+  stream, object-store, vector, or unstructured-resource declaration, or adds
+  classification/proof fields to a non-table source-only declaration
 - **THEN** baseline validation rejects it until the owning child adds its
-  separately reviewed `approved_capability` contract and focused
-  resource-specific authorization tests
+  separately reviewed new schema version and `approved_capability` contract
+  with focused resource-specific authorization tests
 
 #### Scenario: A dynamic SQL limitation is absent, misbound, or unreviewed
 

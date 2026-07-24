@@ -159,6 +159,33 @@ _SQL_TABLE_OPERATION_PATTERNS = (*_SQL_WRITE_TABLE_PATTERNS, _SQL_DROP_TABLE)
 _PERSISTENCE_CALL_NAMES = frozenset(
     {"execute", "executemany", "executescript", "fetch", "fetchall", "fetchone", "query"}
 )
+_BASELINE_TOP_LEVEL_KEYS = frozenset(
+    {
+        "schema_version",
+        "target_source_root",
+        "target_import_root",
+        "legacy_package_roots",
+        "target_contexts",
+        "source_facts",
+        "tables",
+        "artifacts",
+        "capture_risks",
+        "dynamic_sql_limitations",
+        "interfaces",
+        "native_bindings",
+        "warehouse_producers",
+    }
+)
+_UNCLASSIFIABLE_FACT_CATEGORIES = frozenset(
+    {
+        "source_facts",
+        "capture_risks",
+        "dynamic_sql_limitations",
+        "interfaces",
+        "native_bindings",
+    }
+)
+_UNKNOWN_BINDING_ROOT = "\0"
 _EXCLUDED_SOURCE_SEGMENTS = frozenset(
     {"vendor", "third_party", "generated", "cache", "__pycache__"}
 )
@@ -1755,6 +1782,15 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
             "baseline TOML root must be a table",
             "Use a TOML table with the required architecture declarations.",
         )
+    unexpected_keys = sorted(set(parsed) - _BASELINE_TOP_LEVEL_KEYS)
+    if unexpected_keys:
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            baseline_name,
+            "baseline contains unsupported top-level declarations: " + ", ".join(unexpected_keys),
+            "Use only the governed baseline schema fields; introduce a new resource "
+            "authorization schema through its separately reviewed owning child.",
+        )
     schema_version = parsed.get("schema_version")
     if type(schema_version) is not int or schema_version != 1:
         raise _GuardError(
@@ -1857,6 +1893,8 @@ def _validate_baseline_facts(
                     artifact_ids.add(fact_id)
                 if category not in {"dynamic_sql_limitations", "warehouse_producers"}:
                     _validate_common_fact(root, fact, category, evidence)
+                if category in _UNCLASSIFIABLE_FACT_CATEGORIES:
+                    _reject_unclassifiable_binding_fields(fact, category)
                 if category == "artifacts":
                     _validate_classification(
                         root,
@@ -2946,6 +2984,24 @@ def _reject_non_authorizing_binding(fact: Mapping[str, Any], category: str) -> N
         )
 
 
+def _reject_unclassifiable_binding_fields(fact: Mapping[str, Any], category: str) -> None:
+    binding_fields = (
+        "classification",
+        "target_context",
+        "approved_binding",
+        "adapter_scope",
+        *_APPROVED_BINDING_EVIDENCE_FIELDS,
+    )
+    if any(field in fact for field in binding_fields):
+        raise _GuardError(
+            _BASELINE_NONAUTHORIZING,
+            BASELINE_FILENAME,
+            f"{category} source-only declaration must not contain an authorization binding",
+            "Keep this non-table declaration audit-only; add a new reviewed resource "
+            "authorization contract before introducing classification or proof fields.",
+        )
+
+
 def _validate_approved_table_binding(
     fact: Mapping[str, Any],
     *,
@@ -3088,32 +3144,10 @@ def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
     return False
 
 
-def _module_call_may_bind_name(node: ast.AST, name: str) -> bool:
-    """Fail closed when module-level dynamic code can replace a proof callable."""
+def _module_call_may_bind_name(node: ast.AST, _name: str) -> bool:
+    """Fail closed on module-level calls outside the admitted proof definition."""
 
-    if not isinstance(node, ast.Call):
-        return False
-    if isinstance(node.func, ast.Name) and node.func.id == "exec":
-        return True
-    if (
-        isinstance(node.func, ast.Name)
-        and node.func.id == "setattr"
-        and len(node.args) >= 2
-        and _string_expression_may_equal_name(node.args[1], name)
-    ):
-        return True
-    if not isinstance(node.func, ast.Attribute) or not _is_module_namespace(node.func.value):
-        return False
-    if node.func.attr == "update":
-        return True
-    return (
-        node.func.attr == "__setitem__"
-        and bool(node.args)
-        and _string_expression_may_equal_name(
-            node.args[0],
-            name,
-        )
-    )
+    return isinstance(node, ast.Call)
 
 
 def _is_module_namespace(node: ast.AST) -> bool:
@@ -3194,12 +3228,19 @@ class _CallableProofVisitor:
         self._operation_sql_bytes = 0
         self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
 
-    def visit_statements(self, statements: Sequence[ast.stmt]) -> None:
+    def visit_statements(self, statements: Sequence[ast.stmt]) -> bool:
         """Scan a straight-line prefix and stop before ambiguous control flow."""
 
         for statement in statements:
             if isinstance(statement, (ast.With, ast.AsyncWith)):
-                self._visit_transaction_block(statement.items, statement.body)
+                if (
+                    self._transaction_receivers[-1]
+                    or len(statement.items) != 1
+                    or not _transaction_receivers_for_items(statement.items)
+                ):
+                    return True
+                if self._visit_transaction_block(statement.items, statement.body):
+                    return True
                 continue
             if isinstance(statement, ast.Expr):
                 self._visit_direct_expression(statement.value)
@@ -3238,17 +3279,17 @@ class _CallableProofVisitor:
                     )
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 self._invalidate_transaction_receivers(frozenset((statement.name,)))
-                return
+                return True
             elif isinstance(statement, ast.Return):
                 if statement.value is not None:
                     self._visit_direct_expression(statement.value)
-                return
+                return True
             elif isinstance(statement, ast.Raise):
                 if statement.exc is not None:
                     self._visit_direct_expression(statement.exc)
                 if statement.cause is not None:
                     self._visit_direct_expression(statement.cause)
-                return
+                return True
             elif (
                 isinstance(
                     statement,
@@ -3264,10 +3305,14 @@ class _CallableProofVisitor:
                 )
                 or type(statement).__name__ == "TryStar"
             ):
-                return
+                return True
+        return False
 
     def _invalidate_transaction_receivers(self, roots: frozenset[str]) -> None:
         if roots:
+            if _UNKNOWN_BINDING_ROOT in roots:
+                self._transaction_receivers[-1] = frozenset()
+                return
             self._transaction_receivers[-1] = frozenset(
                 receiver for receiver in self._transaction_receivers[-1] if receiver[0] not in roots
             )
@@ -3276,6 +3321,8 @@ class _CallableProofVisitor:
         """Visit immediate call chains without following deferred or conditional AST nodes."""
 
         self._invalidate_transaction_receivers(_expression_bound_root_names(expression))
+        if _expression_has_non_persistence_call(expression):
+            self._invalidate_transaction_receivers(frozenset((_UNKNOWN_BINDING_ROOT,)))
         pending: list[ast.expr] = [expression]
         while pending:
             node = pending.pop()
@@ -3297,7 +3344,7 @@ class _CallableProofVisitor:
         self,
         items: list[ast.withitem],
         body: list[ast.stmt],
-    ) -> None:
+    ) -> bool:
         transaction_receivers = set(self._transaction_receivers[-1])
         for item in items:
             transaction_receivers = {
@@ -3308,7 +3355,7 @@ class _CallableProofVisitor:
             transaction_receivers.update(_transaction_receivers(item))
         self._transaction_receivers.append(frozenset(transaction_receivers))
         try:
-            self.visit_statements(body)
+            return self.visit_statements(body)
         finally:
             self._transaction_receivers.pop()
 
@@ -3375,6 +3422,15 @@ def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
     return frozenset((receiver, alias)) if alias is not None else frozenset((receiver,))
 
 
+def _transaction_receivers_for_items(
+    items: Sequence[ast.withitem],
+) -> frozenset[tuple[str, ...]]:
+    receivers: set[tuple[str, ...]] = set()
+    for item in items:
+        receivers.update(_transaction_receivers(item))
+    return frozenset(receivers)
+
+
 def _assignment_target_root_names(targets: Sequence[ast.expr | None]) -> frozenset[str]:
     roots: set[str] = set()
     pending = [target for target in targets if target is not None]
@@ -3383,6 +3439,10 @@ def _assignment_target_root_names(targets: Sequence[ast.expr | None]) -> frozens
         if isinstance(target, ast.Name):
             roots.add(target.id)
         elif isinstance(target, (ast.Attribute, ast.Subscript)):
+            if isinstance(target, ast.Subscript) and _is_module_namespace(target.value):
+                namespace_key = _static_string_expression(target.slice)
+                roots.add(namespace_key or _UNKNOWN_BINDING_ROOT)
+                continue
             identity = _expression_identity(target.value)
             if identity is not None:
                 roots.add(identity[0])
@@ -3391,6 +3451,10 @@ def _assignment_target_root_names(targets: Sequence[ast.expr | None]) -> frozens
         elif isinstance(target, (ast.Tuple, ast.List)):
             pending.extend(target.elts)
     return frozenset(roots)
+
+
+def _static_string_expression(node: ast.AST) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
 def _expression_bound_root_names(expression: ast.expr) -> frozenset[str]:
@@ -3406,6 +3470,25 @@ def _expression_bound_root_names(expression: ast.expr) -> frozenset[str]:
             continue
         pending.extend(ast.iter_child_nodes(node))
     return frozenset(roots)
+
+
+def _expression_has_non_persistence_call(expression: ast.expr) -> bool:
+    pending: list[ast.AST] = [expression]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Call):
+            if _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES:
+                return True
+            pending.append(node.func)
+            pending.extend(node.args)
+            pending.extend(keyword.value for keyword in node.keywords)
+        elif isinstance(
+            node, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        ):
+            continue
+        else:
+            pending.extend(ast.iter_child_nodes(node))
+    return False
 
 
 def _persistence_receiver(node: ast.Call) -> tuple[str, ...] | None:
@@ -3429,8 +3512,8 @@ def _sql_targets_table(sql: str, table_name: str, field: str) -> bool:
     statement = _sql_without_values_and_comments(sql)
     if field in {"reader_evidence", "compatibility_evidence"}:
         return _is_single_read_statement(statement) and any(
-            _sql_identifier_matches(match.group("table"), table_name)
-            for match in _SQL_SELECT_TABLE.finditer(statement)
+            _sql_identifier_matches(identifier, table_name)
+            for identifier in _sql_read_table_identifiers(sql)
         )
     if field in {"writer_evidence", "transaction_evidence"}:
         write_match = next(
@@ -3448,11 +3531,6 @@ def _sql_targets_table(sql: str, table_name: str, field: str) -> bool:
             return True
         if field == "writer_evidence":
             return False
-    if field == "transaction_evidence":
-        return any(
-            _sql_identifier_matches(match.group("table"), table_name)
-            for match in _SQL_SELECT_TABLE.finditer(statement)
-        )
     return False
 
 
@@ -3475,6 +3553,82 @@ def _sql_identifier_matches(identifier: str, table_name: str) -> bool:
     elif identifier.startswith("[") and identifier.endswith("]"):
         identifier = identifier[1:-1]
     return identifier.casefold() == table_name.casefold()
+
+
+def _sql_read_table_identifiers(sql: str) -> Iterator[str]:
+    """Yield identifiers following real SQL FROM/JOIN keywords, not quoted text."""
+
+    index = 0
+    expects_table = False
+    while index < len(sql):
+        character = sql[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character == "-" and sql[index + 1 : index + 2] == "-":
+            newline = sql.find("\n", index + 2)
+            index = len(sql) if newline == -1 else newline + 1
+            continue
+        if character == "/" and sql[index + 1 : index + 2] == "*":
+            end = sql.find("*/", index + 2)
+            index = len(sql) if end == -1 else end + 2
+            continue
+        if character == "'":
+            index = _sql_quoted_token_end(sql, index, "'", "''")
+            expects_table = False
+            continue
+        if character == '"':
+            end = _sql_quoted_token_end(sql, index, '"', '""')
+            if expects_table:
+                yield sql[index:end]
+                expects_table = False
+            index = end
+            continue
+        if character == "`":
+            end = _sql_quoted_token_end(sql, index, "`", "``")
+            if expects_table:
+                yield sql[index:end]
+                expects_table = False
+            index = end
+            continue
+        if character == "[":
+            end = sql.find("]", index + 1)
+            end = len(sql) if end == -1 else end + 1
+            if expects_table:
+                yield sql[index:end]
+                expects_table = False
+            index = end
+            continue
+        if character.isascii() and (character.isalnum() or character in {"_", "$"}):
+            end = index + 1
+            while (
+                end < len(sql)
+                and sql[end].isascii()
+                and (sql[end].isalnum() or sql[end] in {"_", "$"})
+            ):
+                end += 1
+            token = sql[index:end]
+            if expects_table:
+                yield token
+                expects_table = False
+            elif token.upper() in {"FROM", "JOIN"}:
+                expects_table = True
+            index = end
+            continue
+        expects_table = False
+        index += 1
+
+
+def _sql_quoted_token_end(sql: str, start: int, delimiter: str, escaped: str) -> int:
+    index = start + 1
+    while index < len(sql):
+        if sql.startswith(escaped, index):
+            index += len(escaped)
+            continue
+        if sql[index] == delimiter:
+            return index + 1
+        index += 1
+    return len(sql)
 
 
 def _sql_without_values_and_comments(sql: str) -> str:

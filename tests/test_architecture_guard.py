@@ -2423,6 +2423,101 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
+    ("old", "new"),
+    (
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction():\n        globals()["session"] = unrelated\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction():\n        globals().update({"session": unrelated})\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as tx:\n        globals()["tx"] = unrelated\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+    ),
+)
+def test_approved_binding_rejects_dynamic_transaction_receiver_rebinding(
+    tmp_path: Path,
+    old: str,
+    new: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source().replace(old, new, 1), encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+def test_approved_binding_rejects_nested_with_dead_transaction_proof(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source().replace(
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction():\n        with lock:\n            return None\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+def test_approved_binding_rejects_multi_item_transaction_with_proof(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source().replace(
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with lock, session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+def test_approved_binding_rejects_read_only_transaction_proof(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source().replace(
+            'def persist_approved(session):\n    with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'def persist_approved(session):\n    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n    with session.transaction():\n        session.execute("SELECT id FROM approved_records")',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved" }',
+            'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "persist_approved" }',
+            1,
+        ),
+    )
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
     ("field", "old", "new"),
     (
         (
@@ -2686,6 +2781,50 @@ def test_approved_binding_rejects_rebound_proof_callable(
     assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
 
 
+@pytest.mark.parametrize(
+    ("redefinition", "description"),
+    (
+        (
+            '\n\nglobals().pop("persist_approved")\n',
+            "module namespace deletion",
+        ),
+        (
+            "\n\nglobals().clear()\n",
+            "module namespace clear",
+        ),
+        (
+            '\n\nglobals().pop("persist_approved")\nvars().setdefault("persist_approved", replacement)\n',
+            "module namespace delete and rebind",
+        ),
+        (
+            '\n\ndelattr(module, "persist_approved")\n',
+            "dynamic attribute deletion",
+        ),
+        (
+            '\n\nnamespace = globals()\nnamespace.pop("persist_approved")\n',
+            "module namespace alias mutation",
+        ),
+        (
+            '\n\neval("persist_approved = replacement")\n',
+            "dynamic evaluation",
+        ),
+    ),
+)
+def test_approved_binding_rejects_callable_namespace_mutation(
+    tmp_path: Path,
+    redefinition: str,
+    description: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source() + redefinition, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
+
+
 def test_approved_binding_rejects_decorated_proof_callable(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, _sources())
     source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
@@ -2852,6 +2991,45 @@ def test_approved_binding_rejects_table_suffix_and_comment_only_proofs(
 
 
 @pytest.mark.parametrize(
+    "quoted_identifier",
+    (
+        '"FROM approved_records"',
+        "`FROM approved_records`",
+        "[FROM approved_records]",
+    ),
+)
+def test_approved_binding_rejects_quoted_identifier_pseudo_read_proof(
+    tmp_path: Path,
+    quoted_identifier: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    literal = f"SELECT 1 AS {quoted_identifier}"
+    source.write_text(
+        _approved_adapter_source().replace(
+            'session.execute("SELECT id FROM approved_records")',
+            f"session.execute({literal!r})",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'literal = "SELECT id FROM approved_records", callable = "load_approved"',
+            f"literal = '{literal}', callable = \"load_approved\"",
+            1,
+        ),
+    )
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
     ("section", "classification"),
     (
         ("[[artifacts]]", "approved_binding"),
@@ -2872,6 +3050,49 @@ def test_non_table_records_cannot_become_approved_bindings(
         repo,
         before
         + record.replace('classification = "candidate"', f'classification = "{classification}"', 1),
+    )
+
+    assert "architecture.baseline_non_authorizing_binding" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    "unknown_resource",
+    ("providers", "streams", "object_stores", "vectors", "unstructured_resources"),
+)
+def test_baseline_rejects_unknown_non_sql_resource_declarations(
+    tmp_path: Path,
+    unknown_resource: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline + f'\n\n[[{unknown_resource}]]\nid = "unapproved-{unknown_resource}"\n'
+        'classification = "approved_binding"\n',
+    )
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    "section",
+    (
+        "[[source_facts]]",
+        "[[capture_risks]]",
+        "[[dynamic_sql_limitations]]",
+        "[[interfaces]]",
+        "[[native_bindings]]",
+    ),
+)
+def test_unclassifiable_baseline_facts_reject_authorization_fields(
+    tmp_path: Path,
+    section: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline.replace(section, section + '\nclassification = "approved_binding"', 1),
     )
 
     assert "architecture.baseline_non_authorizing_binding" in _rule_ids(repo)

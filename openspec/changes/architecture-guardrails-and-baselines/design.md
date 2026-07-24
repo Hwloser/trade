@@ -113,18 +113,22 @@ Acceptance for Task 2.1 requires baseline source/table/pointer claims to match
 the current repository text; all mandatory Capture-risk and dynamic-DDL
 inventories to be closed and non-authorizing; approved table-binding proof to
 be static, exact, receiver-matched, and bound to one unique undecorated
-module-level callable with no competing module binding. The static SQL must be
-the first positional argument of the recognized persistence call; writer and
-transaction proof must be table-specific writes, while reader and compatibility
-proof must be one read-only `SELECT` statement. The declared proof literal must
-exactly equal that direct SQL argument, not merely occur elsewhere in the
-adapter. A transaction receiver or explicit alias remains valid only until a
-direct-scope binding mutation of its root name. A proof is admitted only from
-its straight-line statement prefix or a directly nested transaction `with`
-block; branches, loops, exception handlers, assertions, matches, and deferred
-comprehensions never authorize persistence. Wildcard imports and
-module-namespace mutation or dynamic execution are competing callable
-bindings. The proof is bounded by
+module-level callable with no competing module binding. Schema v1 is closed:
+only its reviewed top-level declarations are admitted, and non-table source
+facts, Capture risks, dynamic limitations, interface records, and native
+bindings cannot carry classification, adapter, or proof fields. The static SQL
+must be the first positional argument of the recognized persistence call;
+writer and transaction proof must be table-specific writes, while reader and
+compatibility proof must be one read-only `SELECT` statement. The declared proof
+literal must exactly equal that direct SQL argument, not merely occur elsewhere
+in the adapter. A transaction receiver or explicit alias remains valid only
+until a direct-scope binding mutation or unmodelled dynamic call. A proof is
+admitted only from its straight-line callable prefix and a direct transaction
+`with` block in that prefix; nested `with` blocks, branches, loops, exception
+handlers, assertions, matches, and deferred comprehensions never authorize
+persistence. Any additional module-scope executable call is a competing
+callable-binding risk. SQL read matching recognizes `FROM` and `JOIN` tokens
+outside comments, strings, and quoted alias text. The proof is bounded by
 persistence-operation, retained-SQL-byte, AST-node, and AST-depth limits, and
 every rejected relationship has a focused failing fixture.
 
@@ -188,22 +192,27 @@ passed as the persistence call's first positional argument; reader and
 compatibility proof must be one read-only `SELECT` passed in that same position.
 The declared source literal must exactly equal that static SQL argument and a
 mismatch points to the named adapter callable line.
-Transaction proof must be a static table-specific persistence call inside a
-transaction context using the same receiver or that context manager's explicit
-`as` alias, and that receiver identity must remain unmodified from transaction
-entry to the call. SQL table identifiers match at supported statement positions
-with identifier boundaries, not by substring. Proof collection accepts only a
-straight-line callable prefix and directly nested transaction `with` blocks,
-stopping before any conditional, loop, exception, assertion, match, or deferred
-comprehension. It rejects a decorated, duplicate, deleted, assigned, imported,
-wildcard-imported, namespace-mutated, dynamically executed, or otherwise
-rebound callable name, and fails closed above its callable operation,
+Transaction proof must be a static table-specific write inside one direct
+transaction `with` block using the same receiver or that context manager's
+explicit `as` alias, and that receiver identity must remain unmodified from
+transaction entry to the call. Any unmodelled direct-scope call invalidates
+transaction receiver proof rather than being interpreted dynamically. SQL table
+identifiers match at supported statement positions with identifier boundaries,
+not by substring; read proof tokenization ignores comments, strings, and quoted
+alias text before recognizing `FROM` or `JOIN`. Proof collection accepts only a
+straight-line callable prefix and a direct transaction `with` block, stopping
+before a nested `with`, conditional, loop, exception, assertion, match, or
+deferred comprehension. It rejects a decorated, duplicate, deleted, assigned,
+imported, wildcard-imported, namespace-mutated, dynamically executed, or
+otherwise rebound callable name; an approved-proof adapter also rejects
+additional module-scope executable calls because their namespace effects cannot
+be proven safely. It fails closed above its callable operation,
 retained-SQL-byte, AST-node, or AST-depth budget. Thus a valid but unrelated
-legacy literal, parameter value, suffix-named table, cross-adapter proof,
-uncalled nested helper, top-level constant, dead proof, rebound transaction
-receiver, or unrelated transaction receiver cannot authorize the table. Prose,
-comments, stale literals, unnamed or malformed adapter scopes, and
-data/artifact paths cannot authorize a binding.
+legacy literal, parameter value, suffix-named table, quoted alias,
+cross-adapter proof, uncalled nested helper, top-level constant, dead proof,
+rebound transaction receiver, or unrelated transaction receiver cannot
+authorize the table. Prose, comments, stale literals, unnamed or malformed
+adapter scopes, and data/artifact paths cannot authorize a binding.
 
 Task 2.1 deliberately proves only lexical receiver identity, not the concrete
 runtime type or provenance of an `execute`-like receiver. There are no
@@ -702,20 +711,23 @@ source-protection guarantee and avoids duplicate Git traversal.
   must expose a small explicit persistence operation or propose a separate
   reviewed CFG-proof expansion before relying on such a path.
 - **A familiar persistence method name does not prove an admitted runtime
-  receiver** -> Task 2.1 rejects parameter-only SQL, receiver rebinding, and
-  dynamic callable replacement, but it intentionally does not resolve concrete
-  receiver type or Port provenance. The current baseline has no production
-  `approved_binding`; `persistence-receiver-provenance` must be completed by
-  the owning Context before its first production table binding.
+  receiver** -> Task 2.1 rejects parameter-only SQL, lexical or dynamic
+  receiver rebinding, nested control-flow proof, and dynamic callable
+  replacement, but it intentionally does not resolve concrete receiver type or
+  Port provenance. The current baseline has no production `approved_binding`;
+  `persistence-receiver-provenance` must be completed by the owning Context
+  before its first production table binding.
 - **An adapter-wide literal is mistaken for a callable proof** -> Every
   approved-binding literal must exactly equal the static first SQL argument
   captured from its named direct-scope operation. A mismatch reports the
   adapter callable line; later source-fact audit records remain intentionally
   separate non-authorizing lexical evidence.
-- **A table SQL binding cannot authorize heterogeneous resources** -> Artifact,
-  provider, stream, object-store, vector, and unstructured payload access stay
-  candidate or deferred. The owning Capture or Dataset child must first define
-  a fail-closed `approved_capability` schema and capability-specific static
+- **A table SQL binding cannot authorize heterogeneous resources** -> Schema v1
+  rejects unknown top-level resource declarations and classification/proof
+  fields on every unclassifiable source-only record. Artifact, provider,
+  stream, object-store, vector, and unstructured payload access stay candidate
+  or deferred. The owning Capture or Dataset child must first define a
+  fail-closed `approved_capability` schema and capability-specific static
   matcher; it cannot repurpose `approved_binding` or add a broad approval
   escape.
 - **Many distinct approved proof callables increase retained review state** ->
