@@ -768,9 +768,14 @@ source-protection guarantee and avoids duplicate Git traversal.
   declared transaction SQL is inside that rejected single-item direct context
   and would otherwise be admitted with a callable-local alias; unrelated,
   nested, multi-item, or independently invalid contexts retain the generic
-  proof diagnostic. Focused temporary-source fixtures cover global receiver,
-  global alias/root operation, nested nonlocal alias/root-operation, and
-  unrelated external-alias diagnostic suppression.
+  proof diagnostic. A receiver root sharing the external alias name remains
+  external in the counterfactual and retains the generic diagnostic. Since
+  direct proof collection stops at the first rejected statement, any
+  cause-specific diagnostic is deterministically tied to that first rejected
+  direct transaction block. Focused temporary-source fixtures cover global
+  receiver, global alias/root operation, synchronous and asynchronous alias
+  diagnostics, nested nonlocal alias/root-operation, same-name
+  receiver/alias, and unrelated external-alias diagnostic suppression.
 - **An adapter-wide literal is mistaken for a callable proof** -> Every
   approved-binding literal must exactly equal the static first SQL argument
   captured from its named direct-scope operation. A mismatch reports the

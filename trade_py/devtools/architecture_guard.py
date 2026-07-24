@@ -3437,6 +3437,12 @@ class _CallableProofVisitor:
         rejection = _external_alias_transaction_rejection(item, self._external_bindings)
         if rejection is None:
             return
+        expression = item.context_expr
+        assert isinstance(expression, ast.Call)
+        assert isinstance(expression.func, ast.Attribute)
+        receiver = _expression_identity(expression.func.value)
+        if receiver is not None and receiver[0] == rejection.target:
+            return
         local_bindings = dict(self._external_bindings)
         del local_bindings[rejection.target]
         local_receivers = _transaction_receivers(item, external_bindings=local_bindings)

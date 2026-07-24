@@ -2520,6 +2520,56 @@ def test_approved_binding_reports_global_transaction_alias_declaration(tmp_path:
     assert "external global declaration" in finding.remediation
 
 
+def test_approved_binding_reports_async_global_transaction_alias_declaration(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    replacement = (
+        "async def persist_approved(session):\n"
+        "    global tx\n"
+        "    async with session.transaction() as tx:\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    source.write_text(
+        _approved_adapter_source().replace(original, replacement, 1)
+        + "\n"
+        + "def persist_writer(session):\n"
+        + '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'callable = "persist_approved" }\nreader_evidence',
+            'callable = "persist_writer" }\nreader_evidence',
+            1,
+        ),
+    )
+
+    report = validate_architecture_baseline(repo)
+
+    finding = next(
+        item
+        for item in report.findings
+        if item.rule_id == "architecture.baseline_invalid_classification"
+    )
+    assert finding.path == "src/trade/datasets/adapters/persistence/warehouse.py"
+    assert finding.line == 6
+    assert "external global transaction alias 'tx'" in finding.message
+    assert "declared on line 5" in finding.message
+    assert "callable-local transaction alias" in finding.remediation
+
+
 def test_transaction_proof_excludes_nonlocal_alias_from_receiver_set() -> None:
     tree = ast.parse(
         "def outer():\n"
@@ -2670,6 +2720,57 @@ def test_approved_binding_does_not_blame_unrelated_external_transaction_alias(
         if item.rule_id == "architecture.baseline_invalid_classification"
     )
     assert finding.path == "src/trade/datasets/adapters/persistence/warehouse.py"
+    assert finding.line == 4
+    assert "has no exact direct-scope static SQL operation" in finding.message
+    assert "external global transaction alias" not in finding.message
+    assert "first static SQL argument" in finding.remediation
+
+
+def test_approved_binding_does_not_blame_same_name_external_receiver_and_alias(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    replacement = (
+        "def persist_approved(session):\n"
+        "    global db\n"
+        "    with db.transaction() as db:\n"
+        '        db.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    source.write_text(
+        _approved_adapter_source().replace(original, replacement, 1)
+        + "\n"
+        + "def persist_writer(session):\n"
+        + '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'callable = "persist_approved" }\nreader_evidence',
+            'callable = "persist_writer" }\nreader_evidence',
+            1,
+        ),
+    )
+
+    report = validate_architecture_baseline(repo)
+
+    finding = next(
+        item
+        for item in report.findings
+        if item.rule_id == "architecture.baseline_invalid_classification"
+    )
+    assert finding.path == "src/trade/datasets/adapters/persistence/warehouse.py"
+    assert finding.line == 4
     assert "has no exact direct-scope static SQL operation" in finding.message
     assert "external global transaction alias" not in finding.message
     assert "first static SQL argument" in finding.remediation

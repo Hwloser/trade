@@ -105,7 +105,12 @@ transaction block and the same bounded static proof would otherwise admit with
 that alias treated as callable-local. An operation outside that block, or a
 block independently rejected for nesting, multiple items, receiver ambiguity,
 or another proof constraint, SHALL retain the generic transaction-proof
-diagnostic rather than attributing failure to the alias.
+diagnostic rather than attributing failure to the alias. In particular, an
+external receiver root with the same name as its `as` alias remains externally
+bound and SHALL retain the generic diagnostic. Because direct proof collection
+stops at the first non-authorizing statement in source order, only that first
+rejected direct transaction block is eligible for this alias-specific
+diagnostic.
 The declared proof literal SHALL exactly equal the static first SQL argument
 captured from the named callable, rather than merely occurring elsewhere in the
 adapter; an operation mismatch SHALL identify the adapter callable line.
