@@ -114,6 +114,7 @@ config/mutation-capacity.json                identity-bound schedule qualificati
 trade_py/devtools/mutation_testing/
   bootstrap_contract.py                      Python 3.7 stdlib mode/receipt/safe-root contract
   supervisor.py                              Python 3.7 stdlib receipt/containment/fallback owner
+  protocol.py                                Python 3.7-compatible closed control protocol
   bootstrap.py                               import-light Git/config/zero-work planner
   cli.py                                     argument parsing and orchestration only
   models.py                                  immutable plans/outcomes/status algebra
@@ -128,8 +129,11 @@ trade_py/devtools/mutation_testing/
   cache.py                                   staged outcomes and committed run markers
   trend.py                                   sequence transaction, digest chain and projection
   render.py                                  JSON-derived Markdown/HTML rendering
-  report_store.py                            leases, atomic publish, bundles and retention
+  report_store.py                            leases, atomic report publish and raw retention
+  bundle.py                                  immutable CI bundle build/byte validation
   baseline.py                                comparable baseline evaluation
+  exceptions.py                              exact exception identity and temporal validation
+  capacity.py                                runner qualification and phase-budget admission
 .github/workflows/mutation-testing.yml       CI routing only
 docs/mutation-testing.md                     developer operations
 ```
@@ -161,16 +165,58 @@ all fields against its own mode policy, creates the stopped child, completes cgr
 pidfd/session registration, and returns an opaque random `worker_handle` plus verified
 PID/start-token metadata required by the seccomp broker. Controller lifecycle actions
 name only that handle; raw PIDs are diagnostic and cannot authorize signal, wait, or
-cleanup. Protocol loss or replay closes admission and is infrastructure failure.
+cleanup.
+
+The protocol is `trade.mutation.supervisor-protocol.v1`. The supervisor creates a
+256-bit per-run capability before the controller starts, passes it only through an
+inherited close-on-exec descriptor, and authenticates every request and response with
+HMAC-SHA-256 over direction, run/boot identity, request ID, sequence, deadline,
+payload digest, and descriptor-role digest. It also verifies the inherited client's
+`SO_PEERCRED` PID/start token. The capability descriptor closes after the controller
+establishes the one allowed session and is never inherited by workers. Reconnect and
+a second client are forbidden. Packets are at most 64 KiB, JSON payloads at most
+48 KiB, and each packet carries at most eight role-labelled descriptors. One
+controller multiplexer owns the socket, correlates unique request IDs, allows at most
+`workers` in-flight lifecycle requests, one in-flight spawn per logical worker,
+`workers` active handles, and `2 * workers + 4` queued requests. Completed handles are
+removed immediately after verified wait/cleanup. A full queue blocks only until its
+`CLOCK_BOOTTIME` send deadline, then returns `protocol_capacity_exceeded`; it never
+spins or grows. MAC, peer, sequence, correlation, frame, FD, channel loss, or replay
+failure closes admission, requests cleanup of registered handles, and becomes
+phase-appropriate infrastructure failure.
 
 The CLI coordinates owned modules but does not contain mutation logic. Cosmic Ray is
 an adapter dependency and never imports application runtime modules. `models.py`
 imports no controller adapter; planning and execution depend on models, while
 selection/engine never import process, storage, cache, trend, or rendering modules.
 `process_supervisor.py` is only the typed client for the supervisor protocol and owns
-no OS spawning primitive. `render.py` consumes persisted report models and
-`report_store.py` owns generation bytes and filesystem transitions, not outcome
-semantics. Tests use synthetic repositories and source files.
+no OS spawning primitive. The complete import DAG is:
+
+```text
+bootstrap_contract <- protocol <- supervisor
+models <- config, git_scope, selection, engine, coverage, process_supervisor,
+          isolation, executor, render, report_store, cache, trend, baseline,
+          exceptions, capacity, bundle, cli
+config <- selection, engine, coverage, isolation, executor, baseline, exceptions,
+          capacity, cli
+git_scope <- selection <- engine
+protocol <- process_supervisor <- isolation, executor, cli
+engine, coverage, isolation <- executor <- cli
+models <- render <- report_store
+models, report_store <- cache, trend, baseline, exceptions, bundle
+models, capacity <- cli
+```
+
+`supervisor.py` depends only on Python-3.7-compatible
+`bootstrap_contract.py`/`protocol.py`; it cannot import controller modules.
+`executor.py` cannot import report storage, cache, trend, baseline, exceptions,
+capacity, bundle, or rendering. `report_store.py` owns report-generation bytes and
+filesystem transitions only; it does not own outcomes, bundles, score policy, cache,
+or trend. Cache/trend/baseline/exception/bundle modules consume immutable report DTOs
+and cannot call executor or adapters. `bundle.py` validates copied bytes and never
+selects global current state. `capacity.py` owns qualification math but cannot mutate
+the reviewed capacity record. Static import-architecture tests enforce every edge and
+forbid reverse/cyclic imports. Tests use synthetic repositories and source files.
 
 The controller is a devtool, not a domain service. It does not belong in the future
 business Context graph and is excluded as a mutation target.
@@ -195,8 +241,21 @@ Identifiers and invariants:
   before atomically rewriting it. The receipt is also a bounded phase journal with
   plan digest, selected count, last durable phase, expected report root and projection
   state. CI receives its path before the first child starts.
+- `CanonicalMutationPositionV1` is derived from the original UTF-8 source and the
+  allowlisted operator before selection. It stores `kind=replace|insert_before`,
+  zero-based start/end UTF-8 byte offsets, one-based line, zero-based UTF-8 byte
+  column, and exact original token bytes. Replacement operators identify the unique
+  `tokenize` token or contiguous compound token sequence inside the Cosmic Ray AST
+  node that corresponds to that operator (`is not` remains one compound position).
+  `AddNot` uses `insert_before` at the unique first lexical token of the target
+  expression, with equal start/end byte offsets. Offsets use a line-start byte table,
+  never Unicode code-point counting. A missing, duplicated, overlapping, or
+  operator-inconsistent token is not selected and increments the
+  `canonicalization_rejected` scanned reason. Immediately before mutation the same
+  normalizer must reproduce the position and observed Cosmic Ray span; otherwise the
+  already-selected record becomes `invalid_mutation`.
 - `execution_id` (and compatibility field `mutant_id`) is SHA-256 over schema
-  version, relative path, original source digest, canonical mutation-token position,
+  version, relative path, original source digest, `CanonicalMutationPositionV1`,
   observed AST span, operator name/arguments, `execution_occurrence`, and config
   digest. `execution_occurrence` is Cosmic Ray's zero-based source-wide counter for
   one `(source_digest, operator_name, operator_arguments)` traversal and is the only
@@ -239,25 +298,41 @@ Identifiers and invariants:
   tracked-Python tree digest remains report audit metadata but does not invalidate an
   unchanged closure. V1 accepts only `explicit_input|non_cacheable` clocks and
   `deterministic|entropy_non_cacheable` entropy; unsupported `fixed` values fail
-  configuration until an injection contract exists. A tuple whose bounded import
-  closure references an undeclared clock or entropy API is non-cacheable. The trust
-  tuple is `entropy_non_cacheable` because its default path can call `uuid.uuid4()`.
+  configuration until an injection contract exists. Clock/entropy checking is
+  conservative over the entire copied repository-local closure executable by one
+  mapped test tuple, not only the selected definition. An alias-aware AST/import
+  binding pass resolves direct imports, `from` imports, aliases, and statically
+  followed repository re-exports for datetime/date/time, UUID, random, secrets and OS
+  entropy APIs. Unresolved star/dynamic imports, native-extension calls, reflective
+  lookup, or ambiguous re-export cannot prove determinism and make the tuple
+  non-cacheable unless the exact reviewed dynamic-import manifest declares an already
+  non-cacheable policy. Unselected definitions in a copied executable module are
+  included. The trust tuple is `entropy_non_cacheable` because its default path can
+  call `uuid.uuid4()`.
 - one run directory is staged and fsynced; one `current.json` pointer atomically
   publishes JSON, Markdown, HTML, and their digest manifest as one generation.
 - `candidate_positions_scanned` counts deterministic eligible positions examined up
-  to the scan ceiling. `generated_mutants` is exactly the number materialized as
-  selected first-order mutant records and equals `selected`; it is therefore bounded
-  by 150/1000/5000. `not_selected_scanned` and an unknown unscanned remainder are
-  reported separately and are never described as generated mutants.
+  to the scan ceiling and always equals `selected + not_selected_scanned`.
+  `not_selected_scanned` is partitioned into closed reasons
+  `outside_changed_line|lower_priority_after_mutant_cap|canonicalization_rejected|
+  exception_filtered`; scan/deadline/source/visit ceilings stop before examining more
+  positions and therefore affect only `unscanned_candidate_remainder="unknown"`.
+  `generated_mutants` is exactly the number materialized as selected first-order
+  mutant records and equals `selected`; it is bounded by 150/1000/5000.
 - the closed terminal enum is `killed_fresh`, `survived_fresh`, `killed_cache`,
   `survived_cache`, `timeout_test_started`, `infrastructure_error_test_started`,
-  `cancelled_test_started`, `no_coverage_mapping`, `no_coverage_line`,
-  `baseline_unavailable`, `invalid_mutation`, `infrastructure_error_pre_test`,
-  `equivalent_exception`, `not_run_plan`, `not_run_budget`, and
-  `not_run_cancelled`. Every selected mutant has exactly one.
-- every record also carries booleans `mutation_applied_current` and
-  `test_started_current`; aggregate phase counts are sums of those facts, not guesses
-  from logs. Cache terminals set both false. Test-started terminals set both true.
+  `cancelled_test_started`, `no_coverage_line`, `baseline_unavailable`,
+  `invalid_mutation`, `infrastructure_error_pre_test`, `equivalent_exception`,
+  `not_run_plan`, `not_run_budget`, and `not_run_cancelled`. Every selected mutant
+  has exactly one. The v1 matrix requires a non-empty test tuple for every eligible
+  definition; a missing mapping fails configuration and matrix-external paths are
+  `deferred_unmapped`, so the former `no_coverage_mapping` terminal is unreachable
+  and removed.
+- every record also carries booleans `mutation_applied_current`,
+  `worker_spawned_current`, and `test_started_current`; aggregate phase counts are
+  sums of those facts, not guesses from logs. `test_started_current` implies
+  `worker_spawned_current`, which implies `mutation_applied_current`. Cache terminals
+  set all three false. Test-started terminals set all three true.
   `infrastructure_error_pre_test`, `not_run_budget`, or `not_run_cancelled` may set
   mutation-applied true only when their typed stop event wins after the
   position-verified write but before pytest spawn; in this contract `not_run` means
@@ -273,22 +348,25 @@ Identifiers and invariants:
   retains process/cgroup evidence. No provisional killed/survived/timeout/cancelled
   count survives that override.
 
-The phase matrix is closed; `test_started_current=true` always implies
-`mutation_applied_current=true`:
+The phase matrix below is the sole normative table. A tuple is
+`(mutation_applied_current, worker_spawned_current, test_started_current, cleanup)`.
+No tuple outside it is serializable:
 
-| Terminal | Allowed `(mutation_applied_current, test_started_current)` | Required cleanup |
-|---|---|---|
-| `killed_fresh`, `survived_fresh`, `timeout_test_started`, `infrastructure_error_test_started`, `cancelled_test_started` | `(true, true)` | `confirmed` |
-| `killed_cache`, `survived_cache` | `(false, false)` | `not_required` |
-| `no_coverage_mapping`, `no_coverage_line`, `baseline_unavailable`, `invalid_mutation`, `equivalent_exception`, `not_run_plan` | `(false, false)` | `not_required` |
-| `infrastructure_error_pre_test` | `(false, false)` or `(true, false)` | `not_required` before spawn, otherwise `confirmed` |
-| `not_run_budget`, `not_run_cancelled` | `(false, false)` or `(true, false)` | `not_required` |
+| Terminal | Allowed tuples |
+|---|---|
+| `killed_fresh`, `survived_fresh`, `timeout_test_started`, `cancelled_test_started` | `(true,true,true,confirmed)` |
+| `infrastructure_error_test_started` | `(true,true,true,confirmed)`, `(true,true,true,unconfirmed)` |
+| `killed_cache`, `survived_cache` | `(false,false,false,not_required)` |
+| `no_coverage_line`, `baseline_unavailable`, `invalid_mutation`, `equivalent_exception`, `not_run_plan` | `(false,false,false,not_required)` |
+| `infrastructure_error_pre_test` | `(false,false,false,not_required)`, `(true,false,false,not_required)`, `(true,true,false,confirmed)`, `(true,true,false,unconfirmed)` |
+| `not_run_budget`, `not_run_cancelled` | `(false,false,false,not_required)`, `(true,false,false,not_required)` |
 
-An initially started record with cleanup `unconfirmed` is serialized as
-`infrastructure_error_test_started/(true,true)`; a pre-test record with that cleanup
-state is serialized as `infrastructure_error_pre_test` with its already durable
-mutation fact. No terminal permits `(false,true)`, and no cache terminal can claim a
-current mutation or test.
+Any provisional non-infrastructure terminal whose spawned worker cleanup is
+`unconfirmed` is replaced before aggregation by the phase-appropriate infrastructure
+terminal with the corresponding allowed `unconfirmed` tuple. Such a record and its
+run are score-ineligible, cache-ineligible, and trend-incomparable. No terminal
+permits a false-to-true phase implication, and no cache terminal can claim current
+mutation, worker, or test activity.
 
 Unavailable states are explicit: missing base, unsupported tool, invalid config,
 baseline test failure, no eligible source, no test mapping, budget exhaustion, and
@@ -416,23 +494,31 @@ published, and either anchors that root in the receipt or atomically writes a
 cgroup: a pre-spawn `memory.events` snapshot, a post-wait increase in `oom_kill`, the
 signalled PID/start token being a member of that cgroup, `SIGKILL`, and no competing
 member kill in the same interval. Shared-root counter deltas, absent membership, or
-an ambiguous concurrent delta are `unknown_sigkill`, never OOM. Only
+an ambiguous concurrent delta are `unknown_sigkill`, never OOM. `proven_oom` and
+`unknown_sigkill` are closed infrastructure reasons and map to
+`infrastructure_error_test_started` when `test_started_current=true`, otherwise
+`infrastructure_error_pre_test`, using the sole phase/cleanup table above. Controller
+OOM or SIGKILL is not a mutant record; the supervisor emits `controller_lost`
+fallback. Only
 host/runner/supervisor loss remains best effort.
 
 Immutable generations are retained for at most 30 entries, 2 GiB, and 30 days;
 compact trend-source records for 365 entries, 32 MiB, and 400 days; invocation
-receipts for 400 entries, 64 MiB, and 400 days; fallback/quarantine/failed-staging
-evidence for at most 50 entries, 512 MiB, and 14 days. Deterministic
-oldest-creation/run-ID eviction under the
-publication lock protects `current`, all active leases, and current failure evidence.
-A receipt and every report/fallback/trend carrier that it anchors are one retention
-unit: they are evicted synchronously, or the retained receipt is replaced by a
-bounded `trade.mutation.evidence-tombstone.v1` recording run ID, former root and
-sequence digests, eviction reason/time, and no claim that evidence remains. `inspect`
-returns `evidence_expired` for that tombstone and never reports a dangling receipt as
-healthy. It records every eviction. No backup is required for ignored disposable
-developer state. CI uploads a validated immutable invocation bundle, not mutable
-staging. Rollback removes tracked tooling
+receipts/tombstones for 400 entries, 64 MiB, and 400 days; fallback/quarantine/
+failed-staging evidence for at most 50 entries, 512 MiB, and 14 days. Deterministic
+oldest-creation/run-ID eviction under the publication lock protects `current`, active
+leases, and current failure evidence. Retention is a DAG, not one synchronous unit:
+the raw-evidence unit is `receipt + report-or-fallback + CI bundle`; its members are
+evicted together or the receipt becomes bounded
+`trade.mutation.evidence-tombstone.v1` with former roots/sequences, reason, time, and
+`detail_evidence=expired`. A compact trend source/aggregate is a separately retained
+digest-bound derived record and may outlive raw evidence. It retains score/counts,
+key-set digests, report root and sequence but never claims mutant detail remains.
+Expired-detail trend records remain continuity projections only: they cannot establish
+or reconstruct a baseline, satisfy a detailed comparison, or make `inspect` healthy.
+`inspect` returns `evidence_expired`; every eviction is recorded. No backup is
+required for ignored disposable developer state. CI uploads a validated immutable
+invocation bundle, not mutable staging. Rollback removes tracked tooling
 without rewriting or deleting these audit generations, which remain subject to
 explicit manual cleanup and never enter production state.
 
@@ -441,8 +527,12 @@ explicit manual cleanup and never enter production state.
 #### CLI
 
 ```text
-trade dev mutation MODE [OPTIONS]
-scripts/mutation-test MODE
+trade dev mutation COMMAND [COMMAND_OPTIONS] [OUTPUT_OPTIONS]
+scripts/mutation-test COMMAND [COMMAND_OPTIONS] [OUTPUT_OPTIONS]
+
+COMMAND := changed | core | full | inspect | repair | qualify | reconcile
+
+changed|core|full:
   [--base REF]
   [--output-dir PATH]
   [--max-mutants N]
@@ -459,11 +549,18 @@ trade dev mutation repair --run-id UUID
 
 trade dev mutation qualify --mode core|full --runner-profile PROFILE
 trade dev mutation reconcile --trend-epoch EPOCH [--apply]
+
+OUTPUT_OPTIONS := [--format text|json] [--quiet | --verbose]
 ```
 
 `trade dev mutation` is canonical and root-dispatched before the ordinary `trade dev`
-`uv` path; `scripts/mutation-test` is an argv/exit-compatible facade. `MODE` is
-required and closed to `changed`, `core`, or `full`. Changed mode defaults
+`uv` path; `scripts/mutation-test` supports all seven commands and is an argv/exit-
+compatible facade. `COMMAND` is required and closed to the seven values above.
+Execution-only options are rejected on administrative commands; `--base` is accepted
+only by `changed`; `--mode`/`--runner-profile` only by `qualify`;
+`--trend-epoch`/`--apply` only by `reconcile`; and `--run-id`,
+`--expected-manifest-sha256`, and `--apply` only as shown for inspect/repair.
+Changed mode defaults
 to `${MUTATION_BASE_REF:-origin/master}` locally; CI always passes the pull-request
 base SHA. Failure to resolve the explicit base is an infrastructure/configuration
 error, never a full-scope fallback. `--output-dir` is subject to the owned safe-root
@@ -480,21 +577,37 @@ fails.
 `trade.mutation.repair.v1`. Both support text/JSON, closed
 `healthy|first_run|repairable|active_lease|stale_expected_digest|evidence_expired|
 unsafe|internal_error` states, stable error/remediation fields and deterministic
-evidence paths. Inspect
-exits 0 for healthy/first-run, 1 for repairable, and 2 for unsafe/internal errors.
+evidence paths. Inspect exits 0 for `healthy|first_run`, 1 for
+`repairable|active_lease|stale_expected_digest|evidence_expired`, and 2 for
+`unsafe|internal_error`.
 Repair dry-run exits 0 for no-op or a valid plan, 1 for active lease/stale expected
-digest, and 2 for unsafe/internal errors; `--apply` exits 0 only after read-back
-verification. Neither command invokes mutation dependencies, follows symlinks, or
-touches active leases.
+digest/evidence expired, and 2 for unsafe/internal errors; `--apply` exits 0 only
+after read-back verification. Neither command invokes mutation dependencies, follows
+symlinks, or touches active leases.
 
 `qualify` measures one reviewed CI runner profile and emits an unsigned proposal; it
-never edits the checked-in capacity record. `reconcile` validates a named trend epoch,
+never edits the checked-in capacity record. Its response schema is
+`trade.mutation.qualification.v1` with closed status
+`qualified_proposal|unqualified_proposal|preflight_failed|measurement_failed|
+internal_error`; a completed qualified or unqualified proposal exits 0 and the latter
+three exit 2. `reconcile` returns `trade.mutation.reconcile.v1` with status
+`clean|gap_plan|applied|active_lease|stale_epoch|unsafe|internal_error`, validates a
+named trend epoch,
 shows missing/tombstoned sequences and projection repairs in dry-run form, and requires
 `--apply` plus the publication lock to commit a gap tombstone or rebuilt projection.
-It never invents a predecessor or score. All subcommands have stable `--help`,
-`--format text|json`, `--quiet|--verbose` behavior; root/facade argv, stdout/stderr
-roles, receipt export, supervisor-first execution, dependency-failure text, and exit
-codes are parity-tested.
+It never invents a predecessor or score. `clean|gap_plan|applied` exits 0,
+`active_lease|stale_epoch` exits 1, and `unsafe|internal_error` exits 2.
+
+All commands support `--format text|json` and mutually exclusive `--quiet|--verbose`.
+JSON mode writes exactly one UTF-8 JSON document plus newline to stdout, with no ANSI,
+progress, warnings, or human prefixes; all diagnostics/progress go to stderr. Text
+mode writes the final result to stdout and diagnostics/progress to stderr. `--quiet`
+suppresses progress and non-error diagnostics but not the final stdout document;
+`--verbose` emits bounded phase transitions at most once per phase and once per five
+seconds, with no credentials. Non-TTY output never uses ANSI. Parse errors write only
+diagnostic text to stderr and exit 2. Root/facade argv, output bytes/channels,
+receipt export, supervisor-first execution, dependency-failure text, and exits are
+golden parity-tested for every command, state, format, and verbosity.
 
 Exit codes:
 
@@ -510,16 +623,58 @@ Exit codes:
 
 An eligible-empty run with one or more unlisted/untracked production paths is
 `deferred_only`, exits 0, has score `null`, and lists those paths without running
-pytest. Run-status precedence is `report_failed` then `signal_cancelled`,
-`preflight_failed`, `degraded_infrastructure`, `budget_partial`, `plan_only`,
+pytest. Run-status precedence is `report_failed` then `degraded_infrastructure`,
+`signal_cancelled`, `preflight_failed`, `budget_partial`, `plan_only`,
 `deferred_only`, `zero_work`, and `complete`; future policy regression affects exit 1
-but does not overwrite factual run status.
+but does not overwrite factual run status. Any integrity or cleanup override forces
+`degraded_infrastructure`; an earlier signal remains `stop_reason`/causation only.
 Infrastructure failure in one mutant does not turn another mutant into killed. The
 controller stops only the affected test tuple unless integrity, process ownership,
 global deadline, signal, or report publication requires run-wide cancellation.
 
 The report schema is `trade.mutation.report.v1`. CI consumes `summary.md` and uploads
 all report files but does not infer truth from logs.
+
+#### Error registry
+
+`trade.mutation.error-code.v1` is the closed owner of machine error semantics. Every
+fallback, administrative response, restore diagnostic, bundle validation, and CI
+trusted summary carries one code below or `none`; ad hoc strings cannot become codes.
+Command templates substitute only validated IDs/digests/paths:
+
+| Code | Owner/stage | Retryable | Summary severity | Remediation template |
+|---|---|---:|---|---|
+| `invalid_invocation` | CLI/parse | no | error | `trade dev mutation COMMAND --help` |
+| `missing_dependency` | bootstrap/dependency | yes | error | `uv sync --extra mutation --frozen` |
+| `unsupported_execution_host` | preflight/kernel | no | error | `trade dev mutation COMMAND --plan-only` |
+| `unsafe_output_root` | preflight/storage | no | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `source_drift` | plan/publication | yes | error | `trade dev mutation COMMAND --base REF` |
+| `protocol_auth_failed` | supervisor/protocol | no | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `protocol_capacity_exceeded` | supervisor/protocol | yes | warning | `trade dev mutation COMMAND --workers N` |
+| `spawn_failed` | supervisor/spawn | yes | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `isolation_failed` | worker/isolation | no | error | `trade dev mutation COMMAND --plan-only` |
+| `incomplete_evidence` | finalization/integrity | yes | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `proven_oom` | supervisor/wait | yes | error | `trade dev mutation COMMAND --workers N` |
+| `unknown_sigkill` | supervisor/wait | yes | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `cleanup_unconfirmed` | supervisor/cleanup | yes | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `baseline_unavailable` | coverage/baseline | yes | warning | `trade dev mutation COMMAND --plan-only` |
+| `report_publish_failed` | report/publication | yes | error | `trade dev mutation repair --run-id RUN_ID --expected-manifest-sha256 DIGEST` |
+| `projection_degraded` | cache/trend/projection | yes | warning | `trade dev mutation reconcile --trend-epoch EPOCH` |
+| `cache_restore_miss` | cache/restore | yes | notice | `trade dev mutation COMMAND --no-cache` |
+| `trend_predecessor_unavailable` | trend/restore | yes | warning | `trade dev mutation reconcile --trend-epoch EPOCH` |
+| `trend_predecessor_invalid` | trend/restore | no | error | `trade dev mutation reconcile --trend-epoch EPOCH` |
+| `carrier_not_monotonic` | trend/publication | no | warning | `trade dev mutation reconcile --trend-epoch EPOCH` |
+| `evidence_expired` | retention/inspect | no | warning | `trade dev mutation COMMAND` |
+| `active_lease` | storage/admin | yes | warning | `trade dev mutation inspect --run-id RUN_ID` |
+| `stale_expected_digest` | storage/admin | no | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `bundle_missing` | CI/validation | yes | error | `gh run rerun RUN_ID` |
+| `bundle_invalid` | CI/validation | no | error | `trade dev mutation inspect --run-id RUN_ID` |
+| `artifact_upload_skipped_quota` | CI/upload | yes | warning | `trade dev mutation inspect --run-id RUN_ID` |
+| `hard_runner_loss` | CI/runner | yes | error | `gh run rerun RUN_ID` |
+
+The registry's implementation is shared immutable data in `models.py`; owner modules
+may select but not redefine code, retryability, severity, or template. Unknown codes
+make bundle validation fail.
 
 #### Dependencies
 
@@ -642,8 +797,9 @@ require a later reviewed matrix addition with an explicit clock policy.
 
 Static imports only validate mapping shape. A passing private-tree baseline must
 collect coverage.py line data. A candidate whose exact line is absent becomes
-`no_coverage_line`; a missing mapping becomes `no_coverage_mapping`. Neither starts
-mutant pytest. Coverage never adds an unconfigured test or falls back to all tests.
+`no_coverage_line` and does not start mutant pytest. A missing/empty mapping is an
+invalid closed-matrix configuration; a matrix-external path is `deferred_unmapped`.
+Coverage never adds an unconfigured test or falls back to all tests.
 
 ### Failure and recovery
 
@@ -687,7 +843,8 @@ first-observed control class. Integrity causes
 protocol_failure|incomplete_evidence` are sticky and dominant regardless of sequence.
 A natural/control event records `EXIT_SEEN` or `STOP_SEEN` but cannot terminalize
 until the seccomp notification queue is drained, listener closure is resolved, and
-both independent guard/audit streams reach authenticated completion. Any integrity
+both independent guard/audit streams reach authenticated completion or an allowed
+supervisor forced-close record. Any integrity
 cause observed during that bounded finalization replaces a provisional natural,
 timeout, signal, or budget result with the phase-appropriate infrastructure terminal.
 After process termination, cleanup status is evaluated last; `unconfirmed` performs
@@ -699,6 +856,20 @@ pairwise race, late integrity notification, both stream completion orders, clean
 override, and both phase facts. Worker exceptions, lost protocol channels, repeated
 signals, and parent cancellation use one supervisor TERM, bounded wait, KILL,
 cgroup/group-existence check, and reap path.
+
+A hard termination cannot require a killed child to emit `guard_completed`. For an
+already provisional `timeout_test_started|cancelled_test_started`, the supervisor may
+issue `trade.mutation.guard-forced-close.v1` only after it authenticated the worker
+identity/start token and stream prefix, stopped admission, drained the notification
+queue to empty, observed the guard pipe EOF caused by that exact worker's termination,
+and confirmed the unique cgroup empty plus wait/reap. The signed record binds the last
+valid guard sequence/digest, provisional control event/sequence, TERM/KILL facts,
+notification-drain result, cleanup result, and reason `forced_timeout|forced_cancel`.
+It substitutes only for `guard_completed`; any sequence gap, pre-existing truncation,
+wrong identity, nonempty notification queue, unconfirmed cleanup, natural exit, or
+budget stop remains `incomplete_evidence` infrastructure failure. Thus an infinite
+loop can truthfully remain timeout after supervisor-proven forced closure without
+turning arbitrary EOF into success.
 
 Each thread creates one private tree from a sorted bounded import closure rooted at
 the eligible source, mapped tests, required package `__init__.py` files, tracked
@@ -753,16 +924,23 @@ The environment sets temporary `TRADE_DATA_ROOT`, HOME/XDG/cache directories,
 UTC/locale/hash seed, native thread variables `OMP_NUM_THREADS`,
 `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`,
 `BLIS_NUM_THREADS`, and `VECLIB_MAXIMUM_THREADS` to `1`, scrubs credentials/proxies,
-and adds Python audit/guard hooks for higher-fidelity diagnostics. The child receives
-one write-only guard pipe and child-only MAC key, and emits a gap-free authenticated
-sequence of `guard_started`, `kernel_policy_active`, zero or more `guard_violation`,
-and `guard_completed`. The controller alone owns the syscall audit records and key;
-it writes `syscall_audit_started`, zero or more `syscall_violation`, and
-`syscall_audit_completed` to controller-private memory before durable outcome
-serialization. Both streams bind run ID, worker PID/start token, target digest and
-policy digest, but cannot forge or truncate each other. Classification drains pending
-notifications and requires both complete sequences. Missing, empty, truncated,
-duplicate, wrong-token or incomplete evidence is `infrastructure_error`. Any child or syscall violation
+and adds Python audit/guard hooks for higher-fidelity diagnostics. The supervisor
+creates a per-worker 256-bit HMAC key, passes one sealed copy and the guard pipe's
+write end to the launcher, retains the verifier copy plus guard read end itself, and
+passes neither key nor endpoint to the controller. The child emits a gap-free
+HMAC-SHA-256 sequence of `guard_started`,
+`kernel_policy_active`, zero or more `guard_violation`, and `guard_completed`. The
+supervisor verifies identity, MAC, sequence, and digest chain online, destroys the key
+after finalization, then gives the controller an immutable response authenticated by
+the supervisor control-protocol capability or the forced-close receipt above.
+The controller alone owns the syscall audit records and private append state; it writes
+`syscall_audit_started`, zero or more `syscall_violation`, and
+`syscall_audit_completed` before durable outcome serialization. The child cannot forge
+the audit stream and the controller cannot forge child MACs or supervisor
+verification receipts. Both bind run ID, worker PID/start token, target digest and
+policy digest. Classification drains pending notifications and requires both verified
+sequences. Missing, empty, truncated, duplicate, wrong-key or incomplete evidence is
+`infrastructure_error`. Any child or syscall violation
 overrides pytest exit 0/1 even if application or native code catches an exception.
 These controls and versions are cache/report identity. Baselines use the same controls
 plus line coverage and a finite timeout bounded by remaining execution time.
@@ -779,8 +957,14 @@ Both commands use the same supervisor and environment. The target-filtered JSON 
 contain exactly one canonical private target. The adapter
 maps it back to the repository-relative source, extracts bounded `executed_lines`,
 rejects a missing/duplicate/unknown target or malformed/oversized data, and removes
-data/JSON afterward. Coverage exit/data failure is `baseline_unavailable`, never
-no-coverage or killed.
+raw data/JSON afterward. Before removal it persists one bounded immutable
+`CoverageTupleEvidenceV1` containing tuple ID, repository source and source digest,
+sorted collected node IDs, exact argv digest, rcfile digest, redacted environment and
+provenance digests, coverage version, sorted unique executed lines plus digest,
+process exits, duration, and closed outcome reason. Every selected record references
+its tuple ID. Report and bundle validators reconstruct line membership and
+`no_coverage_line` from this tuple rather than trusting stored aggregate flags.
+Coverage exit/data failure is `baseline_unavailable`, never no-coverage or killed.
 
 Pytest mutant exits map `0=survived`, `1=killed`, and `2/3/4/5` or unexpected signal
 to infrastructure error only after both independent evidence streams finalize and
@@ -846,7 +1030,7 @@ receives cleanup status `unconfirmed`; its provisional terminal is replaced by t
 phase-appropriate infrastructure error, the run is degraded, and no score/cache is
 claimed. The receipt records its pidfd/cgroup evidence and the supervisor keeps
 attempting cleanup until the outer CI timeout. An `fsync` or fallback write that does not return leaves no claimed
-generation. The 15/35/100-minute CI timeouts are the final runner-level containment
+generation. The 15/45/110-minute CI timeouts are the final runner-level containment
 for kernel/filesystem stalls and intentionally exceed controller budgets. Capacity
 qualification fails if ordinary cancellation, reap, render, hash, fsync, and fallback
 operations cannot complete inside their sub-budgets; documentation and reports call
@@ -877,7 +1061,10 @@ must fit file, byte, copy-time, and remaining-space limits. Structural report ca
 and worst-case escaped detail are reserved for every selected mutant. JSON renders
 incrementally; Markdown/HTML use the same bounded detail records rather than embedding
 JSON. Detail truncates deterministically before any per-file, generation, or renderer
-limit.
+limit. CI disk admission additionally reserves the report generation, one full
+uncompressed bundle copy, bounded 64 MiB upload/compression scratch, cache/aggregate
+restore maxima, and both 20% and 512 MiB final free-space margins. Reflink or streaming
+may reduce observed use but cannot reduce this conservative admission equation.
 
 At 10x eligible source size, source and AST ceilings stop work before candidate
 truncation; at 10x unrelated repository modules, the root-bounded import closure
@@ -896,14 +1083,21 @@ one-effective-CPU throttle, worker count, cache state, and selected cohort but i
 the runner's physical capacity identity. A core/full qualification passes only when:
 
 - preflight and all isolation/cleanup probes pass under the same runner identity;
-- every planned mode phase completes, with at least 30 completed measured mutants and
-  no infrastructure, OOM, timeout, cleanup, report, or projection failure;
+- every planned mode phase completes with no infrastructure, OOM, timeout, cleanup,
+  report, or projection failure. The deterministic qualification cohort contains every
+  configured source row and every distinct mapped-test tuple for that mode, with at
+  least `max(30, 5 * tuple_count)` completed mutants and at least five completed
+  mutants per tuple; insufficient candidates make qualification fail rather than
+  substituting faster tuples;
 - a capacity run observes
   `min(4, max(1, floor(effective_cpu/2)))` workers, while a separate serial diagnostic
   records one worker;
-- `p95_mutant_completion * selected_limit / qualified_workers +
-  p95_baseline_total + p95_plan_copy + p95_render_fsync_cleanup <=
-  execution_deadline * 0.80`;
+- each tuple records p50/p95 baseline, supervisor spawn/admission round-trip, execution,
+  finalization and cleanup. Qualification deterministically list-schedules the
+  configured mode's exact selected-limit distribution over `qualified_workers` using
+  tuple-specific p95 end-to-end costs; unfilled tail slots use the slowest tuple p95.
+  `projected_list_schedule_makespan + p95_baseline_total + p95_plan_copy +
+  p95_render_fsync_cleanup <= execution_deadline * 0.80`;
 - peak invocation memory is at most `effective_memory * 0.80`, each worker remains
   below `memory.high`, and disk use leaves both 20% and 512 MiB free;
 - throughput `completed_mutants / active_execution_seconds` and projected worst-mode
@@ -956,6 +1150,23 @@ evidence. Under the output lock,
 deterministic eviction removes the oldest `created_at,key` records first and records
 evicted count, bytes, and key range in the receipt.
 
+Each restore emits a bounded diagnostic object. `cache_restore` records at most 20
+attempted carrier tuples/names/digests, per-carrier closed rejection code, selected
+carrier or `null`, listed/downloaded count and bytes, elapsed monotonic milliseconds,
+deadline/byte truncation, final hit/miss code, and retry command. `trend_restore`
+records the same plus expected/observed epoch, predecessor/high-water tuple, affected
+sequence gap, `predecessor_invalid|predecessor_unavailable|none`, and exact reconcile
+command. JSON, human reports, and the trusted CI summary render these objects.
+
+Only scheduled core/full runs publish remote cache or aggregate carriers; manual runs
+always upload their factual invocation bundle but skip shared cache/aggregate
+publication. Before upload, a bounded GitHub API inventory reads at most 100 metadata
+records/20 MiB in 60 seconds. Cache carriers are capped per repository at 14 artifacts
+and 7 GiB across seven days; aggregate carriers at 90 artifacts and 5760 MiB across
+90 days. The job deletes nothing. If adding an artifact would exceed either count or
+bytes, publication is skipped with `artifact_upload_skipped_quota`; report/trend local
+truth remains valid and the summary names platform-owner cleanup.
+
 For scheduled/manual core and full, CI first retrieves prior
 `mutation-aggregate-v1-<workflow_run_id>-<run_attempt>` artifacts by monotonically
 decreasing tuple `(workflow_run_id, run_attempt)`. Restore lists at most 20 carriers,
@@ -968,7 +1179,12 @@ and identical manifest digest is a duplicate carrier and may be used; otherwise 
 corrupt highest carrier starts a new `predecessor_invalid` epoch and lower tuples are
 not silently accepted. If no carrier exists because of schedule pause or artifact
 expiry, the run starts `predecessor_unavailable`. The restored aggregate seeds only
-the local trend sequence, never the report sequence. After validation, the current
+the local trend sequence, never the report sequence. Before reserving a new trend
+sequence, the current `(workflow_run_id, run_attempt)` must be strictly greater than
+the validated predecessor carrier tuple. An older workflow rerun still publishes its
+factual report/bundle but skips trend append and aggregate upload with
+`carrier_not_monotonic`; it cannot place a higher trend sequence in a lower carrier.
+After validation, the current
 run uploads a new immutable rolling aggregate containing the bounded ledger,
 projection, high-water/checkpoint, its source bundle digest, and predecessor tuple;
 retention is 90 days and aggregate size is capped at 64 MiB. Nightly cadence keeps a
@@ -1001,24 +1217,50 @@ never trusted. A future command can propose this artifact, but committing it req
 review. V1 never claims comparability merely because a source path matches.
 
 `config/mutation-exceptions.toml` starts empty. Each future record must match exact
-mutant ID, path, source digest, start/end line and column, operator, occurrence,
-owner, reason, and expiry. Validation rejects every wildcard, ambiguity, and stale
+mutant ID, path/source digest, `CanonicalMutationPositionV1`, operator
+name/arguments, `execution_occurrence`, owner, reason, and expiry. Validation rejects
+every wildcard, ambiguity, and stale
 source. Excepted mutants have `equivalent_exception` status and remain visible; they
 do not enter score numerator or denominator.
 
 Qualification and exception temporal validation uses RFC 3339 UTC plus a recorded
-trusted validation time. `expires_at` must be strictly later than `qualified_at` or
+trusted validation time. At supervisor start and end, code samples
+`CLOCK_REALTIME` immediately before and after `CLOCK_BOOTTIME`; expected realtime
+advance is the boottime delta and a backward residual over five minutes is rollback.
+Across runs, `last_trusted_utc` and its source digest come from the maximum validated
+anchor in the reviewed capacity/exception record, validated local receipt high-water,
+or validated predecessor aggregate. Current realtime more than five minutes behind
+that anchor fails eligibility. A reboot permits a new boottime domain but does not
+discard the UTC high-water. Capacity or a non-empty exception registry without a
+required validated anchor fails closed; empty exceptions need no temporal eligibility.
+Every successful validation advances only an ignored local receipt/aggregate anchor,
+never edits reviewed config. `expires_at` must be strictly later than `qualified_at` or
 `reviewed_at`, at most 30 days later for capacity and at most 180 days later for an
 exception, and in the future at validation. A current clock earlier than the recorded
 start by more than five minutes, invalid/leap-second text, a future start more than
-five minutes ahead, or an interval crossing a detected clock rollback fails closed.
+five minutes ahead, a missing required anchor, or either rollback equation fails closed.
 The report records the five-minute skew allowance and comparison result; UTC never
 orders execution events.
 
 ### CI design
 
-One GitHub Actions workflow has three execution routes plus one evidence-validation
-job:
+Runner infrastructure is an explicit external prerequisite, not an assumed repository
+asset. The accountable owner is GitHub repository owner `huanwei1208`; the
+prerequisite change must also name the human/team platform operator before approval.
+A prerequisite child change
+`provision-trade-mutation-v1-runner` owns the immutable image/build manifest, image
+digest, ARC/VM scale-set and labels, one-job destruction policy, delegated cgroup
+setup, finite memory, Landlock/seccomp kernel configuration, mount/credential policy,
+capacity/availability SLO, and a runner-readiness workflow. Its accepted evidence is
+a reviewed image digest plus three consecutive clean readiness jobs that prove label
+pickup within five minutes, unique ephemeral identity/destruction, cgroup ownership,
+kernel probes, no production mounts/secrets, and cleanup. Until that child change and
+mode capacity qualification pass, mutation execution schedules and PR execution are
+disabled; repository CI may run plan-only on ordinary GitHub-hosted runners and must
+not queue indefinitely on a nonexistent label.
+
+One GitHub Actions workflow then has three execution routes plus one
+evidence-validation job:
 
 - every route uses the repository's dedicated ephemeral ARC/VM scale-set profile
   `runs-on: [self-hosted, linux, x64, ephemeral, trade-mutation-v1]`. One clean VM is
@@ -1037,10 +1279,20 @@ job:
   around the 10-minute total controller budget. Its concurrency key is
   `mutation-pr-${{ github.repository }}-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: true`; cancellation upload is best effort.
-- nightly/manual core: `core`, cron `17 18 * * 1-6` UTC, 35-minute timeout,
+- nightly/manual core: `core`, cron `17 18 * * 1-6` UTC, 45-minute timeout,
   compatible result cache and validated rolling trend aggregate.
 - weekly/manual full: explicit `workflow_dispatch` mode or cron `17 18 * * 0` UTC,
-  with a 100-minute job timeout.
+  with a 110-minute job timeout.
+
+Outer timeouts obey one static phase equation. Changed admits 2 minutes
+checkout/setup/preflight + 10 controller + 2 bundle/upload + 1 cancellation margin =
+15 minutes. Core runs cache and aggregate restore in parallel under one 3-minute
+restore cap, then admits 4 minutes checkout/setup/preflight + 3 restore + 30 controller
++ 5 bundle/fsync/upload + 3 cancellation margin = 45 minutes. Full uses 4 + 3 + 90 +
+10 + 3 = 110 minutes. Restore work is outside but explicitly represented in the outer
+equation; bundle/upload reserves cannot be consumed by the controller. Static workflow
+tests recompute these values. Hard outer timeout remains a last resort rather than a
+normal conforming path.
 
 All v1 mutation outcomes are report-only. The execution step captures controller exit
 0/1/2, receipt path and run ID through `$GITHUB_OUTPUT`, then returns success so score,
@@ -1054,7 +1306,15 @@ is different: a dependent `validate-evidence` job runs `if: always()`, downloads
 named artifact into a fresh directory, rejects extra/path-escaping members, recomputes
 all member/manifest digests and receipt/report/count/cleanup bindings without using an
 execution-workspace path, and fails on missing or invalid evidence. No local path is
-assumed to cross jobs.
+assumed to cross jobs. Regardless of validation success, that job appends the sole
+authoritative operator-facing `trade.mutation.ci-summary.v1` summary with
+`trusted_validation_status=valid|missing|invalid|hard_loss`, expected and actual
+artifact/manifest digest, artifact/run/workflow/attempt identity, original controller
+exit, verified outcome counts/score/budget flag when valid, closed error code, and
+exact remediation. The earlier execution summary is visibly labelled
+`UNTRUSTED UNTIL validate-evidence`; it cannot be mistaken for the final trust
+decision. Mutation outcomes remain report-only. Evidence validation may be red on
+integrity failure, but this change does not configure it as a required branch check.
 
 Scheduled and manual core/full share concurrency key
 `mutation-long-${{ github.repository }}` with `cancel-in-progress: false`. Native GitHub
@@ -1155,7 +1415,8 @@ Tests cover:
   audit integrity, and supervisor fallback after controller loss;
 - per-mutant natural-exit versus cancellation linearization in both race orders;
 - sticky integrity precedence after both stream/drain orders, orthogonal cleanup
-  override, and the complete terminal x mutation-applied x test-started matrix;
+  override, and the complete terminal x mutation-applied x worker-spawned x
+  test-started x cleanup matrix;
 - run-generation atomic partial JSON/Markdown/HTML publication, independent fallback,
   invocation receipt binding, corrupt-pointer recovery, output-root safety, per-run
   lease scavenging, redaction, and generation/aggregate retention bounds;

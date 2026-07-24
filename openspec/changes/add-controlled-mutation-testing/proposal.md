@@ -18,8 +18,10 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
 
 ## What Changes
 
-- Add canonical `trade dev mutation changed|core|full` developer commands, with
-  `scripts/mutation-test` retained as an argv/exit-compatible facade.
+- Add canonical `trade dev mutation
+  changed|core|full|inspect|repair|qualify|reconcile` developer commands, with
+  `scripts/mutation-test` retained as an all-command argv/output/exit-compatible
+  facade and a closed versioned error/remediation registry.
 - Add a typed Python controller under `trade_py/devtools/mutation_testing/` that:
   - pins Cosmic Ray 8.4.6 and uses only `get_operator` plus `mutate_code` for
     deterministic first-order
@@ -40,15 +42,16 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - selects an absolute Python 3.7+ supervisor interpreter and starts one
     standard-library supervisor before every `uv` child, makes it the invocation
     subreaper/watchdog, sole OS-level child spawner, and sole receipt/fallback writer;
-    the non-spawning controller uses an authenticated bounded protocol with opaque
-    worker handles, and the supervisor contains and observes cleanup even when the
-    controller is killed;
+    the non-spawning controller uses a per-run-capability-authenticated, numerically
+    bounded single-session protocol with opaque worker handles, and the supervisor
+    contains and observes cleanup even when the controller is killed;
   - denies network, process launch, and real-data paths with Linux Landlock/seccomp
     containment, transfers a seccomp listener over `SCM_RIGHTS`, brokers allowed
     opens with `openat2` plus descriptor injection, and requires independent
-    controller-owned syscall audit and child guard evidence before a mutant can be
-    killed or survived;
-  - distinguishes killed, survived, timeout, mapping/line no-coverage,
+    controller-owned syscall audit and supervisor-verified child guard evidence,
+    including a tightly constrained forced-close receipt after timeout/cancellation,
+    before a mutant can be killed, survived, or truthfully timed out;
+  - distinguishes killed, survived, timeout, line no-coverage,
     baseline-unavailable, cancellation, invalid, and infrastructure-error outcomes;
     integrity evidence is sticky and dominant after notification drain, while
     unconfirmed cleanup is an orthogonal status that replaces any provisional
@@ -62,7 +65,8 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     from a hash-chained immutable trend-source ledger with explicit reconciliation;
   - validates and packages the exact receipt plus referenced generation/fallback as
     one digest-bound `trade.mutation.bundle.v1` CI artifact; the execution job uploads
-    it and a separate job downloads and independently validates the bytes.
+    it and a separate job downloads and independently validates the bytes and
+    publishes the sole trusted `trade.mutation.ci-summary.v1`.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry. Add an identity- and
   freshness-bound capacity qualification contract for scheduled modes.
@@ -81,7 +85,10 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     treating result cache as evidence;
   - every execution route uses a reviewed disposable `trade-mutation-v1` runner with
     writable delegated cgroup v2, finite memory, Landlock and seccomp notification;
-    unsupported runners produce plan/preflight evidence and execute no mutant;
+    GitHub repository owner `huanwei1208` is accountable for a prerequisite runner-
+    provisioning child change, named platform operator, and three-run readiness proof;
+    until it and capacity qualification pass, workflow execution remains disabled and
+    hosted CI is plan-only;
   - native GitHub concurrency prevents simultaneous long runs but may supersede an
     older pending request, which is reported honestly rather than described as a
     durable queue.
@@ -114,8 +121,9 @@ In scope:
   limits, supervisor-owned process-tree containment and fallback, kernel I/O
   containment,
   cancellation algebra, partial reporting, committed cache/trend artifacts, bounded
-  report retention, sealed Git scope, independently reconstructable baseline evidence,
-  bounded remote restore, exact mutant exceptions, and explicit trend reconciliation.
+  raw/detail versus compact-trend retention, sealed Git scope, independently
+  reconstructable coverage/baseline evidence, bounded diagnosed remote restore and
+  producer quotas, exact mutant exceptions, and explicit trend reconciliation.
 - GitHub Actions because the authoritative remote is GitHub.
 
 Out of scope:
@@ -138,11 +146,13 @@ Landlock plus brokered seccomp opens and independent syscall audit,
 source/AST/dependency/private-tree limits, bytecode-clean private source trees,
 target-filtered line coverage, closed
 operator/definition maps, generation-atomic output plus safe fallback, exact
-fresh/cache/plan/cancellation status algebra, authenticated guard lifecycle evidence,
-committed cache markers, separate report/trend sequence reservations and tombstones,
-coupled receipt retention/evidence tombstones, identity-bound capacity qualification,
-bounded remote restore with invalid-predecessor epochs, immutable cross-job CI
-bundles, corrupt-pointer recovery, and mutant-ID exception validation address those
+fresh/cache/plan/cancellation status algebra, supervisor-verified guard and forced-
+close evidence, committed cache markers, separate report/trend sequence reservations
+and tombstones, raw-evidence tombstones plus separately retained compact trend anchors,
+representative identity-bound capacity qualification, bounded diagnosed remote restore
+and producer quotas with invalid-predecessor epochs and monotonic carriers, immutable
+cross-job CI bundles and trusted summaries, corrupt-pointer recovery, and exact
+mutant-ID exception validation address those
 risks. Linux cannot
 guarantee userspace reaping of an indefinitely uninterruptible task or completion of
 a stuck filesystem `fsync`; those cases remain `cleanup_unconfirmed` or lack a
