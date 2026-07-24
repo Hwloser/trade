@@ -3448,7 +3448,7 @@ def _transaction_receivers(
     if not isinstance(item.optional_vars, ast.Name):
         return frozenset()
     if item.optional_vars.id in external_binding_names:
-        return frozenset((receiver,))
+        return frozenset()
     return frozenset((receiver, (item.optional_vars.id,)))
 
 

@@ -126,8 +126,10 @@ adapter. A transaction receiver or explicit alias remains valid only until a
 direct-scope binding or object-namespace mutation, or an unmodelled dynamic
 call. An alias must be one local name; a receiver root or alias declared
 `global` or `nonlocal` anywhere in the callable is not local and cannot
-authorize proof. Imports and non-local assignment or deletion targets in the
-transaction block invalidate proof. A proof is admitted
+authorize proof. An external `as` alias invalidates the entire transaction
+context, so the otherwise-local receiver root cannot supply substitute proof.
+Imports and non-local assignment or deletion targets in the transaction block
+invalidate proof. A proof is admitted
 only from its straight-line callable prefix and a direct transaction `with`
 block in that prefix; nested `with` blocks, branches, loops, exception
 handlers, assertions, matches, and deferred comprehensions never authorize
@@ -209,10 +211,11 @@ transaction `with` block using the same receiver or that context manager's
 explicit local-name `as` alias, and that receiver identity and object namespace
 must remain unmodified from transaction entry to the call. A receiver root or
 alias declared `global` or `nonlocal` anywhere in that callable is rejected,
-because its lifetime can outlive the proof's lexical scope. Imports and
-non-local assignment or deletion targets, as well as any unmodelled direct-scope
-call, invalidate transaction receiver proof rather than being interpreted
-dynamically. Writer
+because its lifetime can outlive the proof's lexical scope; an external `as`
+alias invalidates the full transaction context rather than leaving the receiver
+root available for a substitute operation. Imports and non-local assignment or
+deletion targets, as well as any unmodelled direct-scope call, invalidate
+transaction receiver proof rather than being interpreted dynamically. Writer
 and transaction proof reject a semicolon-separated second statement after
 comments and values are masked. SQL table identifiers match at supported
 statement positions with identifier boundaries, not by substring; read proof
@@ -537,7 +540,8 @@ producer-derived warehouse artifacts, missing/deleted/unsafe source evidence,
 direct-scope reachable/receiver-matched/exact-identifier approved-binding
 proofs, SQL-only-in-parameter rejection, mutable reader/compatibility rejection,
 transaction root, local alias, global/nonlocal receiver-or-alias rejection,
-import, and assignment-target invalidation,
+including receiver-root operations beneath an external alias, import, and
+assignment-target invalidation,
 wildcard and dynamic
 module-rebinding rejection, exact operation-literal provenance and adapter-line
 diagnostics, proof budgets, Git-index non-regular rejection, neutral cold
@@ -755,11 +759,13 @@ source-protection guarantee and avoids duplicate Git traversal.
   before its first production table binding.
 - **A transaction alias escapes its callable lexical scope** -> A receiver root
   or `as` alias declared `global` or `nonlocal` cannot prove a local
-  transaction operation, even when its syntactic identity matches. Task 2.1
-  collects declarations only from the proof callable's direct lexical scope,
-  skips nested closure bodies, and rejects those externally bound names before
-  adding transaction receivers. Focused temporary-source fixtures cover global
-  receiver, global alias, and nested nonlocal alias forms.
+  transaction operation, even when its syntactic identity matches. An external
+  `as` alias invalidates the whole `with` context, including a subsequent call
+  expressed through the transaction receiver root. Task 2.1 collects
+  declarations only from the proof callable's direct lexical scope, skips
+  nested closure bodies, and rejects those contexts before adding transaction
+  receivers. Focused temporary-source fixtures cover global receiver, global
+  alias/root operation, and nested nonlocal alias/root-operation forms.
 - **An adapter-wide literal is mistaken for a callable proof** -> Every
   approved-binding literal must exactly equal the static first SQL argument
   captured from its named direct-scope operation. A mismatch reports the

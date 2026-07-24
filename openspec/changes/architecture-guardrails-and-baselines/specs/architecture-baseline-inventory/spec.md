@@ -93,8 +93,10 @@ keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
 direct transaction `with` block containing a static table-specific write on that
 transaction receiver or one explicit local-name `as` alias. A receiver root or
 alias declared `global` or `nonlocal` anywhere in the named callable's direct
-lexical scope SHALL NOT authorize transaction evidence. No direct-scope binding
-or object-namespace mutation, import, non-local assignment/deletion target, or
+lexical scope SHALL NOT authorize transaction evidence; an external `as` alias
+invalidates the entire transaction context, including operations expressed
+through its otherwise-local receiver root. No direct-scope binding or
+object-namespace mutation, import, non-local assignment/deletion target, or
 unmodelled dynamic call may alter that receiver root or alias before the
 operation.
 The declared proof literal SHALL exactly equal the static first SQL argument
@@ -181,7 +183,8 @@ runtime-behavior claim.
   compound writer or transaction SQL, any module-scope import or executable
   call, a PEP 695 type alias, lambda or non-inert module declaration, a rebound
   or dynamically mutated transaction receiver or alias, a transaction receiver
-  root or alias declared `global` or `nonlocal`, a class or
+  root or alias declared `global` or `nonlocal` (including an operation through
+  the receiver root when the `as` alias is external), a class or
   definition-time metadata that can execute while defining an unrelated
   module-level declaration, a literal that is present only elsewhere in the
   adapter or differs from the named operation's first SQL

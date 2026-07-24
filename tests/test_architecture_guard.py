@@ -2436,6 +2436,12 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
             '        tx.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
         ),
         (
+            "def persist_approved(session):\n"
+            "    global tx\n"
+            "    with session.transaction() as tx:\n"
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+        ),
+        (
             "def persist_approved(connection):\n"
             "    global session\n"
             "    with session.transaction():\n"
@@ -2486,10 +2492,30 @@ def test_transaction_proof_excludes_nonlocal_alias_from_receiver_set() -> None:
     )
 
     assert _callable_external_binding_names(nested_callable) == frozenset({"tx"})
-    assert len(summary.operations) == 1
-    operation = summary.operations[0]
-    assert operation.receiver == ("tx",)
-    assert operation.receiver not in operation.transaction_receivers
+    assert not summary.operations
+
+
+def test_transaction_proof_excludes_receiver_for_nonlocal_alias() -> None:
+    tree = ast.parse(
+        "def outer():\n"
+        "    tx = None\n"
+        "    def persist_approved(session):\n"
+        "        nonlocal tx\n"
+        "        with session.transaction() as tx:\n"
+        '            session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+    )
+    outer_callable = tree.body[0]
+    assert isinstance(outer_callable, ast.FunctionDef)
+    nested_callable = outer_callable.body[1]
+    assert isinstance(nested_callable, ast.FunctionDef)
+
+    summary = _summarize_callable_proof(
+        nested_callable,
+        source="temporary.py",
+        limits=DEFAULT_LIMITS,
+    )
+
+    assert not summary.operations
 
 
 @pytest.mark.parametrize(
