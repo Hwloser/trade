@@ -25,7 +25,7 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     Python mutation generation;
   - applies exactly one position-verified mutation to a worker-owned temporary
     source tree and proves pytest imported that tree;
-  - selects only the closed v1 source-to-test matrix and requires baseline line
+  - selects only the closed v1 definition-to-test matrix and requires baseline line
     coverage before mutant execution;
   - prioritizes changed lines, then changed definitions, then configured core paths;
   - enforces mutant, candidate-scan, worker, per-mutant, output, and wall-clock
@@ -35,7 +35,8 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - denies network, provider credentials, and real-data paths in mutation workers;
   - distinguishes killed, survived, timeout, mapping/line no-coverage,
     baseline-unavailable, invalid, and infrastructure-error outcomes;
-  - publishes deterministic JSON, Markdown, and HTML as one atomic run generation.
+  - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
+    generation, with an independent safe fallback if publication itself fails.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
@@ -59,9 +60,12 @@ Mutation dependencies live in an optional development group and are not installe
 runtime environments unless explicitly requested.
 
 The initial quality policy is report-only. A saved baseline may report a regression
-when the comparable changed-scope score falls by more than five percentage points,
-but CI remains non-blocking in this change. A future separately reviewed change may
-make a stable delta policy blocking after sufficient history and exception review.
+only when separately enumerated base/head revisions have one complete, unambiguous
+comparison-key cohort; exact source-bound execution IDs remain distinct. Changed
+nodes, partial cohorts, additions/deletions, or policy changes are explicitly
+non-comparable. CI remains non-blocking in this change. A future separately reviewed
+change may make a stable delta policy blocking after sufficient history and exception
+review.
 
 ## Scope
 
@@ -69,8 +73,9 @@ In scope:
 
 - Python core business unit-test mutation only.
 - Deterministic changed/core/full planning and execution.
-- Bounded concurrency, source/AST/dependency limits, process-tree termination,
-  partial reporting, comparable trend artifacts, and exact mutant exceptions.
+- Bounded concurrency, native thread pools, source/AST/dependency/private-tree/report
+  limits, process-tree termination, partial reporting, comparable trend artifacts,
+  and exact mutant exceptions.
 - GitHub Actions because the authoritative remote is GitHub.
 
 Out of scope:
@@ -88,9 +93,11 @@ Out of scope:
 The main risks are runaway test processes, excessive enumeration, incorrect
 test-to-source mapping, false kills from infrastructure failures, and score gaming
 through broad exclusions. Invocation-wide deadlines, parent-owned process groups,
-source/AST/dependency limits, private source trees, mandatory line coverage, closed
-operator/source maps, bounded generation-atomic output, exact status algebra, and
-mutant-ID exception validation address those risks.
+source/AST/dependency/private-tree limits, a serialized spawn/cancel registry,
+bytecode-clean private source trees, mandatory line coverage, closed
+operator/definition maps, bounded generation-atomic output plus safe fallback, exact
+fresh/cache/plan status algebra, and mutant-ID exception validation address those
+risks.
 
 Rollback removes the optional mutation dependency group, controller, wrapper,
 configuration, workflows, documentation, and tests. Generated reports and caches are
