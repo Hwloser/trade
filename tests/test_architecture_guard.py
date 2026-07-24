@@ -2148,6 +2148,70 @@ def test_high_cardinality_python_evidence_fails_before_ast_parse(
     assert not any("'é';" in source_text for source_text in parsed_sources)
 
 
+def test_repeated_over_budget_python_evidence_is_terminally_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    repeated_source = "REPEATED = " + ("'é';" * 2_000) + "\n"
+    repeated_path = repo / "tests/repeated_over_budget.py"
+    repeated_path.write_text(repeated_source, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + """
+[[source_facts]]
+id = "repeated-over-budget-one"
+source = "tests/repeated_over_budget.py"
+literal = "REPEATED"
+current_owner = "legacy"
+required_child = "dataset-product-boundary"
+
+[[source_facts]]
+id = "repeated-over-budget-two"
+source = "tests/repeated_over_budget.py"
+literal = "REPEATED"
+current_owner = "legacy"
+required_child = "dataset-product-boundary"
+""",
+    )
+    original_admission = guard._validate_python_evidence_token_budget
+    original_parse = guard.ast.parse
+    admissions = 0
+    parsed_sources: list[str] = []
+
+    def record_admission(text: str, *, source: str, max_tokens: int) -> None:
+        nonlocal admissions
+        if text == repeated_source:
+            admissions += 1
+        original_admission(text, source=source, max_tokens=max_tokens)
+
+    def record_parse(source: str, *args: object, **kwargs: object) -> ast.AST:
+        parsed_sources.append(source)
+        return original_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(guard, "_validate_python_evidence_token_budget", record_admission)
+    monkeypatch.setattr(guard.ast, "parse", record_parse)
+
+    report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_evidence_python_tokens=1_000),
+    )
+
+    assert {finding.rule_id for finding in report.findings} == {
+        "architecture.baseline_evidence_budget_exceeded"
+    }
+    assert report.producers == ()
+    assert admissions == 1
+    assert not any(source_text == repeated_source for source_text in parsed_sources)
+    assert {finding.remediation for finding in report.findings} == {
+        "Reduce or split the declared Python source evidence, or make a reviewed "
+        "governed Python-token-budget increase."
+    }
+
+
 def test_git_discovery_ignores_inherited_index_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -776,6 +776,7 @@ class _EvidenceReader:
     _payloads: dict[str, bytes]
     _decoded_text: dict[str, str]
     _executable_text: dict[str, str]
+    _executable_failures: dict[str, ArchitectureFinding]
     _aggregate_bytes: int = 0
 
     def __init__(self, root: Path, limits: DiscoveryLimits) -> None:
@@ -784,6 +785,7 @@ class _EvidenceReader:
         self._payloads = {}
         self._decoded_text = {}
         self._executable_text = {}
+        self._executable_failures = {}
 
     def read(self, relative: str) -> bytes:
         cached = self._payloads.get(relative)
@@ -825,20 +827,57 @@ class _EvidenceReader:
         cached = self._executable_text.get(relative)
         if cached is not None:
             return cached
-        decoded = self._decoded_text.get(relative)
-        if decoded is None:
-            decoded = self.read(relative).decode("utf-8")
-            self._decoded_text[relative] = decoded
-        if PurePosixPath(relative).suffix in {".py", ".pyi"}:
-            executable = _live_python_source_text(
-                decoded,
-                source=relative,
-                max_tokens=self.limits.max_evidence_python_tokens,
+        failure = self._executable_failures.get(relative)
+        if failure is not None:
+            raise _GuardError(
+                failure.rule_id,
+                failure.path,
+                failure.message,
+                failure.remediation,
+                line=failure.line,
             )
+        try:
+            decoded = self._decoded_text.get(relative)
+            if decoded is None:
+                decoded = self.read(relative).decode("utf-8")
+                self._decoded_text[relative] = decoded
+            if PurePosixPath(relative).suffix in {".py", ".pyi"}:
+                executable = _live_python_source_text(
+                    decoded,
+                    source=relative,
+                    max_tokens=self.limits.max_evidence_python_tokens,
+                )
+            else:
+                executable = _live_non_python_source_text(decoded, source=relative)
+        except UnicodeDecodeError:
+            failure = ArchitectureFinding(
+                _BASELINE_UNSAFE_SOURCE,
+                relative,
+                None,
+                "declared evidence source is not valid UTF-8",
+                "Keep declared evidence as stable UTF-8 source inside the repository.",
+            )
+        except (RecursionError, SyntaxError, tokenize.TokenError):
+            failure = ArchitectureFinding(
+                _BASELINE_INVALID_SOURCE,
+                relative,
+                None,
+                "declared Python evidence source cannot be parsed safely",
+                "Repair the source before relying on it as architecture baseline evidence.",
+            )
+        except _GuardError as exc:
+            failure = exc.finding
         else:
-            executable = _live_non_python_source_text(decoded, source=relative)
-        self._executable_text[relative] = executable
-        return executable
+            self._executable_text[relative] = executable
+            return executable
+        self._executable_failures[relative] = failure
+        raise _GuardError(
+            failure.rule_id,
+            failure.path,
+            failure.message,
+            failure.remediation,
+            line=failure.line,
+        )
 
 
 def validate_architecture_baseline(
@@ -1662,6 +1701,10 @@ def _validate_python_evidence_token_budget(text: str, *, source: str, max_tokens
             raise _baseline_evidence_budget_error(
                 source,
                 f"declared Python evidence exceeds the {max_tokens} token pre-parse budget",
+                remediation=(
+                    "Reduce or split the declared Python source evidence, or make a reviewed "
+                    "governed Python-token-budget increase."
+                ),
             )
 
 
@@ -3176,12 +3219,18 @@ def _producer_result_budget_error(path: str, message: str) -> _GuardError:
     )
 
 
-def _baseline_evidence_budget_error(path: str, message: str) -> _GuardError:
+def _baseline_evidence_budget_error(
+    path: str,
+    message: str,
+    *,
+    remediation: str | None = None,
+) -> _GuardError:
     return _GuardError(
         _BASELINE_EVIDENCE_BUDGET,
         path,
         message,
-        "Reduce duplicate source evidence or make a reviewed governed evidence-budget increase.",
+        remediation
+        or "Reduce duplicate source evidence or make a reviewed governed evidence-budget increase.",
     )
 
 
