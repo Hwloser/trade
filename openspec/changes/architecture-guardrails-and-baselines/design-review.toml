@@ -3,8 +3,8 @@ policy_version = "v1"
 policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
 artifact_digest_algorithm = "sha256-path-content-v1"
 artifact_digest = "sha256:ed86159c01fdc023ffbe355e7219947c1c8a76d017bf44369f17571164df0a63"
-reviewed_commit = "81238e187c322df2e75bf994cce59b52bb6c0eb4"
-reviewed_at = "2026-07-23"
+reviewed_commit = "20f38fb46accfaf1dc91a6319fbbf4a06efffccc"
+reviewed_at = "2026-07-24"
 status = "approved"
 bootstrap = false
 

@@ -184,6 +184,79 @@ provenance = [
   { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS enrichment_status", role = "bootstrap" },
 ]
 
+[[tables]]
+logical_name = "causal_decision_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-causal-decision-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Causal decision ownership needs separate Dataset, Study, and Decision Support boundary evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_decision_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "factors"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-factor-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Factor ownership is not yet proven as a reusable Dataset product or Study-local transform."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS factors", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "kg_nodes"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-knowledge-graph-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Knowledge-graph ownership and Dataset/Study lineage require a separately reviewed migration."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_nodes", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "model_registry"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-model-registry-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Model registration needs a Study lifecycle, immutable inputs, and promotion evidence before ownership is assigned."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_registry", role = "bootstrap" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN target_name TEXT", role = "alter" },
+]
+
+[[tables]]
+logical_name = "model_eval_runs"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-model-evaluation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Model evaluation needs Study validation and point-in-time input evidence before ownership is assigned."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_eval_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "Recommendation"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-historical-recommendation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Historical recommendation data needs a Decision Support ownership, audit, and compatibility migration."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Recommendation", role = "migration" },
+]
+
 [[artifacts]]
 id = "warehouse-parquet"
 source = "trade_py/data/warehouse/io.py"
@@ -193,6 +266,28 @@ role = "legacy-warehouse-artifact-family"
 classification = "candidate"
 target_context = "datasets"
 reason = "Warehouse Parquet artifacts require DatasetVersion ownership and immutable references."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "catalog-sqlite-projection"
+source = "trade_py/observatory/catalog/store.py"
+literal = 'return base / "catalog.sqlite", base / "generation.json"'
+current_owner = "trade_py.observatory.catalog"
+role = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog SQLite is a rebuildable projection rather than a second authoritative data source."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "catalog-generation-pointer"
+source = "trade_py/observatory/catalog/store.py"
+literal = 'return base / "catalog.sqlite", base / "generation.json"'
+current_owner = "trade_py.observatory.catalog"
+role = "catalog-generation-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The catalog generation pointer is a projection compatibility and recovery input."
 required_child = "dataset-product-boundary"
 
 [[artifacts]]
@@ -226,6 +321,17 @@ role = "legacy-current-pointer"
 classification = "candidate"
 target_context = "datasets"
 reason = "BTC compatibility remains a required reader and rollback source during Dataset migration."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "kline-reconciliation-operation-pointer"
+source = "trade_py/data/operations/checks.py"
+literal = 'path = root / "market" / "kline" / "reconciliation" / "current.json"'
+current_owner = "trade_py.data.operations"
+role = "data-operation-reconciliation-pointer"
+classification = "deferred"
+target_context = "deferred"
+reason = "The Data Ops check reads a legacy reconciliation pointer and must not become an authoritative Dataset release."
 required_child = "dataset-product-boundary"
 
 [[artifacts]]
@@ -270,6 +376,16 @@ current_behavior = "Missing provider publication time falls back to fetch time."
 required_migration_proof = "Record provider time and received time separately in CaptureArtifact metadata."
 
 [[capture_risks]]
+id = "rss-provider-time-fallback"
+source = "trade_py/data/news/rss/base.py"
+literal = "pub_time = datetime.now(timezone.utc)"
+current_owner = "trade_py.data.news.rss"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "RSS entries without a provider timestamp substitute the local collection clock."
+required_migration_proof = "Persist provider precision separately from observed and received time, and prohibit synthetic event-time PIT claims."
+
+[[capture_risks]]
 id = "archive-date-only-publication-time"
 source = "trade_py/data/news/rss/archive.py"
 literal = "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)"
@@ -288,6 +404,16 @@ required_child = "capture-boundary"
 risk_kind = "catalog-environment-override-and-absent-rights-evidence"
 current_behavior = "An environment variable can replace the feed index without an immutable SourceManifest."
 required_migration_proof = "Versioned SourceManifest with source rights, credentials, and override audit evidence."
+
+[[capture_risks]]
+id = "gdelt-catalog-db-config"
+source = "trade_py/data/news/gdelt/source.py"
+literal = 'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")'
+current_owner = "trade_py.data.news.gdelt"
+required_child = "capture-boundary"
+risk_kind = "db-first-provider-channel-config"
+current_behavior = "GDELT channel query, language, enablement, and priority are selected from mutable DB-first catalog settings."
+required_migration_proof = "Freeze a SourceManifest channel configuration digest in CaptureRequest and support CaptureArtifactRef-only replay without provider access."
 
 [[capture_risks]]
 id = "gdelt-provider-time-fallback"

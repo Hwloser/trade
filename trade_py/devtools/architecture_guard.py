@@ -12,6 +12,7 @@ import ast
 import hashlib
 import os
 import select
+import signal
 import stat
 import subprocess
 import threading
@@ -57,6 +58,7 @@ _BASELINE_NONAUTHORIZING = "architecture.baseline_non_authorizing_binding"
 _BASELINE_MISSING_ARTIFACT = "architecture.baseline_missing_producer_artifact"
 _BASELINE_INVALID_SOURCE = "architecture.baseline_invalid_source"
 _BASELINE_STALE_PRODUCER = "architecture.baseline_stale_producer_declaration"
+_BASELINE_EVIDENCE_BUDGET = "architecture.baseline_evidence_budget_exceeded"
 _RESULT_TRUNCATED = "architecture.guard_result_truncated"
 
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
@@ -72,7 +74,61 @@ _FORBIDDEN_EVIDENCE_ROOTS = frozenset({"data", "warehouse", "market"})
 _FORBIDDEN_EVIDENCE_SUFFIXES = frozenset(
     {".db", ".sqlite", ".duckdb", ".parquet", ".json", ".jsonl", ".avro", ".orc"}
 )
-_FORBIDDEN_EVIDENCE_TOKENS = frozenset({"manifest", "pointer", "receipt"})
+_FORBIDDEN_EVIDENCE_SEGMENTS = frozenset(
+    {
+        "artifact",
+        "artifacts",
+        "manifest",
+        "manifests",
+        "pointer",
+        "pointers",
+        "receipt",
+        "receipts",
+    }
+)
+_TARGET_CONTEXTS = frozenset(
+    {
+        "kernel",
+        "capture",
+        "datasets",
+        "studies",
+        "decision_support",
+        "processes",
+        "platform",
+        "interfaces",
+        "bootstrap",
+    }
+)
+_REQUIRED_CAPTURE_RISK_IDS = frozenset(
+    {
+        "raw-record-single-publication-clock",
+        "cctv-date-only-publication-time",
+        "warehouse-rss-fetched-time-substitution",
+        "rss-provider-time-fallback",
+        "archive-date-only-publication-time",
+        "rss-catalog-environment-override",
+        "gdelt-catalog-db-config",
+        "gdelt-provider-time-fallback",
+        "gdelt-streaming-local-state-and-refetch",
+        "ingest-wal-replay",
+        "warehouse-semantic-quarantine",
+    }
+)
+_REQUIRED_TABLE_NAMES = frozenset(
+    {
+        "causal_decision_snapshots",
+        "factors",
+        "model_registry",
+        "model_eval_runs",
+        "kg_nodes",
+        "Recommendation",
+    }
+)
+_REQUIRED_ARTIFACT_SOURCES = {
+    "catalog-sqlite-projection": "trade_py/observatory/catalog/store.py",
+    "catalog-generation-pointer": "trade_py/observatory/catalog/store.py",
+    "kline-reconciliation-operation-pointer": "trade_py/data/operations/checks.py",
+}
 _GIT_ENVIRONMENT_OVERRIDES = frozenset(
     {
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -97,10 +153,16 @@ class DiscoveryLimits:
     max_file_bytes: int = 1 * 1024 * 1024
     max_evidence_bytes: int = 1 * 1024 * 1024
     max_baseline_entries: int = 512
+    max_total_baseline_entries: int = 1_024
+    max_evidence_sources: int = 512
+    max_aggregate_evidence_bytes: int = 8 * 1024 * 1024
     max_discovered_producers: int = 1_024
+    max_producer_literal_bytes: int = 8 * 1024
+    max_producer_report_bytes: int = 256 * 1024
     max_ast_nodes_per_file: int = 250_000
     max_findings: int = 64
     max_diagnostic_field_bytes: int = 1_024
+    max_git_record_bytes: int = 128 * 1024 + 512
     max_git_stderr_bytes: int = 4 * 1024
     git_timeout_seconds: float = 30.0
 
@@ -191,6 +253,49 @@ class _Baseline:
     producers: tuple[Mapping[str, Any], ...]
 
 
+@dataclass
+class _EvidenceReader:
+    """Memoize only descriptor-verified source evidence for one guard invocation."""
+
+    root: Path
+    limits: DiscoveryLimits
+    _payloads: dict[str, bytes]
+    _aggregate_bytes: int = 0
+
+    def __init__(self, root: Path, limits: DiscoveryLimits) -> None:
+        self.root = root
+        self.limits = limits
+        self._payloads = {}
+
+    def read(self, relative: str) -> bytes:
+        cached = self._payloads.get(relative)
+        if cached is not None:
+            return cached
+        if len(self._payloads) >= self.limits.max_evidence_sources:
+            raise _baseline_evidence_budget_error(
+                relative,
+                "declared source-evidence file count exceeds the configured aggregate budget",
+            )
+        signature = _safe_verify_relative(
+            self.root,
+            relative,
+            max_bytes=self.limits.max_evidence_bytes,
+        )
+        if self._aggregate_bytes + signature.size > self.limits.max_aggregate_evidence_bytes:
+            raise _baseline_evidence_budget_error(
+                relative,
+                "declared source-evidence bytes exceed the configured aggregate budget",
+            )
+        payload = _safe_read_relative(
+            self.root,
+            relative,
+            max_bytes=self.limits.max_evidence_bytes,
+        )
+        self._payloads[relative] = payload
+        self._aggregate_bytes += len(payload)
+        return payload
+
+
 def validate_architecture_baseline(
     repo_root: Path | str,
     *,
@@ -210,7 +315,8 @@ def validate_architecture_baseline(
     except _GuardError as exc:
         return _report((exc.finding,), (), limits)
 
-    findings.extend(_validate_baseline_facts(root, baseline, limits))
+    evidence = _EvidenceReader(root, limits)
+    findings.extend(_validate_baseline_facts(root, baseline, evidence))
     if findings:
         return _report(findings, (), limits)
 
@@ -289,7 +395,15 @@ def discover_warehouse_producers(
                 "production source is not valid UTF-8",
                 "Keep the inspected source as a stable UTF-8 regular file inside the repository.",
             ) from exc
-        parsed, source_findings = _discover_in_source(path, text, limits=limits)
+        parsed, source_findings = _discover_in_source(
+            path,
+            text,
+            limits=limits,
+            producer_capacity=limits.max_discovered_producers - len(producers),
+            finding_capacity=limits.max_findings - len(findings),
+            producer_report_capacity=limits.max_producer_report_bytes
+            - _producer_report_size(producers),
+        )
         producers.extend(parsed)
         findings.extend(source_findings)
         if len(producers) > limits.max_discovered_producers:
@@ -372,12 +486,20 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
         )
     _require_string_list(parsed, "legacy_package_roots", baseline_name)
     target_contexts = _require_string_list(parsed, "target_contexts", baseline_name)
-    if len(set(target_contexts)) != len(target_contexts):
+    target_context_set = frozenset(target_contexts)
+    if len(target_context_set) != len(target_contexts):
         raise _GuardError(
             _BASELINE_MALFORMED,
             baseline_name,
             "baseline target_contexts must not contain duplicate Context names",
             "List each governed target Context exactly once.",
+        )
+    if target_context_set != _TARGET_CONTEXTS:
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            baseline_name,
+            "baseline target_contexts must exactly match the approved architecture vocabulary",
+            "Update the governed architecture design before changing the target Context vocabulary.",
         )
 
     collections = {
@@ -397,14 +519,22 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
                 f"baseline must declare one through {limits.max_baseline_entries} {name} entries",
                 "Record the audited source-only facts within the governed baseline-entry limit.",
             )
+    total_entries = sum(len(items) for items in collections.values())
+    if total_entries > limits.max_total_baseline_entries:
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            baseline_name,
+            "baseline declarations exceed the configured aggregate entry budget",
+            "Reduce duplicate declarations or make a reviewed governed aggregate budget increase.",
+        )
 
-    return _Baseline(target_contexts=frozenset(target_contexts), **collections)
+    return _Baseline(target_contexts=target_context_set, **collections)
 
 
 def _validate_baseline_facts(
     root: Path,
     baseline: _Baseline,
-    limits: DiscoveryLimits,
+    evidence: _EvidenceReader,
 ) -> list[ArchitectureFinding]:
     findings: list[ArchitectureFinding] = []
     seen_ids: set[str] = set()
@@ -429,10 +559,11 @@ def _validate_baseline_facts(
                         "Give each declared source fact one stable, unique id.",
                     )
                 seen_ids.add(fact_id)
-                if category != "warehouse_producers":
-                    _validate_common_fact(root, fact, category, limits)
                 if category == "artifacts":
                     artifact_ids.add(fact_id)
+                if category != "warehouse_producers":
+                    _validate_common_fact(root, fact, category, evidence)
+                if category == "artifacts":
                     _validate_classification(fact, category, baseline.target_contexts)
                     _require_text(fact, "role", category)
                 elif category == "capture_risks":
@@ -457,21 +588,10 @@ def _validate_baseline_facts(
             except _GuardError as exc:
                 findings.append(exc.finding)
 
-    required_capture_risk_ids = {
-        "raw-record-single-publication-clock",
-        "cctv-date-only-publication-time",
-        "warehouse-rss-fetched-time-substitution",
-        "archive-date-only-publication-time",
-        "rss-catalog-environment-override",
-        "gdelt-provider-time-fallback",
-        "gdelt-streaming-local-state-and-refetch",
-        "ingest-wal-replay",
-        "warehouse-semantic-quarantine",
-    }
     capture_risk_ids = {
         fact.get("id") for fact in baseline.capture_risks if isinstance(fact.get("id"), str)
     }
-    missing_capture_risks = sorted(required_capture_risk_ids - capture_risk_ids)
+    missing_capture_risks = sorted(_REQUIRED_CAPTURE_RISK_IDS - capture_risk_ids)
     if missing_capture_risks:
         findings.append(
             ArchitectureFinding(
@@ -553,9 +673,48 @@ def _validate_baseline_facts(
                         f"logical table {name} has unsupported provenance role {role!r}",
                         "Use bootstrap, migration, alter, or data_transform provenance roles.",
                     )
-                _validate_source_literal(root, item, limits)
+                _validate_source_literal(root, item, evidence)
         except _GuardError as exc:
             findings.append(exc.finding)
+
+    missing_table_names = sorted(_REQUIRED_TABLE_NAMES - table_names)
+    if missing_table_names:
+        findings.append(
+            ArchitectureFinding(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                None,
+                "baseline omits required deferred central-schema declarations: "
+                + ", ".join(missing_table_names),
+                "Record each audited KG, causal, factor, and historical recommendation table.",
+            )
+        )
+
+    artifacts_by_id = {
+        fact.get("id"): fact for fact in baseline.artifacts if isinstance(fact.get("id"), str)
+    }
+    missing_artifact_ids = sorted(set(_REQUIRED_ARTIFACT_SOURCES) - set(artifacts_by_id))
+    invalid_artifact_sources = [
+        artifact_id
+        for artifact_id, source in _REQUIRED_ARTIFACT_SOURCES.items()
+        if artifact_id in artifacts_by_id and artifacts_by_id[artifact_id].get("source") != source
+    ]
+    if missing_artifact_ids or invalid_artifact_sources:
+        details: list[str] = []
+        if missing_artifact_ids:
+            details.append("missing " + ", ".join(missing_artifact_ids))
+        if invalid_artifact_sources:
+            details.append("wrong source " + ", ".join(sorted(invalid_artifact_sources)))
+        findings.append(
+            ArchitectureFinding(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                None,
+                "baseline omits or misbinds required projection and operation artifact facts: "
+                + "; ".join(details),
+                "Record each required source-only projection, pointer, and data-operation fact.",
+            )
+        )
 
     for producer in baseline.producers:
         artifact_id = producer.get("artifact_id")
@@ -578,7 +737,7 @@ def _declared_producer_source_missing(
     baseline: _Baseline,
     limits: DiscoveryLimits,
 ) -> list[ArchitectureFinding]:
-    """Classify a deleted declaration before the Git-index inventory opens it."""
+    """Classify a deleted declaration without charging a second full source read."""
 
     findings: list[ArchitectureFinding] = []
     for declaration in baseline.producers:
@@ -586,7 +745,7 @@ def _declared_producer_source_missing(
         if not isinstance(source, str) or not _is_safe_relative_path(source):
             continue
         try:
-            _safe_read_relative(root, source, max_bytes=limits.max_file_bytes)
+            _safe_verify_relative(root, source, max_bytes=limits.max_file_bytes)
         except _GuardError as exc:
             if isinstance(exc.__cause__, FileNotFoundError):
                 findings.append(
@@ -722,17 +881,17 @@ def _validate_common_fact(
     root: Path,
     fact: Mapping[str, Any],
     category: str,
-    limits: DiscoveryLimits,
+    evidence: _EvidenceReader,
 ) -> None:
     _require_text(fact, "current_owner", category)
     _require_text(fact, "required_child", category)
-    _validate_source_literal(root, fact, limits)
+    _validate_source_literal(root, fact, evidence)
 
 
 def _validate_source_literal(
     root: Path,
     fact: Mapping[str, Any],
-    limits: DiscoveryLimits,
+    evidence: _EvidenceReader,
 ) -> None:
     source = _require_text(fact, "source", "source fact")
     literal = _require_text(fact, "literal", "source fact")
@@ -745,7 +904,7 @@ def _validate_source_literal(
             "artifacts, manifests, pointers, receipts, or database files.",
         )
     try:
-        payload = _safe_read_relative(root, source, max_bytes=limits.max_evidence_bytes)
+        payload = evidence.read(source)
     except _GuardError as exc:
         if exc.__cause__ and isinstance(exc.__cause__, FileNotFoundError):
             raise _GuardError(
@@ -777,7 +936,7 @@ def _validate_source_literal(
             _BASELINE_LITERAL_MISMATCH,
             source,
             "declared source literal is absent: "
-            + _bounded_text(literal, limits.max_diagnostic_field_bytes),
+            + _bounded_text(literal, evidence.limits.max_diagnostic_field_bytes),
             "Update the baseline fact and its migration evidence with the changed source literal.",
         )
 
@@ -788,15 +947,19 @@ def _is_allowed_evidence_source(source: str) -> bool:
     if not _is_safe_relative_path(source):
         return False
     pure = PurePosixPath(source)
+    lowered_parent_parts = tuple(part.lower() for part in pure.parts[:-1])
     if pure.parts[0] in _FORBIDDEN_EVIDENCE_ROOTS:
         return False
     if pure.parts[0] not in _EVIDENCE_ROOTS:
         return False
-    if pure.suffix.lower() not in _EVIDENCE_SOURCE_SUFFIXES:
+    suffix = pure.suffix.lower()
+    if suffix not in _EVIDENCE_SOURCE_SUFFIXES:
         return False
-    lowered_name = pure.name.lower()
-    return not any(token in lowered_name for token in _FORBIDDEN_EVIDENCE_TOKENS) and (
-        pure.suffix.lower() not in _FORBIDDEN_EVIDENCE_SUFFIXES
+    if pure.parts[0] in {"trade_py", "trade_web", "tests"} and suffix not in {".py", ".pyi"}:
+        return False
+    return (
+        not any(part in _FORBIDDEN_EVIDENCE_SEGMENTS for part in lowered_parent_parts)
+        and pure.suffix.lower() not in _FORBIDDEN_EVIDENCE_SUFFIXES
     )
 
 
@@ -922,6 +1085,7 @@ def _iter_git_index(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,
+            start_new_session=True,
         )
     except OSError as exc:
         raise _GuardError(
@@ -955,6 +1119,10 @@ def _iter_git_index(
     stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
     stderr_thread.start()
     deadline = time.monotonic() + limits.git_timeout_seconds
+    record_limit = min(
+        limits.max_git_record_bytes,
+        limits.max_raw_path_bytes + 512,
+    )
     buffer = b""
     try:
         while True:
@@ -967,9 +1135,25 @@ def _iter_git_index(
             chunk = os.read(stdout.fileno(), 8_192)
             if not chunk:
                 break
-            buffer += chunk
-            while b"\0" in buffer:
-                raw, buffer = buffer.split(b"\0", 1)
+            while chunk:
+                delimiter = chunk.find(b"\0")
+                if delimiter < 0:
+                    if len(buffer) + len(chunk) > record_limit:
+                        raise _producer_path_budget_error(
+                            "trade_py",
+                            "Git index emitted an unterminated record beyond the configured "
+                            "record-byte budget",
+                        )
+                    buffer += chunk
+                    break
+                raw = buffer + chunk[:delimiter]
+                if len(raw) > record_limit:
+                    raise _producer_path_budget_error(
+                        "trade_py",
+                        "Git index emitted a record beyond the configured record-byte budget",
+                    )
+                buffer = b""
+                chunk = chunk[delimiter + 1 :]
                 if not raw:
                     continue
                 yield _parse_index_record(raw)
@@ -980,7 +1164,13 @@ def _iter_git_index(
             return_code = process.wait(timeout=remaining)
         except subprocess.TimeoutExpired as exc:
             raise _git_timeout_error() from exc
-        stderr_done.wait(timeout=max(0.0, deadline - time.monotonic()))
+        if not stderr_done.wait(timeout=max(0.0, deadline - time.monotonic())):
+            raise _GuardError(
+                PRODUCER_TOOL_FAILURE,
+                "trade_py",
+                "Git index discovery did not close its stderr stream before the deadline",
+                "Repair the Git environment before running source-only discovery.",
+            )
         with stderr_lock:
             stderr = b"".join(stderr_chunks).decode("utf-8", "replace").strip()
         if buffer or return_code != 0:
@@ -993,16 +1183,29 @@ def _iter_git_index(
                 "Repair Git availability or the repository index before running source-only discovery.",
             )
     finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        _terminate_process_group(process, force=not stderr_done.is_set())
         stdout.close()
         stderr_stream.close()
         stderr_thread.join(timeout=1)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes], *, force: bool) -> None:
+    """Stop a substituted Git command and any children that retain its pipes."""
+
+    if process.poll() is not None and not force:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        process.wait()
 
 
 def _parse_index_record(raw: bytes) -> tuple[str, str]:
@@ -1035,6 +1238,60 @@ def _is_production_python_path(path: str, mode: str) -> bool:
         return False
     name = pure.name
     return not name.startswith("test_") and not name.endswith("_test.py")
+
+
+def _safe_verify_relative(root: Path, relative: str, *, max_bytes: int) -> _SourceSignature:
+    """Verify a source descriptor without loading the file's contents."""
+
+    if not _is_safe_relative_path(relative):
+        raise _GuardError(
+            PRODUCER_UNSAFE_SOURCE,
+            relative,
+            "source path escapes or is not relative to the repository",
+            "Use a stable, repository-confined regular source file.",
+        )
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory_flag:
+        raise _GuardError(
+            PRODUCER_UNSAFE_SOURCE,
+            relative,
+            "the platform does not expose required no-follow descriptor primitives",
+            "Run the check on a platform that supports no-follow regular-file reads.",
+        )
+    directory_flags = os.O_RDONLY | os.O_CLOEXEC | directory_flag | nofollow
+    file_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow
+    try:
+        root_fd = os.open(root, directory_flags)
+    except OSError as exc:
+        raise _GuardError(
+            PRODUCER_UNSAFE_SOURCE,
+            relative,
+            f"cannot open repository root safely: {exc}",
+            "Use a readable, non-symlink repository root.",
+        ) from exc
+    try:
+        descriptor = _open_relative_file(root_fd, relative, directory_flags, file_flags)
+        try:
+            signature = _regular_signature(descriptor, relative)
+            if signature.size > max_bytes:
+                raise _producer_source_budget_error(
+                    relative,
+                    f"source file exceeds the {max_bytes} byte read limit",
+                )
+            return signature
+        finally:
+            os.close(descriptor)
+    except _GuardError:
+        raise
+    except FileNotFoundError as exc:
+        raise _unsafe_source_error(relative, f"source does not exist: {relative}") from exc
+    except OSError as exc:
+        raise _unsafe_source_error(
+            relative, f"cannot read repository source safely: {exc}"
+        ) from exc
+    finally:
+        os.close(root_fd)
 
 
 def _safe_read_relative(root: Path, relative: str, *, max_bytes: int) -> bytes:
@@ -1151,6 +1408,9 @@ def _discover_in_source(
     text: str,
     *,
     limits: DiscoveryLimits,
+    producer_capacity: int,
+    finding_capacity: int,
+    producer_report_capacity: int,
 ) -> tuple[list[WarehouseProducer], list[ArchitectureFinding]]:
     try:
         tree = ast.parse(text, filename=path)
@@ -1178,6 +1438,25 @@ def _discover_in_source(
     aliases: dict[str, str] = {}
     layouts: set[str] = set()
     findings: list[ArchitectureFinding] = []
+    rebound_aliases: set[str] = set()
+
+    def add_finding(finding: ArchitectureFinding) -> bool:
+        if len(findings) >= finding_capacity:
+            return False
+        findings.append(finding)
+        return True
+
+    def result_budget_finding(message: str) -> list[ArchitectureFinding]:
+        return [
+            _producer_finding(
+                PRODUCER_RESULT_BUDGET,
+                path,
+                1,
+                message,
+                "Reduce the producer scope or make a reviewed governed result-budget increase.",
+            )
+        ]
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -1186,7 +1465,7 @@ def _discover_in_source(
         elif isinstance(node, ast.ImportFrom):
             module = _import_from_module(path, node)
             if module is None:
-                findings.append(
+                if not add_finding(
                     _producer_finding(
                         PRODUCER_UNRESOLVED_IMPORT,
                         path,
@@ -1194,7 +1473,10 @@ def _discover_in_source(
                         "relative warehouse import escapes the inspected package root",
                         "Use an import that resolves inside the repository package hierarchy.",
                     )
-                )
+                ):
+                    return [], result_budget_finding(
+                        "producer discovery findings exceed the configured result budget"
+                    )
                 continue
             for alias in node.names:
                 local = alias.asname or alias.name
@@ -1206,7 +1488,7 @@ def _discover_in_source(
                     elif alias.name == "io":
                         aliases[local] = CANONICAL_WAREHOUSE_MODULE
                     elif alias.name == "*":
-                        findings.append(
+                        if not add_finding(
                             _producer_finding(
                                 PRODUCER_UNRESOLVED_IMPORT,
                                 path,
@@ -1214,9 +1496,12 @@ def _discover_in_source(
                                 "star import from the warehouse boundary cannot be resolved",
                                 "Import write_table or upsert_table explicitly from the canonical warehouse API.",
                             )
-                        )
+                        ):
+                            return [], result_budget_finding(
+                                "producer discovery findings exceed the configured result budget"
+                            )
                     elif _writer_like(alias.name):
-                        findings.append(
+                        if not add_finding(
                             _producer_finding(
                                 PRODUCER_UNRESOLVED_IMPORT,
                                 path,
@@ -1225,9 +1510,12 @@ def _discover_in_source(
                                 "Import write_table or upsert_table from trade_py.data.warehouse.io "
                                 "or the package re-export.",
                             )
-                        )
+                        ):
+                            return [], result_budget_finding(
+                                "producer discovery findings exceed the configured result budget"
+                            )
                 elif module.startswith(CANONICAL_WAREHOUSE_PACKAGE) and _writer_like(alias.name):
-                    findings.append(
+                    if not add_finding(
                         _producer_finding(
                             PRODUCER_UNRESOLVED_IMPORT,
                             path,
@@ -1235,7 +1523,10 @@ def _discover_in_source(
                             f"warehouse writer-like import {module}.{alias.name} is not canonical",
                             "Import a canonical writer from trade_py.data.warehouse.io.",
                         )
-                    )
+                    ):
+                        return [], result_budget_finding(
+                            "producer discovery findings exceed the configured result budget"
+                        )
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
@@ -1244,27 +1535,58 @@ def _discover_in_source(
             if resolved in CANONICAL_WRITERS:
                 for name in names:
                     aliases[name] = resolved
+            else:
+                for name in names:
+                    if name in aliases:
+                        rebound_aliases.add(name)
+                    aliases.pop(name, None)
             if _is_layout_factory(node.value, aliases):
                 layouts.update(names)
+            else:
+                layouts.difference_update(names)
         elif isinstance(node, ast.AnnAssign):
+            names = _assignment_names((node.target,))
             if _annotation_is_layout(node.annotation, aliases):
-                layouts.update(_assignment_names((node.target,)))
+                layouts.update(names)
             elif _is_layout_factory(node.value, aliases):
-                layouts.update(_assignment_names((node.target,)))
+                layouts.update(names)
+            else:
+                layouts.difference_update(names)
+                for name in names:
+                    if name in aliases:
+                        rebound_aliases.add(name)
+                    aliases.pop(name, None)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
                 if _annotation_is_layout(argument.annotation, aliases):
                     layouts.add(argument.arg)
+                else:
+                    aliases.pop(argument.arg, None)
+                    layouts.discard(argument.arg)
 
     producers: list[WarehouseProducer] = []
+    producer_report_bytes = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         writer = _resolve_expression(node.func, aliases)
         if writer not in CANONICAL_WRITERS:
+            if isinstance(node.func, ast.Name) and node.func.id in rebound_aliases:
+                if not add_finding(
+                    _producer_finding(
+                        PRODUCER_UNRESOLVED_IMPORT,
+                        path,
+                        node.lineno,
+                        f"warehouse writer alias {node.func.id!r} was rebound before this call",
+                        "Use a nonconflicting local name or an explicit canonical warehouse import.",
+                    )
+                ):
+                    return producers, result_budget_finding(
+                        "producer discovery findings exceed the configured result budget"
+                    )
             continue
         if not node.args or not _is_layout_expression(node.args[0], aliases, layouts):
-            findings.append(
+            if not add_finding(
                 _producer_finding(
                     PRODUCER_UNRESOLVED_LAYOUT,
                     path,
@@ -1272,13 +1594,16 @@ def _discover_in_source(
                     f"canonical writer {writer} has no statically known WarehouseLayout first argument",
                     "Bind the first argument from WarehouseLayout or WarehouseLayout.from_data_root.",
                 )
-            )
+            ):
+                return producers, result_budget_finding(
+                    "producer discovery findings exceed the configured result budget"
+                )
             continue
         if len(node.args) < 3 or not all(
             isinstance(argument, ast.Constant) and isinstance(argument.value, str)
             for argument in node.args[1:3]
         ):
-            findings.append(
+            if not add_finding(
                 _producer_finding(
                     PRODUCER_NONLITERAL_TARGET,
                     path,
@@ -1286,24 +1611,41 @@ def _discover_in_source(
                     f"canonical writer {writer} has a nonliteral layer or table target",
                     "Use literal layer and table strings so the artifact declaration is auditable.",
                 )
-            )
+            ):
+                return producers, result_budget_finding(
+                    "producer discovery findings exceed the configured result budget"
+                )
             continue
+        if len(producers) >= producer_capacity:
+            return producers, result_budget_finding(
+                "canonical writer-call inventory exceeds the configured result budget"
+            )
         layer = node.args[1]
         table = node.args[2]
         assert isinstance(layer, ast.Constant) and isinstance(layer.value, str)
         assert isinstance(table, ast.Constant) and isinstance(table.value, str)
-        producers.append(
-            WarehouseProducer(
-                source=path,
-                line=node.lineno,
-                column=node.col_offset,
-                writer=writer,
-                layer=layer.value,
-                table=table.value,
-                literal=ast.unparse(node),
-                call_digest=_call_digest(node),
+        literal = ast.unparse(node)
+        if len(literal.encode("utf-8")) > limits.max_producer_literal_bytes:
+            return producers, result_budget_finding(
+                "canonical writer-call literal exceeds the configured result budget"
             )
+        producer = WarehouseProducer(
+            source=path,
+            line=node.lineno,
+            column=node.col_offset,
+            writer=writer,
+            layer=layer.value,
+            table=table.value,
+            literal=literal,
+            call_digest=_call_digest(node),
         )
+        producer_size = _warehouse_producer_size(producer)
+        if producer_report_bytes + producer_size > producer_report_capacity:
+            return producers, result_budget_finding(
+                "canonical writer-call report exceeds the configured result-byte budget"
+            )
+        producers.append(producer)
+        producer_report_bytes += producer_size
     return producers, findings
 
 
@@ -1416,6 +1758,36 @@ def _producer_result_budget_error(path: str, message: str) -> _GuardError:
         message,
         "Reduce the producer scope or make a reviewed governed result-budget increase.",
     )
+
+
+def _baseline_evidence_budget_error(path: str, message: str) -> _GuardError:
+    return _GuardError(
+        _BASELINE_EVIDENCE_BUDGET,
+        path,
+        message,
+        "Reduce duplicate source evidence or make a reviewed governed evidence-budget increase.",
+    )
+
+
+def _warehouse_producer_size(producer: WarehouseProducer) -> int:
+    return (
+        sum(
+            len(value.encode("utf-8"))
+            for value in (
+                producer.source,
+                producer.writer,
+                producer.layer,
+                producer.table,
+                producer.literal,
+                producer.call_digest,
+            )
+        )
+        + 16
+    )
+
+
+def _producer_report_size(producers: Sequence[WarehouseProducer]) -> int:
+    return sum(_warehouse_producer_size(producer) for producer in producers)
 
 
 def _git_timeout_error() -> _GuardError:

@@ -17,6 +17,7 @@ from trade_py.devtools.architecture_guard import (
     PRODUCER_RESULT_BUDGET,
     PRODUCER_SOURCE_BUDGET,
     PRODUCER_TIMEOUT,
+    PRODUCER_TOOL_FAILURE,
     PRODUCER_UNDECLARED_WRITER,
     PRODUCER_UNRESOLVED_IMPORT,
     PRODUCER_UNRESOLVED_LAYOUT,
@@ -129,6 +130,78 @@ provenance = [
   {{ source = "trade_py/migrations.py", literal = "ALTER TABLE legacy_records", role = "alter" }},
 ]
 
+[[tables]]
+logical_name = "causal_decision_snapshots"
+current_owner = "legacy"
+semantic_kind = "causal-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study or Decision Support migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db.py", literal = "CREATE TABLE causal_decision_snapshots", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "factors"
+current_owner = "legacy"
+semantic_kind = "factor-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Dataset or Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db.py", literal = "CREATE TABLE factors", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "kg_nodes"
+current_owner = "legacy"
+semantic_kind = "knowledge-graph-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Dataset or Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db.py", literal = "CREATE TABLE kg_nodes", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "model_registry"
+current_owner = "legacy"
+semantic_kind = "model-registry-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db.py", literal = "CREATE TABLE model_registry", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "model_eval_runs"
+current_owner = "legacy"
+semantic_kind = "model-evaluation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db.py", literal = "CREATE TABLE model_eval_runs", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "Recommendation"
+current_owner = "legacy"
+semantic_kind = "historical-recommendation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Decision Support migration."
+required_child = "decision-support-boundary"
+provenance = [
+  {{ source = "trade_py/migrations.py", literal = "CREATE TABLE Recommendation", role = "migration" }},
+]
+
 [[artifacts]]
 id = "warehouse-parquet"
 source = "trade_py/warehouse.py"
@@ -138,6 +211,39 @@ role = "legacy-artifact"
 classification = "candidate"
 target_context = "datasets"
 reason = "Legacy output requires DatasetVersion migration."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "catalog-sqlite-projection"
+source = "trade_py/observatory/catalog/store.py"
+literal = 'return base / "catalog.sqlite", base / "generation.json"'
+current_owner = "legacy"
+role = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "The catalog SQLite file is a rebuildable projection."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "catalog-generation-pointer"
+source = "trade_py/observatory/catalog/store.py"
+literal = 'return base / "catalog.sqlite", base / "generation.json"'
+current_owner = "legacy"
+role = "catalog-generation-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The generation pointer is compatibility and recovery input."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "kline-reconciliation-operation-pointer"
+source = "trade_py/data/operations/checks.py"
+literal = 'path = root / "market" / "kline" / "reconciliation" / "current.json"'
+current_owner = "legacy"
+role = "data-operation-reconciliation-pointer"
+classification = "deferred"
+target_context = "deferred"
+reason = "The operation check reads a legacy reconciliation pointer."
 required_child = "dataset-product-boundary"
 
 [[capture_risks]]
@@ -171,6 +277,16 @@ current_behavior = "Fetch time substitutes provider time."
 required_migration_proof = "Separate provider and received clocks."
 
 [[capture_risks]]
+id = "rss-provider-time-fallback"
+source = "trade_py/data/news/rss/base.py"
+literal = "pub_time = datetime.now(timezone.utc)"
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Missing RSS provider time is replaced with the local collection clock."
+required_migration_proof = "Persist provider precision separately from received time."
+
+[[capture_risks]]
 id = "archive-date-only-publication-time"
 source = "trade_py/archive.py"
 literal = "archive_noon"
@@ -189,6 +305,16 @@ required_child = "capture-boundary"
 risk_kind = "catalog-environment-override-and-absent-rights-evidence"
 current_behavior = "Environment can replace the feed catalog."
 required_migration_proof = "Version SourceManifest rights."
+
+[[capture_risks]]
+id = "gdelt-catalog-db-config"
+source = "trade_py/data/news/gdelt/source.py"
+literal = 'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")'
+current_owner = "legacy"
+required_child = "capture-boundary"
+risk_kind = "db-first-provider-channel-config"
+current_behavior = "GDELT channel query, language, enablement, and priority can change from DB-first catalog settings."
+required_migration_proof = "Freeze SourceManifest channel configuration digest in CaptureRequest and use CaptureArtifactRef-only replay."
 
 [[capture_risks]]
 id = "gdelt-provider-time-fallback"
@@ -346,8 +472,19 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
         "architecture-baseline.toml": _baseline(producer_app=baseline_app),
         "trade": "#!/bin/sh\n# legacy-cli\n",
         "trade_py/__init__.py": "",
-        "trade_py/db.py": 'LEGACY_DB = 1\nSQL = "CREATE TABLE legacy_records"\n',
-        "trade_py/migrations.py": 'SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n',
+        "trade_py/db.py": (
+            "LEGACY_DB = 1\n"
+            'SQL = "CREATE TABLE legacy_records"\n'
+            'CAUSAL_SQL = "CREATE TABLE causal_decision_snapshots"\n'
+            'FACTORS_SQL = "CREATE TABLE factors"\n'
+            'KG_SQL = "CREATE TABLE kg_nodes"\n'
+            'MODELS_SQL = "CREATE TABLE model_registry"\n'
+            'MODEL_EVAL_SQL = "CREATE TABLE model_eval_runs"\n'
+        ),
+        "trade_py/migrations.py": (
+            'SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n'
+            'RECOMMENDATION_SQL = "CREATE TABLE Recommendation"\n'
+        ),
         "trade_py/warehouse.py": 'path = f"{table}.parquet"\n',
         "trade_py/capture.py": "published_at = None\n",
         "trade_py/cctv.py": "synthetic_noon = True\n",
@@ -358,8 +495,11 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
         "trade_py/quarantine.py": "quality_status = 'quarantined'\n",
         "trade_py/data/__init__.py": "",
         "trade_py/data/news/__init__.py": "",
+        "trade_py/data/news/rss/__init__.py": "",
+        "trade_py/data/news/rss/base.py": "pub_time = datetime.now(timezone.utc)\n",
         "trade_py/data/news/gdelt/__init__.py": "",
         "trade_py/data/news/gdelt/source.py": (
+            'payload = load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")\n'
             "from datetime import datetime, timezone\n"
             "pub = datetime.now(timezone.utc)\n"
             "bronze_offsets = scan_bronze_channel_offsets(data_root)\n"
@@ -376,6 +516,12 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             "    return None\n"
             "def upsert_table(layout, layer, table, frame, *, key_cols):\n"
             "    return None\n"
+        ),
+        "trade_py/data/operations/checks.py": (
+            'path = root / "market" / "kline" / "reconciliation" / "current.json"\n'
+        ),
+        "trade_py/observatory/catalog/store.py": (
+            'return base / "catalog.sqlite", base / "generation.json"\n'
         ),
         "trade_py/app.py": application,
         "trade_py/cli/main.py": "CANONICAL_DOMAIN = True\nLEGACY_DOMAIN = True\n",
@@ -417,12 +563,62 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
     capture_risk_ids = {risk["id"] for risk in baseline["capture_risks"]}
     interface_kinds = {item["surface_kind"] for item in baseline["interfaces"]}
 
-    assert {"ingest_runs", "coverage", "enrichment_status"} <= table_names
     assert {
+        "ingest_runs",
+        "coverage",
+        "enrichment_status",
+        "causal_decision_snapshots",
+        "factors",
+        "kg_nodes",
+        "model_registry",
+        "model_eval_runs",
+        "Recommendation",
+    } <= table_names
+    assert {
+        "rss-provider-time-fallback",
+        "gdelt-catalog-db-config",
         "gdelt-provider-time-fallback",
         "gdelt-streaming-local-state-and-refetch",
     } <= capture_risk_ids
     assert "http-openapi" in interface_kinds
+
+
+def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+
+    _write_baseline(
+        repo,
+        baseline.replace('id = "gdelt-catalog-db-config"', 'id = "removed-gdelt-config"', 1),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        baseline.replace(
+            'source = "trade_py/data/operations/checks.py"',
+            'source = "trade_py/utils/data_inspector.py"',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        baseline.replace(
+            '"interfaces", "bootstrap"]',
+            '"interfaces", "bootstrap", "evidence"]',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(repo, baseline)
+    (repo / "trade_py/data/operations/checks.py").write_text(
+        'path = root / "market" / "kline" / "reconciliation" / "retired.json"\n',
+        encoding="utf-8",
+    )
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
 
 
 @pytest.mark.parametrize(
@@ -719,6 +915,80 @@ def test_source_only_evidence_policy_rejects_artifacts_without_opening_them(
     assert "data/sentinel.parquet" not in opened
 
 
+@pytest.mark.parametrize(
+    "unsafe_source",
+    (
+        "trade_py/data/news/receipts/segment.py",
+        "trade_py/data/news/manifest/segment.py",
+        "trade_py/data/news/artifacts/segment.py",
+    ),
+)
+def test_source_only_evidence_rejects_nested_artifact_paths_without_opening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_source: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    path = repo / unsafe_source
+    path.parent.mkdir(parents=True)
+    path.write_text("SENTINEL = 1\n", encoding="utf-8")
+    baseline = (
+        (repo / BASELINE_FILENAME)
+        .read_text(encoding="utf-8")
+        .replace(
+            'source = "trade_py/db.py"',
+            f'source = "{unsafe_source}"',
+            1,
+        )
+    )
+    _write_baseline(repo, baseline)
+
+    import trade_py.devtools.architecture_guard as guard
+
+    original = guard._safe_read_relative
+    opened: list[str] = []
+
+    def record_open(root: Path, relative: str, *, max_bytes: int) -> bytes:
+        opened.append(relative)
+        return original(root, relative, max_bytes=max_bytes)
+
+    monkeypatch.setattr(guard, "_safe_read_relative", record_open)
+
+    assert "architecture.baseline_unsafe_source" in _rule_ids(repo)
+    assert unsafe_source not in opened
+
+
+def test_source_evidence_is_memoized_and_aggregate_budgeted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    original = guard._safe_read_relative
+    reads: list[str] = []
+
+    def record_read(root: Path, relative: str, *, max_bytes: int) -> bytes:
+        reads.append(relative)
+        return original(root, relative, max_bytes=max_bytes)
+
+    monkeypatch.setattr(guard, "_safe_read_relative", record_read)
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    # One verified evidence read and one producer-universe read, despite two facts.
+    assert reads.count("trade_py/observatory/catalog/store.py") == 2
+
+    budget_report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_aggregate_evidence_bytes=1),
+    )
+    assert {finding.rule_id for finding in budget_report.findings} == {
+        "architecture.baseline_evidence_budget_exceeded"
+    }
+    assert budget_report.producers == ()
+
+
 def test_git_discovery_ignores_inherited_index_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -752,6 +1022,20 @@ def test_exact_producer_declarations_fail_for_changed_or_removed_calls(tmp_path:
         "# write_table(layout, 'ods', 'events', frame=None)\n", encoding="utf-8"
     )
     assert "architecture.baseline_stale_producer_declaration" in _rule_ids(repo)
+
+
+def test_rebound_or_shadowed_writer_is_not_misclassified(tmp_path: Path) -> None:
+    app = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        "write_table = lambda *args, **kwargs: None\n"
+        'write_table(layout, "ods", "events", frame=None)\n'
+    )
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    rules = _rule_ids(repo)
+
+    assert PRODUCER_UNRESOLVED_IMPORT in rules
 
 
 def test_relative_canonical_warehouse_import_is_resolved(tmp_path: Path) -> None:
@@ -815,6 +1099,30 @@ required_child = "dataset-product-boundary"
     )
 
 
+def test_ast_and_producer_literal_budgets_fail_before_partial_inventory(tmp_path: Path) -> None:
+    nested_expression = "[" * 80 + "0" + "]" * 80
+    app = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        f'write_table(layout, "ods", "events", {nested_expression})\n'
+    )
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    ast_report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_ast_nodes_per_file=10),
+    )
+    literal_report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_producer_literal_bytes=32),
+    )
+
+    assert {finding.rule_id for finding in ast_report.findings} == {PRODUCER_RESULT_BUDGET}
+    assert {finding.rule_id for finding in literal_report.findings} == {PRODUCER_RESULT_BUDGET}
+    assert ast_report.producers == ()
+    assert literal_report.producers == ()
+
+
 def test_git_discovery_timeout_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -830,3 +1138,39 @@ def test_git_discovery_timeout_fails_closed(
 
     assert {finding.rule_id for finding in report.findings} == {PRODUCER_TIMEOUT}
     assert report.producers == ()
+
+
+def test_git_discovery_bounds_unterminated_stdout_and_nonzero_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        '#!/bin/sh\nprintf "x%.0s" $(seq 1 4096)\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    truncated_report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_git_record_bytes=64, git_timeout_seconds=1),
+    )
+
+    assert {finding.rule_id for finding in truncated_report.findings} == {PRODUCER_PATH_BUDGET}
+    assert truncated_report.producers == ()
+
+    fake_git.write_text(
+        '#!/bin/sh\nprintf "diagnostic%.0s" $(seq 1 4096) >&2\nexit 9\n',
+        encoding="utf-8",
+    )
+    failed_report = validate_architecture_baseline(
+        repo,
+        limits=DiscoveryLimits(max_diagnostic_field_bytes=64, git_timeout_seconds=1),
+    )
+
+    assert {finding.rule_id for finding in failed_report.findings} == {PRODUCER_TOOL_FAILURE}
+    assert failed_report.producers == ()
+    assert len(failed_report.findings[0].message.encode("utf-8")) <= 64
