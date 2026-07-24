@@ -1576,10 +1576,16 @@ def _discover_in_source(
 
         def _invalidate_names(self, names: set[str]) -> None:
             for name in names:
-                if name in self.aliases:
+                if self.aliases.get(name) in CANONICAL_WRITERS:
                     self.rebound_aliases.add(name)
                 self.aliases.pop(name, None)
                 self.layouts.discard(name)
+
+        def _bind_noncanonical_alias(self, name: str, target: str) -> None:
+            if self.aliases.get(name) in CANONICAL_WRITERS:
+                self.rebound_aliases.add(name)
+            self.aliases[name] = target
+            self.layouts.discard(name)
 
         def _bind_names(
             self,
@@ -1607,6 +1613,8 @@ def _discover_in_source(
             self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
         ) -> None:
             child = self._child()
+            if not isinstance(node, ast.Lambda):
+                child._invalidate_names(_function_local_bindings(node))
             arguments = (
                 *node.args.posonlyargs,
                 *node.args.args,
@@ -1628,8 +1636,10 @@ def _discover_in_source(
         def visit_Import(self, node: ast.Import) -> None:
             for alias in node.names:
                 local = alias.asname or alias.name.split(".", 1)[0]
-                self.aliases[local] = alias.name if alias.asname else local
-                self.rebound_aliases.discard(local)
+                self._bind_noncanonical_alias(
+                    local,
+                    alias.name if alias.asname else local,
+                )
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             module = _import_from_module(path, node)
@@ -1650,12 +1660,11 @@ def _discover_in_source(
                     if alias.name in {"write_table", "upsert_table"}:
                         self.aliases[local] = f"{CANONICAL_WAREHOUSE_MODULE}.{alias.name}"
                         self.rebound_aliases.discard(local)
+                        self.layouts.discard(local)
                     elif alias.name == "WarehouseLayout":
-                        self.aliases[local] = CANONICAL_LAYOUT
-                        self.rebound_aliases.discard(local)
+                        self._bind_noncanonical_alias(local, CANONICAL_LAYOUT)
                     elif alias.name == "io":
-                        self.aliases[local] = CANONICAL_WAREHOUSE_MODULE
-                        self.rebound_aliases.discard(local)
+                        self._bind_noncanonical_alias(local, CANONICAL_WAREHOUSE_MODULE)
                     elif alias.name == "*":
                         self._add_finding(
                             _producer_finding(
@@ -1677,16 +1686,20 @@ def _discover_in_source(
                                 "or the package re-export.",
                             )
                         )
-                elif module.startswith(CANONICAL_WAREHOUSE_PACKAGE) and _writer_like(alias.name):
-                    self._add_finding(
-                        _producer_finding(
-                            PRODUCER_UNRESOLVED_IMPORT,
-                            path,
-                            node.lineno,
-                            f"warehouse writer-like import {module}.{alias.name} is not canonical",
-                            "Import a canonical writer from trade_py.data.warehouse.io.",
+                    else:
+                        self._invalidate_names({local})
+                else:
+                    self._bind_noncanonical_alias(local, f"{module}.{alias.name}")
+                    if module.startswith(CANONICAL_WAREHOUSE_PACKAGE) and _writer_like(alias.name):
+                        self._add_finding(
+                            _producer_finding(
+                                PRODUCER_UNRESOLVED_IMPORT,
+                                path,
+                                node.lineno,
+                                f"warehouse writer-like import {module}.{alias.name} is not canonical",
+                                "Import a canonical writer from trade_py.data.warehouse.io.",
+                            )
                         )
-                    )
 
         def visit_Assign(self, node: ast.Assign) -> None:
             self.visit(node.value)
@@ -1929,6 +1942,89 @@ def _assignment_names(targets: Sequence[ast.AST]) -> set[str]:
         elif isinstance(target, (ast.Tuple, ast.List)):
             names.update(_assignment_names(target.elts))
     return names
+
+
+def _function_local_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Return lexical locals that shadow imports throughout a function scope."""
+
+    locals_: set[str] = set()
+
+    class _LocalBindingVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            locals_.add(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            locals_.add(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            locals_.add(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            locals_.update(_assignment_names(node.targets))
+            self.visit(node.value)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            locals_.update(_assignment_names((node.target,)))
+            if node.value is not None:
+                self.visit(node.value)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            locals_.update(_assignment_names((node.target,)))
+            self.visit(node.value)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            locals_.update(_assignment_names((node.target,)))
+            self.visit(node.value)
+
+        def visit_For(self, node: ast.For) -> None:
+            locals_.update(_assignment_names((node.target,)))
+            self.visit(node.iter)
+            for statement in (*node.body, *node.orelse):
+                self.visit(statement)
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+            locals_.update(_assignment_names((node.target,)))
+            self.visit(node.iter)
+            for statement in (*node.body, *node.orelse):
+                self.visit(statement)
+
+        def visit_With(self, node: ast.With) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    locals_.update(_assignment_names((item.optional_vars,)))
+            for child in node.body:
+                self.visit(child)
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    locals_.update(_assignment_names((item.optional_vars,)))
+            for child in node.body:
+                self.visit(child)
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name is not None:
+                locals_.add(node.name)
+            if node.type is not None:
+                self.visit(node.type)
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            locals_.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            locals_.update(alias.asname or alias.name for alias in node.names)
+
+    visitor = _LocalBindingVisitor()
+    for statement in node.body:
+        visitor.visit(statement)
+    return locals_
 
 
 def _writer_like(name: str) -> bool:

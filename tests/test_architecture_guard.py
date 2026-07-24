@@ -1195,6 +1195,55 @@ def test_lexical_writer_shadowing_preserves_outer_producer_and_rejects_inner_cal
     ]
 
 
+@pytest.mark.parametrize(
+    "app",
+    (
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "def helper():\n"
+            '    write_table(layout, "ods", "before_assignment", frame=None)\n'
+            "    write_table = lambda *args, **kwargs: None\n"
+        ),
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "from foreign_module import write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            'write_table(layout, "ods", "foreign_rebound", frame=None)\n'
+        ),
+    ),
+)
+def test_noncanonical_python_bindings_do_not_register_producers(tmp_path: Path, app: str) -> None:
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    report = validate_architecture_baseline(repo)
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_UNRESOLVED_IMPORT}
+    assert report.producers == ()
+
+
+def test_function_local_non_writer_import_does_not_trigger_writer_diagnostic(
+    tmp_path: Path,
+) -> None:
+    app = (
+        "from helpers import render\n"
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        "def helper():\n"
+        "    from helpers import render\n"
+        "    return render()\n"
+        'write_table(layout, "ods", "events", frame=None)\n'
+    )
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=app))
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert [(producer.layer, producer.table) for producer in report.producers] == [
+        ("ods", "events")
+    ]
+
+
 def test_relative_canonical_warehouse_import_is_resolved(tmp_path: Path) -> None:
     app = (
         "from .io import WarehouseLayout, write_table\n"
