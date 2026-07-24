@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 import tokenize
+from array import array
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -725,6 +726,18 @@ class _SourceSignature:
     inode: int
     size: int
     mtime_ns: int
+
+
+@dataclass(frozen=True)
+class _Utf8ColumnMap:
+    """Map AST UTF-8 byte columns to decoded source character columns."""
+
+    character_columns: array
+
+    def character_column(self, byte_column: int) -> int:
+        if byte_column < 0 or byte_column >= len(self.character_columns):
+            return byte_column
+        return self.character_columns[byte_column]
 
 
 class _GuardError(RuntimeError):
@@ -1611,7 +1624,8 @@ def _live_python_source_text(text: str) -> str:
 
     tree = ast.parse(text)
     line_offsets = _source_line_offsets(text)
-    inert_string_spans = _inert_python_string_spans(tree, text, line_offsets)
+    utf8_column_maps = _source_utf8_column_maps(text)
+    inert_string_spans = _inert_python_string_spans(tree, line_offsets, utf8_column_maps)
     characters = list(text)
     inert_span_index = 0
     for token in tokenize.generate_tokens(io.StringIO(text).readline):
@@ -1640,6 +1654,37 @@ def _source_line_offsets(text: str) -> tuple[int, ...]:
     return tuple(offsets)
 
 
+def _source_utf8_column_maps(text: str) -> Mapping[int, _Utf8ColumnMap]:
+    return {
+        line_number: _utf8_column_map(line)
+        for line_number, line in enumerate(text.splitlines(keepends=True), start=1)
+        if not line.isascii()
+    }
+
+
+def _utf8_column_map(line: str) -> _Utf8ColumnMap:
+    character_columns = array("I", [0])
+    character_column = 0
+    for character in line:
+        byte_width = _utf8_character_width(character)
+        if byte_width > 1:
+            character_columns.extend([character_column] * (byte_width - 1))
+        character_column += 1
+        character_columns.append(character_column)
+    return _Utf8ColumnMap(character_columns)
+
+
+def _utf8_character_width(character: str) -> int:
+    codepoint = ord(character)
+    if codepoint <= 0x7F:
+        return 1
+    if codepoint <= 0x7FF:
+        return 2
+    if codepoint <= 0xFFFF:
+        return 3
+    return 4
+
+
 def _source_position_offset(line_offsets: Sequence[int], position: tuple[int, int]) -> int:
     line, column = position
     if line < 1 or line >= len(line_offsets):
@@ -1649,8 +1694,8 @@ def _source_position_offset(line_offsets: Sequence[int], position: tuple[int, in
 
 def _inert_python_string_spans(
     tree: ast.AST,
-    text: str,
     line_offsets: Sequence[int],
+    utf8_column_maps: Mapping[int, _Utf8ColumnMap],
 ) -> tuple[tuple[int, int], ...]:
     spans: list[tuple[int, int]] = []
     for node in ast.walk(tree):
@@ -1664,13 +1709,13 @@ def _inert_python_string_spans(
             spans.append(
                 (
                     _ast_source_position_offset(
-                        text,
                         line_offsets,
+                        utf8_column_maps,
                         (node.lineno, node.col_offset),
                     ),
                     _ast_source_position_offset(
-                        text,
                         line_offsets,
+                        utf8_column_maps,
                         (node.end_lineno, node.end_col_offset),
                     ),
                 )
@@ -1679,8 +1724,8 @@ def _inert_python_string_spans(
 
 
 def _ast_source_position_offset(
-    text: str,
     line_offsets: Sequence[int],
+    utf8_column_maps: Mapping[int, _Utf8ColumnMap],
     position: tuple[int, int],
 ) -> int:
     """Convert AST UTF-8 byte columns to offsets in the decoded source text."""
@@ -1688,9 +1733,9 @@ def _ast_source_position_offset(
     line, column = position
     if line < 1 or line >= len(line_offsets):
         return line_offsets[-1]
-    line_start = line_offsets[line - 1]
-    encoded_prefix = text[line_start : line_offsets[line]].encode("utf-8")[:column]
-    return line_start + len(encoded_prefix.decode("utf-8"))
+    column_map = utf8_column_maps.get(line)
+    character_column = column if column_map is None else column_map.character_column(column)
+    return line_offsets[line - 1] + character_column
 
 
 def _mask_source_span(characters: list[str], start: int, end: int) -> None:

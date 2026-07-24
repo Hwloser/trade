@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -2060,10 +2061,10 @@ def test_many_inert_strings_are_masked_with_linear_span_progress(
 
     def record_spans(
         tree: ast.AST,
-        text: str,
         line_offsets: tuple[int, ...],
+        utf8_column_maps: dict[int, Any],
     ) -> tuple[tuple[int, int], ...]:
-        spans = original_spans(tree, text, line_offsets)
+        spans = original_spans(tree, line_offsets, utf8_column_maps)
 
         class CountingSpans(tuple):
             def __iter__(self):
@@ -2081,6 +2082,37 @@ def test_many_inert_strings_are_masked_with_linear_span_progress(
     # The monotonic index uses len/index access; it must not rescan every span
     # for every STRING token as the former overlap predicate did.
     assert span_iteration_calls == 0
+
+
+def test_same_line_inert_strings_reuse_utf8_column_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    source = repo / "trade_py/db.py"
+    inert_expression_count = 16_000
+    source.write_text(
+        "LEGACY_DB = 1\n"
+        'SQL = "CREATE TABLE legacy_records"\n' + ("'é' " * inert_expression_count) + "\n",
+        encoding="utf-8",
+    )
+    original_column_map = guard._utf8_column_map
+    mapped_lines: list[str] = []
+
+    def record_column_map(line: str):
+        mapped_lines.append(line)
+        return original_column_map(line)
+
+    monkeypatch.setattr(guard, "_utf8_column_map", record_column_map)
+
+    started = time.monotonic()
+    report = validate_architecture_baseline(repo)
+    elapsed_seconds = time.monotonic() - started
+
+    assert report.ok, report.findings
+    assert mapped_lines.count("'é' " * inert_expression_count + "\n") == 1
+    assert elapsed_seconds < 3.0
 
 
 def test_git_discovery_ignores_inherited_index_override(
