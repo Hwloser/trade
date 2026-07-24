@@ -2726,8 +2726,10 @@ def test_approved_binding_does_not_blame_unrelated_external_transaction_alias(
     assert "first static SQL argument" in finding.remediation
 
 
+@pytest.mark.parametrize("is_async", (False, True))
 def test_approved_binding_does_not_blame_same_name_external_receiver_and_alias(
     tmp_path: Path,
+    is_async: bool,
 ) -> None:
     repo = _init_repo(tmp_path, _sources())
     source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
@@ -2737,10 +2739,12 @@ def test_approved_binding_does_not_blame_same_name_external_receiver_and_alias(
         "    with session.transaction():\n"
         '        session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
     )
+    callable_prefix = "async def" if is_async else "def"
+    transaction_prefix = "async with" if is_async else "with"
     replacement = (
-        "def persist_approved(session):\n"
+        f"{callable_prefix} persist_approved(session):\n"
         "    global db\n"
-        "    with db.transaction() as db:\n"
+        f"    {transaction_prefix} db.transaction() as db:\n"
         '        db.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
     )
     source.write_text(
