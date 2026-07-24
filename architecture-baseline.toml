@@ -1,0 +1,1447 @@
+schema_version = 1
+target_source_root = "src/trade"
+target_import_root = "trade"
+legacy_package_roots = ["trade_py", "trade_web"]
+target_contexts = [
+  "kernel",
+  "capture",
+  "datasets",
+  "studies",
+  "decision_support",
+  "processes",
+  "platform",
+  "interfaces",
+  "bootstrap",
+]
+
+[[source_facts]]
+id = "legacy-trade-db"
+source = "trade_py/db/trade_db.py"
+literal = "class TradeDB"
+current_owner = "trade_py.db"
+required_child = "dataset-product-boundary"
+
+[[source_facts]]
+id = "legacy-migrations"
+source = "trade_py/db/migrations.py"
+literal = "def run_migrations"
+current_owner = "trade_py.db"
+required_child = "process-manager-and-platform-boundary"
+
+[[source_facts]]
+id = "pipeline-state-db"
+source = "trade_py/db/pipeline_db.py"
+literal = "class PipelineDb"
+current_owner = "trade_py.db"
+required_child = "process-manager-and-platform-boundary"
+
+[[tables]]
+logical_name = "event_log"
+current_owner = "trade_py.db"
+semantic_kind = "event-delivery-log"
+classification = "candidate"
+target_context = "platform"
+reason = "The legacy event log is a current shared operational record, not an approved target binding."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_log", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO event_log", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "event_handler_runs"
+current_owner = "trade_py.db"
+semantic_kind = "event-delivery-state"
+classification = "candidate"
+target_context = "platform"
+reason = "Legacy idempotency state requires an owned outbox and delivery migration."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS event_handler_runs", role = "migration" },
+]
+
+[[tables]]
+logical_name = "pipeline_dag"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-workflow-definition"
+classification = "deferred"
+target_context = "deferred"
+reason = "The legacy DAG mixes scheduling and business orchestration."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS pipeline_dag", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN config_json TEXT DEFAULT '{}'", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN sync_source TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN sync_dataset TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN mode TEXT DEFAULT 'batch'", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "DELETE FROM pipeline_dag", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET enabled=0 WHERE job_name='sentiment_pipeline'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET enabled=0 WHERE job_name='event_pipeline'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET source=?, emits='', description=?", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET description='BTC assurance-gated UTC 日线同步' WHERE job_name='crypto_btc_fetch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET enabled=0 WHERE job_name='cross_asset_fetch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET config_json=?, description=? WHERE id=?", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "asset_registry"
+current_owner = "trade_py.db"
+semantic_kind = "source-configuration"
+classification = "candidate"
+target_context = "capture"
+reason = "The source registry is a migration input for future SourceManifest ownership."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS asset_registry", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE INDEX IF NOT EXISTS idx_asset_class ON asset_registry(asset_class, enabled, priority)", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT INTO asset_registry", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE asset_registry SET config_json=?, updated_at=CURRENT_TIMESTAMP WHERE asset_id=?", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "feed_scores"
+current_owner = "trade_py.intelligence"
+semantic_kind = "independent-metadata-projection"
+classification = "deferred"
+target_context = "deferred"
+reason = "The current independent feed database mixes scoring and configuration concerns."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/intelligence/schema.py", literal = "CREATE TABLE IF NOT EXISTS feed_scores", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "source_configs"
+current_owner = "trade_py.intelligence"
+semantic_kind = "independent-source-configuration"
+classification = "candidate"
+target_context = "capture"
+reason = "Current configuration facts require SourceManifest rights and ownership proof."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/intelligence/schema.py", literal = "CREATE TABLE IF NOT EXISTS source_configs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "catalog_meta"
+current_owner = "trade_py.observatory.catalog"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "The catalog is explicitly rebuildable and therefore not a second source of truth."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE catalog_meta", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "catalog_runs"
+current_owner = "trade_py.observatory.catalog"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog runs are projection facts that need DatasetVersion lineage migration."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "catalog_releases"
+current_owner = "trade_py.observatory.catalog"
+semantic_kind = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog releases are a current projection of immutable facts."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/observatory/catalog/store.py", literal = "CREATE TABLE releases", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "ingest_runs"
+current_owner = "trade_py.db.pipeline_db"
+semantic_kind = "legacy-capture-run-state"
+classification = "candidate"
+target_context = "capture"
+reason = "Pipeline ingest run state is a migration input for CaptureRun ownership."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS ingest_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "coverage"
+current_owner = "trade_py.db.pipeline_db"
+semantic_kind = "legacy-coverage-state"
+classification = "candidate"
+target_context = "capture"
+reason = "Pipeline coverage tracks source collection state pending CaptureCheckpoint ownership."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS coverage", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "enrichment_status"
+current_owner = "trade_py.db.pipeline_db"
+semantic_kind = "legacy-enrichment-cache"
+classification = "deferred"
+target_context = "deferred"
+reason = "The shared enrichment cache needs independent lineage and owner evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/pipeline_db.py", literal = "CREATE TABLE IF NOT EXISTS enrichment_status", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "source_health_daily"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-source-health-quality-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Source health is a Datasets quality input, but the current daily projection is mutable and lacks DatasetVersion lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS source_health_daily", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "source_eval_daily"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-source-evaluation-quality-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Source evaluation is a Datasets quality input, but the current daily projection does not bind immutable Dataset inputs."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS source_eval_daily", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "event_eval_runs"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-event-study-evaluation-record"
+classification = "candidate"
+target_context = "studies"
+reason = "Event evaluation resembles a Study validation run, but its current mutable database inputs need StudySpec and DatasetSnapshotRef evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_eval_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "dataset_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-snapshot-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "The legacy snapshot row is a migration input for DatasetSnapshot ownership, but is not an immutable point-in-time reference."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS dataset_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "daily_quality_gate"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-quality-gate"
+classification = "candidate"
+target_context = "datasets"
+reason = "The daily gate is a migration input for Datasets quality and release policy, not a formal DatasetRelease decision."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS daily_quality_gate", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "event_templates"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-event-template-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Event template ownership depends on whether the reusable schema becomes a Dataset product or a Study-local transform."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_templates", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "market_events"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-market-event-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Market events currently mix extraction, canonicalization, and decision inputs without immutable Dataset lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS market_events", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO market_events", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "event_propagations"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-event-propagation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Propagation records combine graph transformation, realized-return backfill, and feature use pending independent ownership evidence."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_propagations", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE event_propagations ADD COLUMN rel_path TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE event_propagations ADD COLUMN validated_at TIMESTAMP", role = "alter" },
+]
+
+[[tables]]
+logical_name = "causal_decision_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-causal-decision-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Causal decision ownership needs separate Dataset, Study, and Decision Support boundary evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_decision_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "causal_validation_outcomes"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-causal-validation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Causal validation ownership needs Study validation and immutable input evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_validation_outcomes", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "causal_reward_punishment"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-causal-feedback-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Causal feedback ownership needs Study validation, Decision Support audit, and lifecycle evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_reward_punishment", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "factors"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-factor-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Factor ownership is not yet proven as a reusable Dataset product or Study-local transform."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS factors", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "factor_registry"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-factor-metadata-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Factor metadata ownership depends on the resolved Dataset-versus-Study feature boundary."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS factor_registry", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "kg_nodes"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-knowledge-graph-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Knowledge-graph ownership and Dataset/Study lineage require a separately reviewed migration."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_nodes", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "kg_relations"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-knowledge-graph-relation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Knowledge-graph relation ownership and Dataset/Study lineage require a separately reviewed migration."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_relations", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN direction INTEGER NOT NULL DEFAULT 1", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN typical_days INTEGER NOT NULL DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN evidence_json TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations SET weight = ABS(weight) WHERE weight < 0", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations SET status = 'active' WHERE status IS NULL OR status = ''", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "kg_edge_candidates"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-knowledge-graph-candidate-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Knowledge-graph candidate review needs Study evidence and Decision Support audit boundaries."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "migration" },
+]
+
+[[tables]]
+logical_name = "model_registry"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-model-registry-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Model registration needs a Study lifecycle, immutable inputs, and promotion evidence before ownership is assigned."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_registry", role = "bootstrap" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN target_name TEXT", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN backend TEXT DEFAULT 'lgbm'", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN artifact_format TEXT DEFAULT 'joblib'", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN feature_set TEXT", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN dataset_snapshot_id INTEGER", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN promotion_state TEXT NOT NULL DEFAULT 'active'", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET target_name=COALESCE(target_name, model_name)", role = "data_transform" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET backend=", role = "data_transform" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET artifact_format=", role = "data_transform" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET promotion_state=", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "model_eval_runs"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-model-evaluation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Model evaluation needs Study validation and point-in-time input evidence before ownership is assigned."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_eval_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "ArticleEvent"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-canonical-article-event-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Canonical article-event rows are a Dataset migration input, but current records lack immutable lineage and point-in-time release semantics."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS ArticleEvent", role = "migration" },
+]
+
+[[tables]]
+logical_name = "InfluenceSignal"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-source-influence-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Influence records blend source reliability and research-derived scoring, so target ownership needs separate Capture, Datasets, and Studies evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS InfluenceSignal", role = "migration" },
+]
+
+[[tables]]
+logical_name = "Evidence"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-derived-evidence-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Legacy evidence rows combine dataset-derived facts and decision inputs and cannot create an independent Evidence context."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Evidence", role = "migration" },
+]
+
+[[tables]]
+logical_name = "BeliefState"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-belief-state"
+classification = "deferred"
+target_context = "deferred"
+reason = "Belief state needs Decision Support audit and Study-result provenance before a target aggregate is assigned."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS BeliefState", role = "migration" },
+]
+
+[[tables]]
+logical_name = "AttentionScore"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-attention-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Attention scores need Decision Support audit and Study-result provenance before a target aggregate is assigned."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS AttentionScore", role = "migration" },
+]
+
+[[tables]]
+logical_name = "BeliefTransition"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-belief-transition"
+classification = "deferred"
+target_context = "deferred"
+reason = "Belief transitions need Decision Support audit and Study-result provenance before a target aggregate is assigned."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS BeliefTransition", role = "migration" },
+]
+
+[[tables]]
+logical_name = "QualityReport"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-quality-report"
+classification = "candidate"
+target_context = "datasets"
+reason = "Quality reports are Datasets quality migration inputs, but current reports combine mutable operational and research evaluation summaries."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS QualityReport", role = "migration" },
+]
+
+[[tables]]
+logical_name = "FreshnessStatus"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-freshness-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Freshness status is a Datasets availability input, but current rows do not prove immutable DatasetVersion or Snapshot references."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS FreshnessStatus", role = "migration" },
+]
+
+[[tables]]
+logical_name = "Recommendation"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-historical-recommendation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Historical recommendation data needs a Decision Support ownership, audit, and compatibility migration."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Recommendation", role = "migration" },
+]
+
+[[tables]]
+logical_name = "RecommendationTrace"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-historical-recommendation-trace"
+classification = "deferred"
+target_context = "deferred"
+reason = "Historical recommendation trace ownership needs Decision Support audit and compatibility migration evidence."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS RecommendationTrace", role = "migration" },
+]
+
+[[tables]]
+logical_name = "settings"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-platform-settings-record"
+classification = "candidate"
+target_context = "platform"
+reason = "Global settings require an explicit platform settings boundary and compatibility migration before ownership transfer."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS settings", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "watchlist"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-watchlist-record"
+classification = "candidate"
+target_context = "decision_support"
+reason = "Watchlists are Decision Support migration inputs, but current rows lack DecisionCase audit and compatibility evidence."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS watchlist", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "signals"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-signal-record"
+classification = "candidate"
+target_context = "decision_support"
+reason = "Signals are Decision Support migration inputs, but current rows lack immutable Dataset and Study result references."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS signals", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO signals", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "job_runs"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-job-execution-record"
+classification = "candidate"
+target_context = "platform"
+reason = "Job execution history requires a platform ExecutionRun boundary before ownership transfer."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS job_runs", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN stage TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN trigger_event_id INTEGER", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN result_summary TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN symbols_processed INTEGER", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN elapsed_ms INTEGER", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN completed_at TIMESTAMP", role = "alter" },
+]
+
+[[tables]]
+logical_name = "instruments"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-instrument-reference-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Instrument reference data is a Datasets migration input pending explicit version and source lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS instruments", role = "bootstrap" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE instruments ADD COLUMN market_name TEXT NOT NULL DEFAULT ''", role = "alter" },
+]
+
+[[tables]]
+logical_name = "sector_members"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-sector-reference-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Sector membership is a Datasets migration input pending versioned source and revision lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS sector_members", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO sector_members", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "sync_state"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-collection-checkpoint-record"
+classification = "candidate"
+target_context = "capture"
+reason = "Sync state is a Capture checkpoint migration input pending SourceManifest and CaptureRun binding."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS sync_state", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO sync_state", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR REPLACE INTO sync_state", role = "data_transform" },
+]
+
+[[tables]]
+logical_name = "trading_calendar"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-calendar-reference-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Trading calendars are versioned reference-data candidates pending DatasetVersion and availability lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS trading_calendar", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "planned_events"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-planned-event-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Planned event records are Datasets candidates pending immutable source and revision lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS planned_events", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "agenda_queue"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-agenda-process-state"
+classification = "candidate"
+target_context = "processes"
+reason = "Agenda queue state is a Process Manager migration input pending idempotency and compensation evidence."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS agenda_queue", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "backup_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-backup-operation-record"
+classification = "candidate"
+target_context = "platform"
+reason = "Backup snapshots are platform operation records pending backup receipt and recovery ownership proof."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS backup_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "ui_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-ui-cache-projection"
+classification = "candidate"
+target_context = "interfaces"
+reason = "UI snapshots are interface cache projections pending BFF cache and invalidation ownership evidence."
+required_child = "cli-http-sdk-compatibility"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS ui_snapshots", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS ui_snapshots", role = "migration" },
+]
+
+[[tables]]
+logical_name = "readiness_recovery_actions"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-recovery-process-state"
+classification = "candidate"
+target_context = "processes"
+reason = "Recovery actions are Process Manager migration inputs pending durable retry and compensation evidence."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS readiness_recovery_actions", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "schema_migrations"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-schema-migration-ledger"
+classification = "candidate"
+target_context = "platform"
+reason = "The migration ledger is a platform migration-runner input pending an owned schema evolution boundary."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS schema_migrations", role = "migration" },
+]
+
+[[tables]]
+logical_name = "signal_cache_v2"
+current_owner = "trade_py.db"
+semantic_kind = "historical-signal-cache-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "The historical signal cache needs a separate decision and study provenance assessment before ownership assignment."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS signal_cache_v2", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO signal_cache_v2", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE signal_cache_v2 RENAME TO signal_cache", role = "alter" },
+]
+
+[[tables]]
+logical_name = "bus_events"
+current_owner = "trade_py.db"
+semantic_kind = "historical-event-bus-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "The historical bus event table requires explicit outbox, replay, and delivery-state migration evidence."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS bus_events", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "DROP TABLE IF EXISTS bus_events", role = "alter" },
+]
+
+[[artifacts]]
+id = "warehouse-parquet"
+source = "trade_py/data/warehouse/io.py"
+literal = 'f"{table}.parquet"'
+current_owner = "trade_py.data.warehouse"
+role = "legacy-warehouse-artifact-family"
+classification = "candidate"
+target_context = "datasets"
+reason = "Warehouse Parquet artifacts require DatasetVersion ownership and immutable references."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "catalog-sqlite-projection"
+source = "trade_py/observatory/catalog/store.py"
+literal = 'return base / "catalog.sqlite", base / "generation.json"'
+current_owner = "trade_py.observatory.catalog"
+role = "rebuildable-catalog-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Catalog SQLite is a rebuildable projection rather than a second authoritative data source."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "catalog-generation-pointer"
+source = "trade_py/observatory/catalog/store.py"
+literal = 'return base / "catalog.sqlite", base / "generation.json"'
+current_owner = "trade_py.observatory.catalog"
+role = "catalog-generation-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The catalog generation pointer is a projection compatibility and recovery input."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "crypto-ads-current-pointer"
+source = "trade_py/data/warehouse/crypto_store.py"
+literal = 'CRYPTO_VALIDATION_CURRENT = "_crypto_validation_current.json"'
+current_owner = "trade_py.data.warehouse.crypto_store"
+role = "legacy-current-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The current pointer is a compatibility and rollback input, not an approved Dataset release."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "crypto-ads-validation-receipt"
+source = "trade_py/data/warehouse/crypto_store.py"
+literal = 'receipt_root = ads_root / "_validation_receipts"'
+current_owner = "trade_py.data.warehouse.crypto_store"
+role = "completion-receipt"
+classification = "candidate"
+target_context = "datasets"
+reason = "The completion receipt must migrate with atomic Dataset release evidence."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "btc-compatibility-pointer"
+source = "trade_py/data/market/crypto/store.py"
+literal = 'self.current_path = self.crypto_root / "btc_current.json"'
+current_owner = "trade_py.data.market.crypto"
+role = "legacy-current-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "BTC compatibility remains a required reader and rollback source during Dataset migration."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "kline-reconciliation-operation-pointer"
+source = "trade_py/data/operations/checks.py"
+literal = 'path = root / "market" / "kline" / "reconciliation" / "current.json"'
+current_owner = "trade_py.data.operations"
+role = "data-operation-reconciliation-pointer"
+classification = "deferred"
+target_context = "deferred"
+reason = "The Data Ops check reads a legacy reconciliation pointer and must not become an authoritative Dataset release."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "kline-reconciliation-pointer"
+source = "trade_py/utils/data_inspector.py"
+literal = 'return KLINE_DIR(data_root) / "reconciliation" / "current.json"'
+current_owner = "trade_py.utils.data_inspector"
+role = "legacy-reconciliation-pointer"
+classification = "deferred"
+target_context = "deferred"
+reason = "Kline reconciliation must be separated from legacy global data inspection."
+required_child = "dataset-product-boundary"
+
+[[capture_risks]]
+id = "raw-record-single-publication-clock"
+source = "trade_py/intelligence/raw_record.py"
+literal = "published_at: datetime"
+current_owner = "trade_py.intelligence"
+required_child = "capture-boundary"
+risk_kind = "provider-observed-received-available-revision-clocks-collapsed"
+current_behavior = "RawRecord exposes one published_at field for all temporal semantics."
+required_migration_proof = "Independent provider, observed, received, available, revision, and finality clocks."
+
+[[capture_risks]]
+id = "cctv-date-only-publication-time"
+source = "trade_py/data/news/akshare_news.py"
+literal = "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)"
+current_owner = "trade_py.data.news"
+required_child = "capture-boundary"
+risk_kind = "date-only-inferred-precision"
+current_behavior = "A date-only provider value is converted to a synthetic noon timestamp."
+required_migration_proof = "Preserve source precision and prohibit unproven point-in-time publication claims."
+
+[[capture_risks]]
+id = "eastmoney-stock-timezone-overwrite"
+source = "trade_py/data/news/akshare_news.py"
+literal = "pub = pub_raw.to_pydatetime().replace(tzinfo=CST)"
+current_owner = "trade_py.data.news"
+required_child = "capture-boundary"
+risk_kind = "provider-timezone-and-precision-overwrite"
+current_behavior = "Parsed provider timestamps are relabeled CST without preserving source timezone or precision."
+required_migration_proof = "Preserve provider timezone and precision, and record observed, received, and available clocks before point-in-time use."
+
+[[capture_risks]]
+id = "warehouse-rss-fetched-time-substitution"
+source = "trade_py/data/warehouse/fetch.py"
+literal = '"published_at": published_at or fetched_at'
+current_owner = "trade_py.data.warehouse"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Missing provider publication time falls back to fetch time."
+required_migration_proof = "Record provider time and received time separately in CaptureArtifact metadata."
+
+[[capture_risks]]
+id = "rss-provider-time-fallback"
+source = "trade_py/data/news/rss/base.py"
+literal = "pub_time = datetime.now(timezone.utc)"
+current_owner = "trade_py.data.news.rss"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "RSS entries without a provider timestamp substitute the local collection clock."
+required_migration_proof = "Persist provider precision separately from observed and received time, and prohibit synthetic event-time PIT claims."
+
+[[capture_risks]]
+id = "archive-date-only-publication-time"
+source = "trade_py/data/news/rss/archive.py"
+literal = "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)"
+current_owner = "trade_py.data.news.rss"
+required_child = "capture-boundary"
+risk_kind = "date-only-inferred-precision"
+current_behavior = "Archive day values become synthetic UTC noon timestamps."
+required_migration_proof = "Retain date-only precision and use an explicit availability policy."
+
+[[capture_risks]]
+id = "rss-catalog-environment-override"
+source = "trade_py/data/news/rss/catalog.py"
+literal = 'override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")'
+current_owner = "trade_py.data.news.rss"
+required_child = "capture-boundary"
+risk_kind = "catalog-environment-override-and-absent-rights-evidence"
+current_behavior = "An environment variable can replace the feed index without an immutable SourceManifest."
+required_migration_proof = "Versioned SourceManifest with source rights, credentials, and override audit evidence."
+
+[[capture_risks]]
+id = "gdelt-catalog-db-config"
+source = "trade_py/data/news/gdelt/source.py"
+literal = 'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")'
+current_owner = "trade_py.data.news.gdelt"
+required_child = "capture-boundary"
+risk_kind = "db-first-provider-channel-config"
+current_behavior = "GDELT channel query, language, enablement, and priority are selected from mutable DB-first catalog settings."
+required_migration_proof = "Freeze a SourceManifest channel configuration digest in CaptureRequest and support CaptureArtifactRef-only replay without provider access."
+
+[[capture_risks]]
+id = "gdelt-provider-time-fallback"
+source = "trade_py/data/news/gdelt/source.py"
+literal = "pub = datetime.now(timezone.utc)"
+current_owner = "trade_py.data.news.gdelt"
+required_child = "capture-boundary"
+risk_kind = "provider-timestamp-absence-substitution"
+current_behavior = "Invalid or absent GDELT seendate is replaced with the local collection clock."
+required_migration_proof = "Persist provider precision separately from received time and prohibit synthetic event-time PIT claims."
+
+[[capture_risks]]
+id = "gdelt-streaming-local-state-and-refetch"
+source = "trade_py/data/news/gdelt/source.py"
+literal = "bronze_offsets = scan_bronze_channel_offsets(data_root)"
+current_owner = "trade_py.data.news.gdelt"
+required_child = "capture-boundary"
+risk_kind = "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor"
+current_behavior = "Streaming scans mutable Bronze Parquet and database cursor state while re-fetching the provider and writing Parquet."
+required_migration_proof = "Capture checkpoints and immutable segments must support provider-free replay, revision identity, and bounded retry receipts."
+
+[[capture_risks]]
+id = "ingest-wal-replay"
+source = "trade_py/data/ingest/batch.py"
+literal = "self._recover_wal()"
+current_owner = "trade_py.data.ingest"
+required_child = "capture-boundary"
+risk_kind = "provider-refetch-versus-local-artifact-replay-versus-wal-recovery"
+current_behavior = "WAL recovery writes legacy parquet before a formal Capture receipt exists."
+required_migration_proof = "Provider-free replay from immutable CaptureArtifact references and explicit replay receipts."
+
+[[capture_risks]]
+id = "warehouse-semantic-quarantine"
+source = "trade_py/data/warehouse/articles.py"
+literal = 'quality_status = "quarantined"'
+current_owner = "trade_py.data.warehouse"
+required_child = "dataset-product-boundary"
+risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
+current_behavior = "Article semantic quality marks rows quarantined in the warehouse transform."
+required_migration_proof = "Capture transport failures remain distinct from Datasets semantic quality quarantine."
+
+[[capture_risks]]
+id = "influence-signal-runtime-publication-time"
+source = "trade_py/intelligence/feed_scorer.py"
+literal = "published_at = datetime.now(timezone.utc).isoformat()"
+current_owner = "trade_py.intelligence.feed_scorer"
+required_child = "study-boundary"
+risk_kind = "runtime-evaluation-time-substituted-for-publication-time"
+current_behavior = "Feed scorer uses the local evaluation clock as InfluenceSignal published_at, which is then used to select the most recent reliability record."
+required_migration_proof = "Separate source publication, observed, received, evaluation, available, and revision clocks before a Dataset or Study publishes an InfluenceSignal-derived result."
+
+[[dynamic_sql_limitations]]
+id = "recommendation-dynamic-columns"
+logical_name = "Recommendation"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"ALTER TABLE Recommendation ADD COLUMN {col_def}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+non_authorizing = true
+limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[dynamic_sql_limitations]]
+id = "recommendation-trace-dynamic-columns"
+logical_name = "RecommendationTrace"
+source = "trade_py/db/migrations.py"
+literal = 'conn.execute(f"ALTER TABLE RecommendationTrace ADD COLUMN {col_def}")'
+limitation_kind = "dynamic_ddl"
+owning_child = "decision-support-boundary"
+non_authorizing = true
+limitation = "The f-string column definition is dynamic DDL and is non-authorizing until the Decision Support migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[dynamic_sql_limitations]]
+id = "factor-registry-dynamic-columns"
+logical_name = "factor_registry"
+source = "trade_py/db/migrations.py"
+literal = 'f"ALTER TABLE factor_registry ADD COLUMN {col} REAL NOT NULL DEFAULT {default}"'
+limitation_kind = "dynamic_ddl"
+owning_child = "study-boundary"
+non_authorizing = true
+limitation = "The f-string column and default are dynamic DDL and are non-authorizing until the Study migration adds reviewed SQL-normalization or runtime migration evidence."
+
+[[interfaces]]
+id = "root-trade-facade"
+source = "trade"
+literal = 'uv run python -m trade_py.cli.main'
+current_owner = "trade"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-facade"
+current_behavior = "Root script delegates public commands to the legacy Python CLI."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "canonical-cli-domains"
+source = "trade_py/cli/main.py"
+literal = '("research", "research"'
+current_owner = "trade_py.cli"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-domain"
+current_behavior = "Canonical CLI domains dispatch from the legacy namespace."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "legacy-cli-domains"
+source = "trade_py/cli/main.py"
+literal = "legacy_domains = ["
+current_owner = "trade_py.cli"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "cli-compatibility"
+current_behavior = "Hidden legacy domains remain dispatchable."
+compatibility_owner = "interfaces.cli.compat"
+
+[[interfaces]]
+id = "fastapi-app-factory"
+source = "trade_web/backend/app.py"
+literal = "def create_app():"
+current_owner = "trade_web.backend"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-app"
+current_behavior = "The FastAPI factory exposes legacy HTTP routes and serves the Web application."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "fastapi-openapi-surface"
+source = "trade_web/backend/app.py"
+literal = 'app = FastAPI(title="TradeDB Console", version="1.0", lifespan=lifespan)'
+current_owner = "trade_web.backend"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-openapi"
+current_behavior = "The FastAPI application construction defines the generated OpenAPI surface."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "observatory-router"
+source = "trade_web/backend/observatory/router.py"
+literal = 'APIRouter(prefix="/api/v1/observatory"'
+current_owner = "trade_web.backend.observatory"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-router"
+current_behavior = "Observatory routes are a current HTTP surface and not a bounded context."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "runtime-sse"
+source = "trade_web/backend/runtime/router.py"
+literal = 'media_type="text/event-stream"'
+current_owner = "trade_web.backend.runtime"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "sse"
+current_behavior = "Runtime event and capacity streams use SSE."
+compatibility_owner = "interfaces.http.compat"
+
+[[interfaces]]
+id = "runtime-router-contract-tests"
+source = "tests/test_runtime_router.py"
+literal = '"/api/events/stream"'
+current_owner = "tests"
+required_child = "cli-http-sdk-compatibility"
+surface_kind = "http-contract-test"
+current_behavior = "Focused tests exercise the legacy SSE route contract."
+compatibility_owner = "interfaces.http.compat"
+
+[[native_bindings]]
+id = "legacy-trade-py-native-binding"
+source = "engine/cmake/python_bindings.cmake"
+literal = "nanobind_add_module(trade_py"
+current_owner = "engine"
+required_child = "python-package-and-web-layout"
+current_binding = "trade_py"
+reserved_binding = "_trade_native"
+
+[[warehouse_producers]]
+id = "materialize-dim-sector"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dim', 'dim_sector', build_dim_sector())"
+line = 157
+column = 51
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "e9aeee8a9e06c2507d6f22fb17f36f35df7b1a7cca8fa47af11d2029309ff690"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_sector"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dim-topic"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dim', 'dim_topic', build_dim_topic())"
+line = 160
+column = 50
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "02f2565d9e2c70d8bd809b52dc952eb55ac1ff9fa146128bd0b0f61aead75c4d"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_topic"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dim-position"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dim', 'dim_position', dim_position)"
+line = 165
+column = 53
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "a10602a472edfc0959e321aa2729b738c2d9a649a68cd4fb3d8bcb110c2b9ae4"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_position"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dim-data-source"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dim', 'dim_data_source', dim_data_source)"
+line = 170
+column = 56
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "3370e04d6262ebe1b3621ac3914c7ee79548299fc437bb0eab49b36e822b758e"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dim"
+table = "dim_data_source"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ods-rss-entry-raw"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "upsert_table(layout, 'ods', 'ods_rss_entry_raw', new_ods_rss, key_cols=['entry_id'])"
+line = 175
+column = 58
+writer = "trade_py.data.warehouse.io.upsert_table"
+call_digest = "080a9d44d55daa609a7056cf52b4b76afe5f0defaa748f21d71b9cf65126065c"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ods"
+table = "ods_rss_entry_raw"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dwd', 'dwd_article', dwd_article)"
+line = 181
+column = 52
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "adc1cd05dc1beaf0617baa3592baa200fbd2e9a9220c4c351dbea71a34efe871"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article-quality-check"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dwd', 'dwd_article_quality_check', quality)"
+line = 182
+column = 66
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "95b8b3ef1eedca3b8d25a970c0aec6b17fdc59469fb17215917e02d1add43250"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article_quality_check"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article-semantic-check"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dwd', 'dwd_article_semantic_check', semantic)"
+line = 185
+column = 67
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "9f765092c8b7f6dd35fd9b2f2c73ec4d63e8fdc3a389da0572f65c2c39a59094"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article_semantic_check"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dwd-article-sector-relevance"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dwd', 'dwd_article_sector_relevance', relevance)"
+line = 188
+column = 69
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "3b9efa68ef7c7179e63928f55c58e03ec14c1745b48c6b568c4b3d875d5c8853"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dwd"
+table = "dwd_article_sector_relevance"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-dws-sector-topic-daily"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'dws', 'dws_sector_topic_daily', dws_sector_topic_daily)"
+line = 193
+column = 63
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "e0839b3f7fc3f4c06496d9d5c0c1ce2b002b689234fea284825f4a743598d23b"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "dws"
+table = "dws_sector_topic_daily"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-data-signal-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_data_signal_report', ads_data_signal)"
+line = 198
+column = 63
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "81d93de50d5dae5cd3461f551208969ad287137cdf16df281eed02d3e68fe3ea"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_data_signal_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-source-value-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_source_value_report', ads_source_value)"
+line = 203
+column = 64
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "7f1e50ced82337b797f6b71be1187ca76b0b6b068e7908708dd57986a9da1959"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_source_value_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-feature-value-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_feature_value_report', ads_feature_value)"
+line = 208
+column = 65
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "14bf07bfdac7d7c1b7aa71b7be3381ceeb28311ac87db12700c374d92effecdd"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_feature_value_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-association-result"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_association_result', ads_association)"
+line = 213
+column = 63
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "c239e5f93d818a0b897de9321570ca7d88bac492b1b2922d9b0a3b87365fb89b"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_association_result"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-hypothesis-validation-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_hypothesis_validation_report', ads_hypothesis)"
+line = 218
+column = 73
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "b5163c9c3a144b8a2beaf8e5fa630218ca7702f926180ec91d4b449177e2f592"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_hypothesis_validation_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-position-risk-signal"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_position_risk_signal', ads_position_risk)"
+line = 223
+column = 65
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "c6fcbfc245ff97e38f2c122e443d7d720306805fccb544c67d16540603960999"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_position_risk_signal"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "Legacy table writer recorded before DatasetVersion migration."
+
+[[warehouse_producers]]
+id = "materialize-ads-warehouse-validation-report"
+source = "trade_py/data/warehouse/materialize.py"
+literal = "write_table(layout, 'ads', 'ads_warehouse_validation_report', validation)"
+line = 228
+column = 72
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "1c0971fb24c6c17579b46cf8ed36a44c7ce80a61a949f387cf78f7801154880b"
+current_owner = "trade_py.data.warehouse.materialize"
+required_child = "dataset-product-boundary"
+layer = "ads"
+table = "ads_warehouse_validation_report"
+path_role = "materialization"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "The producer exists even though the legacy required-table list omits it."
+
+[[warehouse_producers]]
+id = "cli-fetch-dim-data-source"
+source = "trade_py/cli/data.py"
+literal = "write_table(layout, 'dim', 'dim_data_source', dim_data_source)"
+line = 1838
+column = 35
+writer = "trade_py.data.warehouse.io.write_table"
+call_digest = "3370e04d6262ebe1b3621ac3914c7ee79548299fc437bb0eab49b36e822b758e"
+current_owner = "trade_py.cli.data"
+required_child = "cli-http-sdk-compatibility"
+layer = "dim"
+table = "dim_data_source"
+path_role = "compatibility-cli-fetch"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "CLI compatibility surface currently writes the DIM source catalog."
+
+[[warehouse_producers]]
+id = "cli-fetch-ods-fetch-attempt"
+source = "trade_py/cli/data.py"
+literal = "upsert_table(layout, 'ods', 'ods_fetch_attempt', attempts, key_cols=['source_id', 'requested_at'])"
+line = 1839
+column = 37
+writer = "trade_py.data.warehouse.io.upsert_table"
+call_digest = "004465a681963ed351b9fc0944ad06aa0d70fd6d24732477f42fe90c47aaa80b"
+current_owner = "trade_py.cli.data"
+required_child = "cli-http-sdk-compatibility"
+layer = "ods"
+table = "ods_fetch_attempt"
+path_role = "compatibility-cli-fetch"
+artifact_id = "warehouse-parquet"
+classification = "candidate"
+target_context = "datasets"
+reason = "CLI compatibility surface currently writes RSS fetch-attempt evidence."

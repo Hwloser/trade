@@ -4,7 +4,7 @@ policy_version = "v1"
 [[impacts]]
 id = "public_contract"
 applies = true
-reason = "The existing developer-facing trade dev check command gains a stable scoped architecture quality step, failure semantics, and remediation output without changing end-user runtime interfaces."
+reason = "The source-only architecture baseline validator exposes a reviewed developer-tool contract for future child changes, while Task 2.3 separately owns any trade dev check contributor, planner, scope, or report integration and no end-user runtime interface changes."
 
 [[impacts]]
 id = "persistent_write"
@@ -13,8 +13,8 @@ reason = "The checker only parses repository source text and temporary test fixt
 
 [[impacts]]
 id = "schema_migration"
-applies = false
-reason = "The baseline records source-defined table facts and candidate classifications but does not alter schema, execute migrations, or assign final runtime table ownership."
+applies = true
+reason = "The source-only baseline governs legacy schema bootstrap, alteration, and transform provenance plus the compatibility prerequisites that future owner migrations must satisfy, without executing or authorizing a runtime migration in this child."
 
 [[impacts]]
 id = "point_in_time"
@@ -34,24 +34,64 @@ reason = "The checker performs no provider interaction, capture, import, replay,
 [[impacts]]
 id = "runtime_concurrency"
 applies = true
-reason = "The existing quality executor may run deterministic producer-prefilter and target batches alongside other light read-only checks, so this developer-tool path requires bounded concurrency, prerequisite ordering, cancellation, and overload evidence without changing application runtime behavior."
+reason = "The governed change plans Task 2.3 quality-executor integration with bounded batches and prerequisite ordering. The current Task 2.1 implementation is read-only and has no quality-executor lifecycle, while its bounded Git-index subprocess is explicitly described below."
 
 [evidence.contract]
-contract = "The changed public developer contract is the read-only trade dev check plan/report: ScopeSelection additively preserves canonical unfiltered delta/filter metadata plus bounded ProducerDiscoverySelection; an excluded architecture-sensitive or producer-discovery delta emits architecture.partial_scope; and every producer-prefilter, baseline, and target step emits bounded trade.architecture.guard.v1 JSON with status, scope, partial_scope, ordered findings, counts, emitted_count, and omitted_count."
-consumers = "Repository developers and child OpenSpec implementers consume the quality plan/report before adding src/trade modules; existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, and native runtime consumers remain unchanged."
-compatibility = "Existing ScopeSelection execution fields remain filtered for ordinary providers, while ProducerDiscoverySelection and its failure/partial-scope signals are additive. Legacy trade_py imports and runtime behavior remain outside prospective enforcement until each migration child supplies a compatible target module; a noncandidate legacy-only changed scope receives no new architecture step."
-migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts and bounded CLI/HTTP/OpenAPI/SSE source inventory rather than moving source, readers, or interface behavior."
-rollback = "Remove the isolated contributor, validator, baseline, architecture-specific scope metadata, planner issue, and focused tests to return to the prior developer quality plan; no runtime interface, durable state, schema, or data artifact requires restoration."
+contract = "The changed developer-facing contract is the source-only architecture baseline validator: it reports deterministic findings for malformed, stale, unsafe, incomplete, or non-authorizing declarations and returns no partial warehouse-producer inventory on failure. Task 2.3 separately owns any trade dev check plan/report JSON envelope, ScopeSelection metadata, partial-scope policy, or contributor registration."
+consumers = "Repository developers and child OpenSpec implementers run the validator before declaring a legacy source fact or prospective table binding. Existing CLI, HTTP, Web, SDK, notebook, scheduler, event, database, artifact, native runtime, and trade dev check plan/report consumers remain unchanged by Task 2.1."
+compatibility = "Existing runtime and developer command behavior remains unchanged. Candidate/deferred legacy records remain non-authorizing, approved bindings are table-only and source-verified, and no source, reader, interface, or quality-runner integration moves in this child."
+migration = "The first target files arrive only in kernel-and-public-contracts or later child changes, each with its own compatibility evidence. The baseline records candidate/deferred facts and bounded CLI/HTTP/OpenAPI/SSE source inventory rather than moving source, readers, interface behavior, or quality-runner behavior."
+rollback = "Remove the isolated validator, baseline metadata, and focused tests to return to the prior source-audit state; Task 2.1 adds no contributor, planner, quality-runner metadata, runtime interface, durable state, schema, or data artifact requiring restoration."
+
+[evidence.storage]
+authoritative_writer = "This source-only child has no runtime durable writer: existing TradeDB, pipeline databases, catalog SQLite projection, and Parquet owners remain unchanged. A future Context migration becomes authoritative only after its child names one repository writer and passes its own reviewed ownership proof."
+idempotency_key = "The guard has no write retry path. Future table migrations must use a stable migration-generation plus source-record or immutable-artifact identity, while the baseline preserves the reviewed source literal and required child for that obligation."
+concurrency_control = "The guard performs bounded read-only source inspection only. Future schema work must use the owning Context transaction or migration-leader lock and retain compatible-reader fencing; this child neither opens a database nor coordinates runtime writers."
+staging_validation = "Baseline and guard changes validate only repository-confined source evidence in temporary fixtures. A future migration must stage a copy or additive generation, verify rows and immutable artifact references, and reconcile before any reader-visible cutover."
+atomic_visibility = "Runtime state remains unchanged in this child. Later owner migrations must make a schema generation visible only through their local transaction or generation-stamped compatibility pointer after validation; candidate, deferred, and dynamic-limitation records remain non-authorizing."
+crash_windows = "A failed source-only validation leaves no durable state. Future migration children must retain checkpoints and a recoverable prior generation so interruption before or after cutover can be diagnosed and resumed without publishing mixed ownership."
+corrupt_predecessor = "The guard reports malformed, missing, stale, or unsafe evidence as an explicit failure and never repairs it. Future migrations must quarantine or restore a verified predecessor rather than accepting corrupt rows, pointers, manifests, or artifacts."
+partial_results = "A baseline validation returns ordered findings and no partial success. Future multi-table or artifact migration work must keep incomplete reconciliation or backfill explicit and must not publish a partially migrated reader surface."
+reader_consistency = "Existing SQLite, Parquet, catalog, CLI, HTTP, Web, SDK, notebook, scheduler, and event readers remain unchanged. Future Context readers must use compatibility adapters during the migration window; this guard only records source definitions and blocks stale declarations."
+backup_hash_verification = "Runtime data is untouched in this child. Future migration rehearsals must use temporary-root copies and verify row counts, durable artifact digests, and compatibility-reader results against a preserved prior generation."
+small_sample_verification = "Focused temporary repository fixtures mutate provenance roles, dynamic SQL limitations, Capture-risk semantics, adapter-local proof, and evidence budgets. Future data migrations require their own temporary-root small-sample backfill and rollback rehearsal."
+rollback = "Revert the validator, baseline metadata, and focused fixtures as one developer-tooling unit before any owner migration consumes the facts. There is no database, artifact, manifest, pointer, or runtime reader state to restore."
+audit_trail = "The reviewed baseline, OpenSpec evidence, deterministic guard findings, source path, line, literal, role, required child, and git history form the audit trail. It records no provider payload, credential, runtime row, or durable migration receipt."
+
+[evidence.migration]
+compatibility_modes = ["backward", "forward"]
+dual_read_write = true
+
+[evidence.migration.versioning]
+strategy = "additive_version"
+old_version_preserved = true
+
+[evidence.migration.backfill]
+mode = "idempotent_replay"
+destructive = false
+checkpointed = true
+
+[evidence.migration.cutover]
+strategy = "dual_read_compare"
+readiness_gate = true
+
+[evidence.migration.rollback]
+supported = true
+restore_source = "previous_generation"
+
+[evidence.migration.legacy_retirement]
+after_compatibility_window = true
+minimum_window_days = 30
 
 [evidence.concurrency]
-ownership = "ScopeSelection and the planner own canonical delta/filter metadata, bounded ProducerDiscoverySelection, and partial-scope refusal; the architecture contributor constructs producer-prefilter batches, one prerequisite baseline step, and target batches; the existing quality executor owns scheduling and process lifecycle; the guard owns no mutable application state."
-bound = "The repository quality configuration caps light-step execution at four workers and argv at 65,536 bytes. Streamed initial producer discovery stops at 1,024 raw records/128 KiB raw path bytes, 512 included paths/64 KiB path bytes, 1 MiB per source, and 32 MiB aggregate source; descriptor reads refuse unsafe or unstable sources. Delta producer-prefilter batches use batched_paths within argv limits. Target batches remain capped at 128 files and 8 MiB aggregate source, with a 512-file/32-MiB complete target scope. Every envelope emits at most 64 findings, reserves 1 KiB for metadata/counts, bounds display fields before encoding, uses count-only truncation if needed, sets a 30 second timeout, and never exceeds a 32 KiB structured-output limit."
-ordering = "Producer-prefilter admission precedes one baseline step, which is a prerequisite for every sorted target batch. Planner partial-scope, producer-budget, producer-unsafe-source, or scope-budget failures are emitted before target acceptance. Paths, batch IDs, diagnostic records, and final report records sort deterministically; batches do not share mutable inputs or outputs."
-atomicity = "Each read-only subprocess parses an immutable selected source set and exits with one complete structured diagnostic envelope. The check produces no database, artifact, cache, or application-state transition."
-timeout_cancellation = "Each architecture CheckStep sets a 30 second timeout; the existing executor terminates a timed-out subprocess process group. No retry reuses partial diagnostics, and a developer reruns after correcting the source or baseline."
-backpressure = "Streamed producer admission stops before an unbounded path list; batched_paths enforces argv limits for producer-prefilter and target work; per-file, per-batch, total-scope, and producer path/source budgets stop oversized work before parsing; and the versioned finding/output envelope caps prevent unbounded process memory or report growth. Excess or unsafe scope is reported as an explicit quality failure, never silently dropped."
-partial_failure = "A failed baseline blocks every dependent target batch. A failed or timed-out target batch remains a deterministic quality failure while independent ordinary quality checks retain their own result; no partial architecture result is presented as acceptance."
-capacity_validation = "Focused scope/planner/contributor tests cover streamed producer enumeration and early raw/included path refusal, normal regular source reads, symlink/non-regular/path-escape/source-replacement refusal, producer direct/re-export/alias resolution, long argv path and over-cap delta transport, one prerequisite baseline step, multiple producer and target batches, many short paths with near-cap source files, four-worker scheduling eligibility, oversized source, per-batch and total-scope budget refusal, serialized worst-case finding truncation, invalid-envelope rejection, timeout/output configuration, and modified/rename/delete/untracked producer partial-scope refusal."
+ownership = "Task 2.1 owns deterministic, in-process source-only baseline validation and bounded producer discovery. Its internal Git-index subprocess has bounded timeout and cleanup, but Task 2.1 has no scheduler, worker, queue, quality-executor, or mutable runtime state. Task 2.3 separately owns any ScopeSelection, planner, contributor, executor, or partial-scope behavior."
+bound = "The validator bounds descriptor-confined evidence, prospective approved-binding proofs, and producer discovery: 512 evidence sources, 8 MiB aggregate evidence, 1 MiB per evidence source, 256 source literals/64 KiB literal bytes per source, 256 callable proof operations/64 KiB retained proof SQL per callable, 250,000 AST nodes/512 AST depth per proof callable, 1,024 raw producer records/128 KiB raw path bytes, 512 included paths/64 KiB included path bytes, 1 MiB per producer source, 32 MiB aggregate logical producer source, and 4 KiB retained Git stderr plus one overflow-probe byte. Reopened same-identity payload verification reads each admitted producer source once more, bounding producer descriptor-read I/O at 64 MiB per invocation, excluding separately bounded baseline/evidence reads; the overflow probe terminates the process group instead of consuming output until timeout. Aggregate proof summary/operation/retained-SQL limits and callable indexing are required before more than eight distinct approved proof callables or a second resource-family authorization."
+ordering = "Evidence is read through no-follow descriptors, reread once through a reopened same-identity descriptor for bounded byte equality, transformed once per source, and validated in deterministic baseline order before producer discovery. A source failure returns ordered findings and no producer inventory; no concurrent batch ordering is introduced."
+atomicity = "One validation invocation reads immutable repository source text and returns one deterministic report. It creates no database, artifact, cache, queue, durable state, or application-runtime process transition; its bounded internal Git-index subprocess exists only for discovery and is cleaned up before return."
+timeout_cancellation = "Task 2.1 bounds and cleans up only its internal Git-index subprocess; it has no retry, worker, or quality-executor lifecycle. Descriptor, source-byte, token, literal, proof-AST, and result ceilings fail closed; Task 2.3 must add explicit executor timeout/cancellation semantics before it invokes the validator through the quality executor."
+backpressure = "Source and result ceilings stop oversized repository input before unbounded parsing or inventory growth. There is no queue or worker backpressure in Task 2.1."
+partial_failure = "Malformed, unsafe, missing, stale, or over-budget evidence returns deterministic findings and an empty producer inventory. No partial baseline or producer result is accepted."
+capacity_validation = "Focused tests cover descriptor safety including replacement and same-inode/size/mtime-restored content swaps, aggregate and per-source evidence budgets, literal count/byte refusal before matcher construction, branch/loop/exception/comprehension and nested-with proof refusal, first-positional SQL-only admission, mutable reader/compatibility and transaction-read rejection, compound writer/transaction SQL rejection, token-aware quoted-identifier pseudo-read rejection, transaction root/local-alias/import/assignment-target and dynamic namespace invalidation, module-body whitelist refusal for imports/wildcards/lambdas/attribute stores/protocol control flow/module-namespace/dynamic callable rebinds including PEP 695 type aliases and definition-time class/default/decorator/base/metaclass expressions, closed v1 baseline schema and non-table authorization-field rejection, callable operation/SQL/AST proof budgets, within-budget AST-depth acceptance, cached recursion failure, one transformed source scan, matcher parity under overlapping prefixes, Python token refusal before AST construction, producer path/source/result budgets, continuous stderr overflow with prompt process-group cleanup, early Git-index generator cleanup without a background thread exception, Git-index non-regular rejection, cold import, and bounded finding truncation. Task 2.3 owns future scope/planner/contributor/executor capacity tests."
 
 [[obligations]]
 id = "architecture.static-guard"
