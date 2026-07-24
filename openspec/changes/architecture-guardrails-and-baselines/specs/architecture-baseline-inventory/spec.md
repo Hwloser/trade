@@ -73,21 +73,37 @@ lexical scope; nested function, async-function, lambda, and class bodies SHALL
 not satisfy a proof. The callable SHALL be exactly one undecorated top-level
 function or async function and SHALL have no other executable module binding,
 including a duplicate definition, assignment, deletion, import, or nested
-control-flow rebind. Writer evidence SHALL occur as a static table-specific
-write statement passed to a persistence call; reader and compatibility evidence
-SHALL occur as static table-specific read statements passed to a persistence
-call; transaction evidence SHALL occur inside a transaction context containing
-a static table-specific persistence operation on that transaction receiver or
-its explicit `as` alias. Every accepted SQL table identifier SHALL match at a
-supported statement position with identifier boundaries, not as a substring.
-Proof collection SHALL retain only direct calls in the callable's straight-line
-statement prefix and directly nested transaction `with` blocks. It SHALL stop
-before a conditional, loop, exception handler, assertion, match, or deferred
-comprehension rather than inferring a control-flow path through that construct.
-It SHALL fail closed before retaining more than the governed callable proof
-operation, SQL-byte, AST-node, or AST-depth budgets.
+control-flow rebind, wildcard import, module-namespace mutation, or dynamic
+execution. Writer evidence SHALL occur as a static table-specific write
+statement passed as the first positional argument to a persistence call; reader
+and compatibility evidence SHALL occur as one static read-only `SELECT`
+statement in that same position. A string only in a persistence parameter or
+keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
+transaction context containing a static table-specific persistence operation on
+that transaction receiver or its explicit `as` alias, and no direct-scope
+binding mutation may alter that receiver root or alias before the operation.
+The declared proof literal SHALL exactly equal the static first SQL argument
+captured from the named callable, rather than merely occurring elsewhere in the
+adapter; an operation mismatch SHALL identify the adapter callable line.
+Every accepted SQL table identifier SHALL match at a supported statement
+position with identifier boundaries, not as a substring. Proof collection SHALL
+retain only direct calls in the callable's straight-line statement prefix and
+directly nested transaction `with` blocks. It SHALL stop before a conditional,
+loop, exception handler, assertion, match, or deferred comprehension rather
+than inferring a control-flow path through that construct. It SHALL fail closed
+before retaining more than the governed callable proof operation, SQL-byte,
+AST-node, or AST-depth budgets.
 `candidate` and `deferred` declarations SHALL reject every persistence-binding
 field.
+
+Task 2.1 SHALL NOT authorize a non-table artifact, provider, stream, object
+store, vector index, or other heterogeneous resource. Before an owning Context
+authorizes one, its separately reviewed child SHALL define an
+`approved_capability` contract with a stable resource identity and namespace,
+owner Context, adapter scope, operation set, source-local callable proof,
+replay/compatibility evidence, and capability-specific static matcher. It SHALL
+reject an unrecognized resource kind or cross-provider adapter scope and SHALL
+NOT reuse table `approved_binding`.
 
 The artifact, pointer, interface, and Capture-risk records are non-authorizing
 lexical migration inputs. Their source/literal bindings and pinned descriptive
@@ -130,9 +146,22 @@ runtime-behavior claim.
   callable, a proof in a branch, loop, exception handler, assertion, match, or
   deferred comprehension, a proof after an unconditional terminal statement, a
   proof above the governed operation, SQL-byte, AST-node, or AST-depth budget,
-  or a transaction context with an unrelated receiver
+  SQL only in a persistence parameter or keyword, mutable or multi-statement
+  reader/compatibility SQL, a wildcard/dynamic proof-callable rebind, a rebound
+  transaction receiver or alias, a literal that is present only elsewhere in
+  the adapter or differs from the named operation's first SQL argument, or a
+  transaction context with an unrelated receiver
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
+
+#### Scenario: A non-SQL resource asks to reuse a table approval
+
+- **WHEN** a Capture or Dataset child attempts to classify an artifact,
+  provider, stream, object-store, vector, or unstructured resource as a table
+  `approved_binding`
+- **THEN** baseline validation rejects it until the owning child adds its
+  separately reviewed `approved_capability` contract and focused
+  resource-specific authorization tests
 
 #### Scenario: A dynamic SQL limitation is absent, misbound, or unreviewed
 

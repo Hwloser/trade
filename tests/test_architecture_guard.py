@@ -2252,9 +2252,9 @@ def _approved_binding_declaration() -> str:
         'reason = "Fixture approved binding."\n'
         'required_child = "dataset-product-boundary"\n'
         'adapter_scope = "datasets.adapters.persistence.warehouse"\n'
-        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }\n'
+        'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved" }\n'
         'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved" }\n'
-        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }\n'
+        'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved" }\n'
         'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved_compat" }\n'
         "provenance = [\n"
         '  { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
@@ -2294,7 +2294,7 @@ def test_approved_binding_requires_structural_adapter_proofs(tmp_path: Path) -> 
     _write_baseline(
         repo,
         approved_baseline.replace(
-            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }',
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved" }',
             'writer_evidence = "arbitrary prose"',
             1,
         ),
@@ -2327,7 +2327,7 @@ def test_approved_binding_requires_structural_adapter_proofs(tmp_path: Path) -> 
     (
         (
             "writer_evidence",
-            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO unrelated_records", callable = "persist_unrelated" }',
+            'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO unrelated_records (id) VALUES (?)", callable = "persist_unrelated" }',
         ),
         (
             "reader_evidence",
@@ -2335,7 +2335,7 @@ def test_approved_binding_requires_structural_adapter_proofs(tmp_path: Path) -> 
         ),
         (
             "transaction_evidence",
-            'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO unrelated_records", callable = "persist_unrelated" }',
+            'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO unrelated_records (id) VALUES (?)", callable = "persist_unrelated" }',
         ),
         (
             "compatibility_evidence",
@@ -2359,9 +2359,9 @@ def test_approved_binding_rejects_same_adapter_proof_for_different_table(
     assert validate_architecture_baseline(repo).ok
 
     original = {
-        "writer_evidence": 'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }',
+        "writer_evidence": 'writer_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved" }',
         "reader_evidence": 'reader_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved" }',
-        "transaction_evidence": 'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records", callable = "persist_approved" }',
+        "transaction_evidence": 'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved" }',
         "compatibility_evidence": 'compatibility_evidence = { source = "src/trade/datasets/adapters/persistence/warehouse.py", literal = "SELECT id FROM approved_records", callable = "load_approved_compat" }',
     }[field]
     _write_baseline(repo, approved_baseline.replace(original, replacement, 1))
@@ -2423,6 +2423,140 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
+    ("field", "old", "new"),
+    (
+        (
+            "writer_evidence",
+            'session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'session.execute("SELECT ?", "INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            "reader_evidence",
+            'session.execute("SELECT id FROM approved_records")',
+            'session.execute("SELECT ?", "SELECT id FROM approved_records")',
+        ),
+        (
+            "transaction_evidence",
+            'session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'session.execute("SELECT ?", "INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            "compatibility_evidence",
+            'session.query("SELECT id FROM approved_records")',
+            'session.query("SELECT ?", "SELECT id FROM approved_records")',
+        ),
+    ),
+)
+def test_approved_binding_rejects_sql_only_in_persistence_parameters(
+    tmp_path: Path,
+    field: str,
+    old: str,
+    new: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source().replace(old, new, 1), encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), field
+
+
+def test_approved_binding_requires_exact_callable_sql_literal(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source()
+        + '\n\nUNRELATED_SQL = "INSERT INTO approved_records (id) VALUES (?)"\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(
+        repo,
+        baseline
+        + "\n"
+        + _approved_binding_declaration().replace(
+            'literal = "INSERT INTO approved_records (id) VALUES (?)", callable = "persist_approved"',
+            'literal = "INSERT INTO approved_records", callable = "persist_approved"',
+            1,
+        ),
+    )
+
+    report = validate_architecture_baseline(repo)
+
+    finding = next(
+        item
+        for item in report.findings
+        if item.rule_id == "architecture.baseline_invalid_classification"
+    )
+    assert finding.path == "src/trade/datasets/adapters/persistence/warehouse.py"
+    assert finding.line == 4
+    assert "writer_evidence callable persist_approved" in finding.message
+    assert "first static SQL argument" in finding.remediation
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    (
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction():\n        session = unrelated\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as tx:\n        tx = unrelated\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+    ),
+)
+def test_approved_binding_rejects_rebound_transaction_receivers(
+    tmp_path: Path,
+    old: str,
+    new: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source().replace(old, new, 1), encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("field", "old", "new"),
+    (
+        (
+            "reader_evidence",
+            'return session.execute("SELECT id FROM approved_records").fetchall()',
+            'return session.execute("DELETE FROM approved_records WHERE id IN (SELECT id FROM approved_records)").fetchall()',
+        ),
+        (
+            "compatibility_evidence",
+            'return session.query("SELECT id FROM approved_records")',
+            'return session.query("DELETE FROM approved_records; SELECT id FROM approved_records")',
+        ),
+    ),
+)
+def test_approved_binding_rejects_mutating_reader_or_compatibility_proofs(
+    tmp_path: Path,
+    field: str,
+    old: str,
+    new: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source().replace(old, new, 1), encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), field
+
+
+@pytest.mark.parametrize(
     "field",
     ("writer_evidence", "reader_evidence", "transaction_evidence", "compatibility_evidence"),
 )
@@ -2465,7 +2599,7 @@ def test_approved_binding_rejects_unreachable_direct_scope_proofs(
     original = {
         "writer_evidence": (
             'writer_evidence = { source = "src/trade/datasets/adapters/persistence/'
-            'warehouse.py", literal = "INSERT INTO approved_records", callable = '
+            'warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = '
             '"persist_approved" }'
         ),
         "reader_evidence": (
@@ -2475,7 +2609,7 @@ def test_approved_binding_rejects_unreachable_direct_scope_proofs(
         ),
         "transaction_evidence": (
             'transaction_evidence = { source = "src/trade/datasets/adapters/persistence/'
-            'warehouse.py", literal = "INSERT INTO approved_records", callable = '
+            'warehouse.py", literal = "INSERT INTO approved_records (id) VALUES (?)", callable = '
             '"persist_approved" }'
         ),
         "compatibility_evidence": (
@@ -2518,6 +2652,22 @@ def test_approved_binding_rejects_unreachable_direct_scope_proofs(
         (
             "\n\nif enabled:\n    persist_approved = lambda session: None\n",
             "nested control-flow assignment",
+        ),
+        (
+            "\n\nfrom rebound import *\n",
+            "wildcard import",
+        ),
+        (
+            '\n\nglobals()["persist_approved"] = replacement\n',
+            "module namespace assignment",
+        ),
+        (
+            '\n\nexec("persist_approved = replacement")\n',
+            "dynamic execution",
+        ),
+        (
+            '\n\nsetattr(module, "persist_approved", replacement)\n',
+            "dynamic attribute assignment",
         ),
     ),
 )
@@ -2686,7 +2836,7 @@ def test_approved_binding_rejects_table_suffix_and_comment_only_proofs(
     )
     _write_baseline(repo, baseline + "\n" + approved)
 
-    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
     source.write_text(
         _approved_adapter_source().replace(

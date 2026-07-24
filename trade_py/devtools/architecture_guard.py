@@ -1316,12 +1316,14 @@ class _Baseline:
 @dataclass(frozen=True)
 class _PersistenceOperation:
     sql: str
+    line: int
     receiver: tuple[str, ...]
     transaction_receivers: frozenset[tuple[str, ...]]
 
 
 @dataclass(frozen=True)
 class _CallableProofSummary:
+    callable_line: int
     operations: tuple[_PersistenceOperation, ...]
 
 
@@ -2922,7 +2924,6 @@ def _validate_classification(
                 f"{category} approved binding must declare {field} as a source/literal record",
                 "Use a repository source and executable literal for every approved-binding proof.",
             )
-        _validate_source_literal(root, proof, evidence)
     _validate_approved_table_binding(
         fact,
         adapter_scope=adapter_scope,
@@ -2994,15 +2995,17 @@ def _validate_approved_table_binding(
                 f"{callable_name!r} outside its adapter module",
                 "Bind each proof to a declared function or async function in the target adapter.",
             )
-        if not _summary_has_persistence_operation(summary, literal, table_name, field):
+        operation = _summary_persistence_operation(summary, literal, table_name, field)
+        if operation is None:
             raise _GuardError(
                 _BASELINE_CLASSIFICATION,
-                BASELINE_FILENAME,
+                adapter_source,
                 f"approved table binding for {table_name} {field} callable {callable_name} "
-                "has no matching direct-scope persistence operation",
-                "Use a static table-specific persistence call in the named adapter "
-                "callable; transaction evidence must use its transaction receiver or "
-                "explicit transaction alias.",
+                "has no exact direct-scope static SQL operation",
+                "Make the declared literal exactly match the first static SQL argument in the "
+                f"{field} callable {callable_name}; transaction evidence must use its "
+                "unmodified transaction receiver or explicit alias.",
+                line=summary.callable_line,
             )
 
 
@@ -3039,6 +3042,8 @@ def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
             continue
         if isinstance(node, ast.Lambda):
             continue
+        if _module_call_may_bind_name(node, name):
+            return True
         if isinstance(node, ast.Assign) and any(
             _assignment_target_binds_name(target, name) for target in node.targets
         ):
@@ -3076,11 +3081,57 @@ def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
         ):
             return True
         if isinstance(node, ast.ImportFrom) and any(
-            alias.name != "*" and (alias.asname or alias.name) == name for alias in node.names
+            alias.name == "*" or (alias.asname or alias.name) == name for alias in node.names
         ):
             return True
         pending.extend(ast.iter_child_nodes(node))
     return False
+
+
+def _module_call_may_bind_name(node: ast.AST, name: str) -> bool:
+    """Fail closed when module-level dynamic code can replace a proof callable."""
+
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name) and node.func.id == "exec":
+        return True
+    if (
+        isinstance(node.func, ast.Name)
+        and node.func.id == "setattr"
+        and len(node.args) >= 2
+        and _string_expression_may_equal_name(node.args[1], name)
+    ):
+        return True
+    if not isinstance(node.func, ast.Attribute) or not _is_module_namespace(node.func.value):
+        return False
+    if node.func.attr == "update":
+        return True
+    return (
+        node.func.attr == "__setitem__"
+        and bool(node.args)
+        and _string_expression_may_equal_name(
+            node.args[0],
+            name,
+        )
+    )
+
+
+def _is_module_namespace(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id
+        in {
+            "globals",
+            "vars",
+        }
+    )
+
+
+def _string_expression_may_equal_name(node: ast.AST, name: str) -> bool:
+    return (
+        not isinstance(node, ast.Constant) or not isinstance(node.value, str) or node.value == name
+    )
 
 
 def _assignment_target_binds_name(target: ast.expr, name: str) -> bool:
@@ -3089,6 +3140,12 @@ def _assignment_target_binds_name(target: ast.expr, name: str) -> bool:
         candidate = pending.pop()
         if isinstance(candidate, ast.Name) and candidate.id == name:
             return True
+        if isinstance(candidate, ast.Attribute) and candidate.attr == name:
+            return True
+        if isinstance(candidate, ast.Subscript) and _is_module_namespace(candidate.value):
+            if _string_expression_may_equal_name(candidate.slice, name):
+                return True
+            continue
         if isinstance(candidate, ast.Starred):
             pending.append(candidate.value)
         elif isinstance(candidate, (ast.Tuple, ast.List)):
@@ -3107,7 +3164,7 @@ def _summarize_callable_proof(
     _validate_callable_proof_shape(callable_node, source=source, limits=limits)
     visitor = _CallableProofVisitor(source=source, limits=limits)
     visitor.visit_statements(callable_node.body)
-    return _CallableProofSummary(tuple(visitor.operations))
+    return _CallableProofSummary(callable_node.lineno, tuple(visitor.operations))
 
 
 def _validate_callable_proof_shape(
@@ -3149,24 +3206,50 @@ class _CallableProofVisitor:
                 continue
             if isinstance(statement, ast.Assign):
                 self._visit_direct_expression(statement.value)
-                continue
-            if isinstance(statement, ast.AnnAssign) and statement.value is not None:
+                self._invalidate_transaction_receivers(
+                    _assignment_target_root_names(statement.targets)
+                )
+            elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
                 self._visit_direct_expression(statement.value)
-                continue
-            if isinstance(statement, ast.AugAssign):
+                self._invalidate_transaction_receivers(
+                    _assignment_target_root_names((statement.target,))
+                )
+            elif isinstance(statement, ast.AugAssign):
                 self._visit_direct_expression(statement.value)
-                continue
-            if isinstance(statement, ast.Return):
+                self._invalidate_transaction_receivers(
+                    _assignment_target_root_names((statement.target,))
+                )
+            elif isinstance(statement, ast.Delete):
+                self._invalidate_transaction_receivers(
+                    _assignment_target_root_names(statement.targets)
+                )
+            elif isinstance(statement, ast.Import):
+                self._invalidate_transaction_receivers(
+                    frozenset(
+                        alias.asname or alias.name.split(".", 1)[0] for alias in statement.names
+                    )
+                )
+            elif isinstance(statement, ast.ImportFrom):
+                if any(alias.name == "*" for alias in statement.names):
+                    self._transaction_receivers[-1] = frozenset()
+                else:
+                    self._invalidate_transaction_receivers(
+                        frozenset(alias.asname or alias.name for alias in statement.names)
+                    )
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                self._invalidate_transaction_receivers(frozenset((statement.name,)))
+                return
+            elif isinstance(statement, ast.Return):
                 if statement.value is not None:
                     self._visit_direct_expression(statement.value)
                 return
-            if isinstance(statement, ast.Raise):
+            elif isinstance(statement, ast.Raise):
                 if statement.exc is not None:
                     self._visit_direct_expression(statement.exc)
                 if statement.cause is not None:
                     self._visit_direct_expression(statement.cause)
                 return
-            if (
+            elif (
                 isinstance(
                     statement,
                     (
@@ -3183,9 +3266,16 @@ class _CallableProofVisitor:
             ):
                 return
 
+    def _invalidate_transaction_receivers(self, roots: frozenset[str]) -> None:
+        if roots:
+            self._transaction_receivers[-1] = frozenset(
+                receiver for receiver in self._transaction_receivers[-1] if receiver[0] not in roots
+            )
+
     def _visit_direct_expression(self, expression: ast.expr) -> None:
         """Visit immediate call chains without following deferred or conditional AST nodes."""
 
+        self._invalidate_transaction_receivers(_expression_bound_root_names(expression))
         pending: list[ast.expr] = [expression]
         while pending:
             node = pending.pop()
@@ -3210,6 +3300,11 @@ class _CallableProofVisitor:
     ) -> None:
         transaction_receivers = set(self._transaction_receivers[-1])
         for item in items:
+            transaction_receivers = {
+                receiver
+                for receiver in transaction_receivers
+                if receiver[0] not in _assignment_target_root_names((item.optional_vars,))
+            }
             transaction_receivers.update(_transaction_receivers(item))
         self._transaction_receivers.append(frozenset(transaction_receivers))
         try:
@@ -3221,47 +3316,48 @@ class _CallableProofVisitor:
         if _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES:
             return
         receiver = _persistence_receiver(node)
-        if receiver is None:
+        if receiver is None or not node.args:
             return
-        for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                encoded_size = len(argument.value.encode("utf-8"))
-                if (
-                    len(self.operations) >= self._limits.max_callable_proof_operations
-                    or self._operation_sql_bytes + encoded_size
-                    > self._limits.max_callable_proof_sql_bytes
-                ):
-                    raise _baseline_evidence_budget_error(
-                        self._source,
-                        "approved-binding callable proof exceeds the configured operation "
-                        "or SQL-byte budget",
-                        remediation=(
-                            "Split the adapter proof or make a reviewed approved-binding "
-                            "proof-budget increase."
-                        ),
-                    )
-                self.operations.append(
-                    _PersistenceOperation(
-                        sql=argument.value,
-                        receiver=receiver,
-                        transaction_receivers=self._transaction_receivers[-1],
-                    )
-                )
-                self._operation_sql_bytes += encoded_size
+        statement = node.args[0]
+        if not isinstance(statement, ast.Constant) or not isinstance(statement.value, str):
+            return
+        encoded_size = len(statement.value.encode("utf-8"))
+        if (
+            len(self.operations) >= self._limits.max_callable_proof_operations
+            or self._operation_sql_bytes + encoded_size > self._limits.max_callable_proof_sql_bytes
+        ):
+            raise _baseline_evidence_budget_error(
+                self._source,
+                "approved-binding callable proof exceeds the configured operation "
+                "or SQL-byte budget",
+                remediation=(
+                    "Split the adapter proof or make a reviewed approved-binding "
+                    "proof-budget increase."
+                ),
+            )
+        self.operations.append(
+            _PersistenceOperation(
+                sql=statement.value,
+                line=node.lineno,
+                receiver=receiver,
+                transaction_receivers=self._transaction_receivers[-1],
+            )
+        )
+        self._operation_sql_bytes += encoded_size
 
 
-def _summary_has_persistence_operation(
+def _summary_persistence_operation(
     summary: _CallableProofSummary,
     literal: str,
     table_name: str,
     field: str,
-) -> bool:
+) -> _PersistenceOperation | None:
     for operation in summary.operations:
-        if literal not in operation.sql or not _sql_targets_table(operation.sql, table_name, field):
+        if literal != operation.sql or not _sql_targets_table(operation.sql, table_name, field):
             continue
         if field != "transaction_evidence" or operation.receiver in operation.transaction_receivers:
-            return True
-    return False
+            return operation
+    return None
 
 
 def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
@@ -3277,6 +3373,39 @@ def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
         return frozenset()
     alias = _expression_identity(item.optional_vars)
     return frozenset((receiver, alias)) if alias is not None else frozenset((receiver,))
+
+
+def _assignment_target_root_names(targets: Sequence[ast.expr | None]) -> frozenset[str]:
+    roots: set[str] = set()
+    pending = [target for target in targets if target is not None]
+    while pending:
+        target = pending.pop()
+        if isinstance(target, ast.Name):
+            roots.add(target.id)
+        elif isinstance(target, (ast.Attribute, ast.Subscript)):
+            identity = _expression_identity(target.value)
+            if identity is not None:
+                roots.add(identity[0])
+        elif isinstance(target, ast.Starred):
+            pending.append(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            pending.extend(target.elts)
+    return frozenset(roots)
+
+
+def _expression_bound_root_names(expression: ast.expr) -> frozenset[str]:
+    roots: set[str] = set()
+    pending: list[ast.AST] = [expression]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.NamedExpr):
+            roots.update(_assignment_target_root_names((node.target,)))
+        if isinstance(
+            node, (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return frozenset(roots)
 
 
 def _persistence_receiver(node: ast.Call) -> tuple[str, ...] | None:
@@ -3299,7 +3428,7 @@ def _sql_targets_table(sql: str, table_name: str, field: str) -> bool:
 
     statement = _sql_without_values_and_comments(sql)
     if field in {"reader_evidence", "compatibility_evidence"}:
-        return any(
+        return _is_single_read_statement(statement) and any(
             _sql_identifier_matches(match.group("table"), table_name)
             for match in _SQL_SELECT_TABLE.finditer(statement)
         )
@@ -3325,6 +3454,17 @@ def _sql_targets_table(sql: str, table_name: str, field: str) -> bool:
             for match in _SQL_SELECT_TABLE.finditer(statement)
         )
     return False
+
+
+def _is_single_read_statement(statement: str) -> bool:
+    stripped = statement.strip()
+    if stripped.endswith(";"):
+        stripped = stripped[:-1].rstrip()
+    return (
+        stripped.upper().startswith("SELECT")
+        and ";" not in stripped
+        and not any(pattern.search(stripped) for pattern in _SQL_TABLE_OPERATION_PATTERNS)
+    )
 
 
 def _sql_identifier_matches(identifier: str, table_name: str) -> bool:
