@@ -31,18 +31,21 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - prioritizes changed lines, then changed definitions, then configured core paths;
   - enforces mutant, candidate-scan, worker, per-mutant, output, and wall-clock
     budgets across bootstrap, dependency preparation, execution, and publication;
-  - lets the controller process directly own and terminate every mutant test process
-    group and descendant on timeout, worker failure, signal, or global cancellation;
-  - denies network, provider credentials, process launch, and real-data paths in
-    mutation workers and records guard violations outside application exception
-    handling;
+  - starts one standard-library supervisor before every `uv` child, makes it the
+    invocation subreaper/watchdog, and lets it terminate and reap the complete
+    descendant tree even when the controller is killed;
+  - denies network, process launch, and real-data paths with Linux Landlock/seccomp
+    containment, and requires controller-owned syscall audit plus authenticated guard
+    lifecycle evidence before a mutant can be killed or survived;
   - distinguishes killed, survived, timeout, mapping/line no-coverage,
     baseline-unavailable, cancellation, invalid, and infrastructure-error outcomes;
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
-    generation, with an invocation-bound receipt and independent typed fallback if
+    generation with closed status/count algebra, a manifest hash anchored by the
+    invocation receipt/current pointer, and an independent typed fallback if
     publication itself fails;
-  - commits cache outcomes only after a complete run marker and derives the bounded
-    trend projection from validated immutable generations.
+  - commits cache outcomes only after report publication and derives bounded trend
+    views from a compact immutable trend-source ledger rather than short-lived report
+    retention.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
@@ -84,9 +87,9 @@ In scope:
 - Python core business unit-test mutation only.
 - Deterministic changed/core/full planning and execution.
 - Bounded concurrency, native thread pools, source/AST/dependency/private-tree/report
-  limits, process-tree termination, cancellation algebra, partial reporting,
-  committed cache/trend artifacts, bounded report retention, and exact mutant
-  exceptions.
+  limits, supervisor-owned process-tree termination, kernel I/O containment,
+  cancellation algebra, partial reporting, committed cache/trend artifacts, bounded
+  report retention, and exact mutant exceptions.
 - GitHub Actions because the authoritative remote is GitHub.
 
 Out of scope:
@@ -102,12 +105,13 @@ Out of scope:
 ## Risk and Rollback
 
 The main risks are runaway test processes, excessive enumeration, incorrect
-test-to-source mapping, false kills from infrastructure failures, and score gaming
-through broad exclusions. Invocation-wide deadlines, parent-owned process groups,
-source/AST/dependency/private-tree limits, a serialized spawn/cancel registry,
-bytecode-clean private source trees, mandatory line coverage, closed
-operator/definition maps, bounded generation-atomic output plus safe fallback, exact
-fresh/cache/plan/cancellation status algebra, authenticated isolation evidence,
+test-to-source mapping, native I/O escaping Python guards, false kills from
+infrastructure failures, and score gaming through broad exclusions. An
+invocation-wide supervisor/deadline, subreaper-owned process containment,
+Landlock/seccomp plus syscall audit, source/AST/dependency/private-tree limits,
+bytecode-clean private source trees, target-filtered line coverage, closed
+operator/definition maps, generation-atomic output plus safe fallback, exact
+fresh/cache/plan/cancellation status algebra, authenticated guard lifecycle evidence,
 committed cache markers, invocation receipts, corrupt-pointer recovery, and
 mutant-ID exception validation address those risks.
 
