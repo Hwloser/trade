@@ -1579,6 +1579,16 @@ class _ScopedBindings(Mapping[str, str]):
     def has_tracked_binding(self, name: str) -> bool:
         return self.get(name) is not None or self.is_layout(name) or self.is_rebound_alias(name)
 
+    def tracked_names(self) -> set[str]:
+        names: set[str] = set()
+        current: _ScopedBindings | None = self
+        while current is not None:
+            names.update(current._aliases)
+            names.update(current._layouts)
+            names.update(current._rebound_aliases)
+            current = current._parent
+        return names
+
 
 def _discover_in_source(
     path: str,
@@ -1618,8 +1628,14 @@ def _discover_in_source(
     finding_budget_exceeded = False
 
     class _ProducerVisitor(ast.NodeVisitor):
-        def __init__(self, bindings: _ScopedBindings | None = None) -> None:
-            self.bindings = bindings or _ScopedBindings()
+        def __init__(
+            self,
+            bindings: _ScopedBindings | None = None,
+            *,
+            lexical_bindings: _ScopedBindings | None = None,
+        ) -> None:
+            self.bindings = _ScopedBindings() if bindings is None else bindings
+            self.lexical_bindings = self.bindings if lexical_bindings is None else lexical_bindings
 
         def _add_finding(self, finding: ArchitectureFinding) -> bool:
             nonlocal finding_budget_exceeded
@@ -1676,13 +1692,28 @@ def _discover_in_source(
                 for name in names:
                     self.bindings.bind_layout(name, True)
 
-        def _child(self) -> _ProducerVisitor:
-            return _ProducerVisitor(self.bindings.child())
+        def _function_child(self) -> _ProducerVisitor:
+            return _ProducerVisitor(self.lexical_bindings.child())
+
+        def _invalidate_star_import(self) -> None:
+            names = {
+                name
+                for name in self.bindings.tracked_names()
+                if (
+                    self.bindings.get(name) in CANONICAL_WRITERS
+                    or (
+                        self.bindings.get(name) is not None
+                        and _tracks_warehouse_namespace(self.bindings[name])
+                    )
+                    or self.bindings.is_layout(name)
+                )
+            }
+            self._invalidate_names(names)
 
         def _visit_function(
             self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
         ) -> None:
-            child = self._child()
+            child = self._function_child()
             if not isinstance(node, ast.Lambda):
                 child._invalidate_names(_function_local_bindings(node))
             arguments = (
@@ -1702,6 +1733,26 @@ def _discover_in_source(
                 return
             for statement in node.body:
                 child.visit(statement)
+
+        def _visit_comprehension(
+            self,
+            generators: list[ast.comprehension],
+            expressions: tuple[ast.AST, ...],
+        ) -> None:
+            if not generators:
+                for expression in expressions:
+                    self.visit(expression)
+                return
+            self.visit(generators[0].iter)
+            child = self._function_child()
+            for index, generator in enumerate(generators):
+                if index:
+                    child.visit(generator.iter)
+                child._invalidate_names(_assignment_names((generator.target,)))
+                for condition in generator.ifs:
+                    child.visit(condition)
+            for expression in expressions:
+                child.visit(expression)
 
         def visit_Import(self, node: ast.Import) -> None:
             for alias in node.names:
@@ -1726,6 +1777,19 @@ def _discover_in_source(
                 )
                 return
             for alias in node.names:
+                if alias.name == "*":
+                    self._invalidate_star_import()
+                    if module in {CANONICAL_WAREHOUSE_MODULE, CANONICAL_WAREHOUSE_PACKAGE}:
+                        self._add_finding(
+                            _producer_finding(
+                                PRODUCER_UNRESOLVED_IMPORT,
+                                path,
+                                node.lineno,
+                                "star import from the warehouse boundary cannot be resolved",
+                                "Import write_table or upsert_table explicitly from the canonical warehouse API.",
+                            )
+                        )
+                    continue
                 local = alias.asname or alias.name
                 if module in {CANONICAL_WAREHOUSE_MODULE, CANONICAL_WAREHOUSE_PACKAGE}:
                     if alias.name in {"write_table", "upsert_table"}:
@@ -1739,16 +1803,6 @@ def _discover_in_source(
                     elif alias.name == "io":
                         self._bind_noncanonical_alias(
                             local, CANONICAL_WAREHOUSE_MODULE, track_alias=True
-                        )
-                    elif alias.name == "*":
-                        self._add_finding(
-                            _producer_finding(
-                                PRODUCER_UNRESOLVED_IMPORT,
-                                path,
-                                node.lineno,
-                                "star import from the warehouse boundary cannot be resolved",
-                                "Import write_table or upsert_table explicitly from the canonical warehouse API.",
-                            )
                         )
                     elif _writer_like(alias.name):
                         self._add_finding(
@@ -1802,6 +1856,9 @@ def _discover_in_source(
             self.visit(node.value)
             self._bind_names(_assignment_names((node.target,)), node.value)
 
+        def visit_Delete(self, node: ast.Delete) -> None:
+            self._invalidate_names(_assignment_names(node.targets))
+
         def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
             self.visit(node.iter)
             self._invalidate_names(_assignment_names((node.target,)))
@@ -1851,13 +1908,28 @@ def _discover_in_source(
         def visit_Lambda(self, node: ast.Lambda) -> None:
             self._visit_function(node)
 
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            self._visit_comprehension(node.generators, (node.elt,))
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            self._visit_comprehension(node.generators, (node.elt,))
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            self._visit_comprehension(node.generators, (node.elt,))
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            self._visit_comprehension(node.generators, (node.key, node.value))
+
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             for decorator in node.decorator_list:
                 self.visit(decorator)
             for base in node.bases:
                 self.visit(base)
             self._invalidate_names({node.name})
-            child = self._child()
+            child = _ProducerVisitor(
+                self.lexical_bindings.child(),
+                lexical_bindings=self.lexical_bindings,
+            )
             for statement in node.body:
                 child.visit(statement)
 
@@ -2033,6 +2105,8 @@ def _assignment_names(targets: Sequence[ast.AST]) -> set[str]:
             names.add(target.id)
         elif isinstance(target, (ast.Tuple, ast.List)):
             names.update(_assignment_names(target.elts))
+        elif isinstance(target, ast.Starred):
+            names.update(_assignment_names((target.value,)))
     return names
 
 
@@ -2040,6 +2114,8 @@ def _function_local_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> se
     """Return lexical locals that shadow imports throughout a function scope."""
 
     locals_: set[str] = set()
+    global_names: set[str] = set()
+    nonlocal_names: set[str] = set()
 
     class _LocalBindingVisitor(ast.NodeVisitor):
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -2070,6 +2146,9 @@ def _function_local_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> se
         def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
             locals_.update(_assignment_names((node.target,)))
             self.visit(node.value)
+
+        def visit_Delete(self, node: ast.Delete) -> None:
+            locals_.update(_assignment_names(node.targets))
 
         def visit_For(self, node: ast.For) -> None:
             locals_.update(_assignment_names((node.target,)))
@@ -2111,12 +2190,18 @@ def _function_local_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> se
             locals_.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            locals_.update(alias.asname or alias.name for alias in node.names)
+            locals_.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
+
+        def visit_Global(self, node: ast.Global) -> None:
+            global_names.update(node.names)
+
+        def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+            nonlocal_names.update(node.names)
 
     visitor = _LocalBindingVisitor()
     for statement in node.body:
         visitor.visit(statement)
-    return locals_
+    return locals_ - global_names - nonlocal_names
 
 
 def _writer_like(name: str) -> bool:

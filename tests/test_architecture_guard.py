@@ -1244,6 +1244,77 @@ def test_function_local_non_writer_import_does_not_trigger_writer_diagnostic(
     ]
 
 
+@pytest.mark.parametrize(
+    "app",
+    (
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "from foreign_module import *\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            'write_table(layout, "ods", "foreign_star_import", frame=None)\n'
+        ),
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "[\n"
+            '    write_table(layout, "ods", "comprehension_shadow", frame=None)\n'
+            "    for write_table in [lambda *args, **kwargs: None]\n"
+            "]\n"
+        ),
+    ),
+)
+def test_uncertain_lexical_bindings_do_not_register_producers(tmp_path: Path, app: str) -> None:
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    report = validate_architecture_baseline(repo)
+
+    assert PRODUCER_UNRESOLVED_IMPORT in {finding.rule_id for finding in report.findings}
+    assert report.producers == ()
+
+
+@pytest.mark.parametrize(
+    "app",
+    (
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "def helper():\n"
+            "    global write_table\n"
+            '    write_table(layout, "ods", "events", frame=None)\n'
+            "    write_table = lambda *args, **kwargs: None\n"
+        ),
+        (
+            "def outer():\n"
+            "    from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "    layout = WarehouseLayout.from_data_root('data')\n"
+            "    def helper():\n"
+            "        nonlocal write_table\n"
+            '        write_table(layout, "ods", "events", frame=None)\n'
+            "        write_table = lambda *args, **kwargs: None\n"
+            "    return helper\n"
+        ),
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "class WriterContainer:\n"
+            "    write_table = staticmethod(lambda *args, **kwargs: None)\n"
+            "    def emit(self):\n"
+            '        return write_table(layout, "ods", "events", frame=None)\n'
+        ),
+    ),
+)
+def test_lexical_global_nonlocal_and_class_method_writers_are_resolved(
+    tmp_path: Path,
+    app: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=app))
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert len(report.producers) == 1
+
+
 def test_producer_discovery_scales_with_irrelevant_imports_and_sibling_scopes(
     tmp_path: Path,
 ) -> None:
