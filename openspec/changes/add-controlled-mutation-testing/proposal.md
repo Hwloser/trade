@@ -32,12 +32,17 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - admits only exact changed-line candidates in PR mode and uses configured core
     definitions for scheduled/manual modes without widening to an enclosing
     definition;
+  - admits a candidate only when its canonical Cosmic Ray mutation-token position is
+    on a changed line, seals/revalidates the complete Git scope, and distinguishes the
+    150/1000/5000 generated-mutant ceilings from broader bounded candidate scanning;
   - enforces mutant, candidate-scan, worker, per-mutant, output, and wall-clock
     budgets across bootstrap, dependency preparation, execution, and publication;
   - selects an absolute Python 3.7+ supervisor interpreter and starts one
     standard-library supervisor before every `uv` child, makes it the invocation
-    subreaper/watchdog and sole receipt/fallback writer, and lets it contain and
-    observe cleanup of the descendant tree even when the controller is killed;
+    subreaper/watchdog, sole OS-level child spawner, and sole receipt/fallback writer;
+    the non-spawning controller uses an authenticated bounded protocol with opaque
+    worker handles, and the supervisor contains and observes cleanup even when the
+    controller is killed;
   - denies network, process launch, and real-data paths with Linux Landlock/seccomp
     containment, transfers a seccomp listener over `SCM_RIGHTS`, brokers allowed
     opens with `openat2` plus descriptor injection, and requires independent
@@ -45,14 +50,19 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     killed or survived;
   - distinguishes killed, survived, timeout, mapping/line no-coverage,
     baseline-unavailable, cancellation, invalid, and infrastructure-error outcomes;
+    integrity evidence is sticky and dominant after notification drain, while
+    unconfirmed cleanup is an orthogonal status that replaces any provisional
+    killed/survived result with a phase-appropriate infrastructure terminal;
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
     generation with closed status/count algebra, a manifest hash anchored by the
     invocation receipt/current pointer, and an independent typed fallback if
     publication itself fails;
-  - commits cache outcomes only after report publication and derives bounded trend
-    views from a sequence-reserved, hash-chained immutable trend-source ledger;
+  - commits cache outcomes only after report publication, keeps report publication
+    sequence separate from core/full trend sequence, and derives bounded trend views
+    from a hash-chained immutable trend-source ledger with explicit reconciliation;
   - validates and packages the exact receipt plus referenced generation/fallback as
-    one digest-bound `trade.mutation.bundle.v1` CI artifact.
+    one digest-bound `trade.mutation.bundle.v1` CI artifact; the execution job uploads
+    it and a separate job downloads and independently validates the bytes.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry. Add an identity- and
   freshness-bound capacity qualification contract for scheduled modes.
@@ -69,6 +79,9 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - scheduled modes require a reviewed, unexpired capacity qualification and carry
     trend history through validated immutable rolling aggregate artifacts rather than
     treating result cache as evidence;
+  - every execution route uses a reviewed disposable `trade-mutation-v1` runner with
+    writable delegated cgroup v2, finite memory, Landlock and seccomp notification;
+    unsupported runners produce plan/preflight evidence and execute no mutant;
   - native GitHub concurrency prevents simultaneous long runs but may supersede an
     older pending request, which is reported honestly rather than described as a
     durable queue.
@@ -101,7 +114,8 @@ In scope:
   limits, supervisor-owned process-tree containment and fallback, kernel I/O
   containment,
   cancellation algebra, partial reporting, committed cache/trend artifacts, bounded
-  report retention, and exact mutant exceptions.
+  report retention, sealed Git scope, independently reconstructable baseline evidence,
+  bounded remote restore, exact mutant exceptions, and explicit trend reconciliation.
 - GitHub Actions because the authoritative remote is GitHub.
 
 Out of scope:
@@ -125,9 +139,11 @@ source/AST/dependency/private-tree limits, bytecode-clean private source trees,
 target-filtered line coverage, closed
 operator/definition maps, generation-atomic output plus safe fallback, exact
 fresh/cache/plan/cancellation status algebra, authenticated guard lifecycle evidence,
-committed cache markers, sequence reservations/tombstones, coupled receipt retention,
-identity-bound capacity qualification, immutable CI bundles, corrupt-pointer
-recovery, and mutant-ID exception validation address those risks. Linux cannot
+committed cache markers, separate report/trend sequence reservations and tombstones,
+coupled receipt retention/evidence tombstones, identity-bound capacity qualification,
+bounded remote restore with invalid-predecessor epochs, immutable cross-job CI
+bundles, corrupt-pointer recovery, and mutant-ID exception validation address those
+risks. Linux cannot
 guarantee userspace reaping of an indefinitely uninterruptible task or completion of
 a stuck filesystem `fsync`; those cases remain `cleanup_unconfirmed` or lack a
 claimed generation and are contained by the larger CI runner timeout, never counted
