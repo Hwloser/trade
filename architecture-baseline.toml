@@ -197,6 +197,30 @@ provenance = [
 ]
 
 [[tables]]
+logical_name = "causal_validation_outcomes"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-causal-validation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Causal validation ownership needs Study validation and immutable input evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_validation_outcomes", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "causal_reward_punishment"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-causal-feedback-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Causal feedback ownership needs Study validation, Decision Support audit, and lifecycle evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_reward_punishment", role = "bootstrap" },
+]
+
+[[tables]]
 logical_name = "factors"
 current_owner = "trade_py.db"
 semantic_kind = "legacy-factor-record"
@@ -209,6 +233,18 @@ provenance = [
 ]
 
 [[tables]]
+logical_name = "factor_registry"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-factor-metadata-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Factor metadata ownership depends on the resolved Dataset-versus-Study feature boundary."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS factor_registry", role = "bootstrap" },
+]
+
+[[tables]]
 logical_name = "kg_nodes"
 current_owner = "trade_py.db"
 semantic_kind = "legacy-knowledge-graph-record"
@@ -218,6 +254,30 @@ reason = "Knowledge-graph ownership and Dataset/Study lineage require a separate
 required_child = "study-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_nodes", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "kg_relations"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-knowledge-graph-relation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Knowledge-graph relation ownership and Dataset/Study lineage require a separately reviewed migration."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_relations", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "kg_edge_candidates"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-knowledge-graph-candidate-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Knowledge-graph candidate review needs Study evidence and Decision Support audit boundaries."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "bootstrap" },
 ]
 
 [[tables]]
@@ -255,6 +315,18 @@ reason = "Historical recommendation data needs a Decision Support ownership, aud
 required_child = "decision-support-boundary"
 provenance = [
   { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Recommendation", role = "migration" },
+]
+
+[[tables]]
+logical_name = "RecommendationTrace"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-historical-recommendation-trace"
+classification = "deferred"
+target_context = "deferred"
+reason = "Historical recommendation trace ownership needs Decision Support audit and compatibility migration evidence."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS RecommendationTrace", role = "migration" },
 ]
 
 [[artifacts]]

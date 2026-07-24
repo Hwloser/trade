@@ -114,16 +114,66 @@ _REQUIRED_CAPTURE_RISK_IDS = frozenset(
         "warehouse-semantic-quarantine",
     }
 )
-_REQUIRED_TABLE_NAMES = frozenset(
-    {
-        "causal_decision_snapshots",
-        "factors",
-        "model_registry",
-        "model_eval_runs",
-        "kg_nodes",
-        "Recommendation",
-    }
-)
+_REQUIRED_CAPTURE_RISK_BINDINGS = {
+    "rss-provider-time-fallback": (
+        "trade_py/data/news/rss/base.py",
+        "pub_time = datetime.now(timezone.utc)",
+    ),
+    "gdelt-catalog-db-config": (
+        "trade_py/data/news/gdelt/source.py",
+        'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")',
+    ),
+}
+_REQUIRED_DEFERRED_TABLE_BINDINGS = {
+    "causal_decision_snapshots": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS causal_decision_snapshots",
+    ),
+    "causal_validation_outcomes": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS causal_validation_outcomes",
+    ),
+    "causal_reward_punishment": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS causal_reward_punishment",
+    ),
+    "factors": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS factors",
+    ),
+    "factor_registry": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS factor_registry",
+    ),
+    "model_registry": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS model_registry",
+    ),
+    "model_eval_runs": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS model_eval_runs",
+    ),
+    "kg_nodes": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS kg_nodes",
+    ),
+    "kg_relations": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS kg_relations",
+    ),
+    "kg_edge_candidates": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+    ),
+    "Recommendation": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS Recommendation",
+    ),
+    "RecommendationTrace": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS RecommendationTrace",
+    ),
+}
 _REQUIRED_ARTIFACT_SOURCES = {
     "catalog-sqlite-projection": "trade_py/observatory/catalog/store.py",
     "catalog-generation-pointer": "trade_py/observatory/catalog/store.py",
@@ -588,19 +638,34 @@ def _validate_baseline_facts(
             except _GuardError as exc:
                 findings.append(exc.finding)
 
-    capture_risk_ids = {
-        fact.get("id") for fact in baseline.capture_risks if isinstance(fact.get("id"), str)
+    capture_risks_by_id = {
+        fact.get("id"): fact for fact in baseline.capture_risks if isinstance(fact.get("id"), str)
     }
-    missing_capture_risks = sorted(_REQUIRED_CAPTURE_RISK_IDS - capture_risk_ids)
-    if missing_capture_risks:
+    missing_capture_risks = sorted(_REQUIRED_CAPTURE_RISK_IDS - set(capture_risks_by_id))
+    invalid_capture_risks = [
+        risk_id
+        for risk_id, (source, literal) in _REQUIRED_CAPTURE_RISK_BINDINGS.items()
+        if risk_id in capture_risks_by_id
+        and (
+            capture_risks_by_id[risk_id].get("source") != source
+            or capture_risks_by_id[risk_id].get("literal") != literal
+        )
+    ]
+    if missing_capture_risks or invalid_capture_risks:
+        risk_details: list[str] = []
+        if missing_capture_risks:
+            risk_details.append("missing " + ", ".join(missing_capture_risks))
+        if invalid_capture_risks:
+            risk_details.append("misbound " + ", ".join(sorted(invalid_capture_risks)))
         findings.append(
             ArchitectureFinding(
                 _BASELINE_MALFORMED,
                 BASELINE_FILENAME,
                 None,
-                "baseline omits required Capture-risk declarations: "
-                + ", ".join(missing_capture_risks),
-                "Record each audited Capture temporal, replay, and quarantine migration risk.",
+                "baseline omits or misbinds required Capture-risk declarations: "
+                + "; ".join(risk_details),
+                "Record each audited Capture temporal, replay, and quarantine risk at its "
+                "reviewed source literal.",
             )
         )
 
@@ -632,18 +697,18 @@ def _validate_baseline_facts(
             )
         )
 
-    table_names: set[str] = set()
+    tables_by_name: dict[str, Mapping[str, Any]] = {}
     for table in baseline.tables:
         try:
             name = _require_text(table, "logical_name", "tables")
-            if name in table_names:
+            if name in tables_by_name:
                 raise _GuardError(
                     _BASELINE_DUPLICATE,
                     BASELINE_FILENAME,
                     f"duplicate logical table declaration: {name}",
                     "Declare each logical table exactly once and retain all provenance on it.",
                 )
-            table_names.add(name)
+            tables_by_name[name] = table
             _require_text(table, "current_owner", "tables")
             _require_text(table, "semantic_kind", "tables")
             _require_text(table, "reason", "tables")
@@ -677,16 +742,32 @@ def _validate_baseline_facts(
         except _GuardError as exc:
             findings.append(exc.finding)
 
-    missing_table_names = sorted(_REQUIRED_TABLE_NAMES - table_names)
-    if missing_table_names:
+    missing_table_names = sorted(set(_REQUIRED_DEFERRED_TABLE_BINDINGS) - set(tables_by_name))
+    invalid_deferred_tables = [
+        name
+        for name, (source, literal) in _REQUIRED_DEFERRED_TABLE_BINDINGS.items()
+        if name in tables_by_name
+        and (
+            tables_by_name[name].get("classification") != "deferred"
+            or tables_by_name[name].get("target_context") != "deferred"
+            or not _has_provenance_literal(tables_by_name[name], source, literal)
+        )
+    ]
+    if missing_table_names or invalid_deferred_tables:
+        details = []
+        if missing_table_names:
+            details.append("missing " + ", ".join(missing_table_names))
+        if invalid_deferred_tables:
+            details.append("misbound or non-deferred " + ", ".join(sorted(invalid_deferred_tables)))
         findings.append(
             ArchitectureFinding(
                 _BASELINE_MALFORMED,
                 BASELINE_FILENAME,
                 None,
-                "baseline omits required deferred central-schema declarations: "
-                + ", ".join(missing_table_names),
-                "Record each audited KG, causal, factor, and historical recommendation table.",
+                "baseline omits or misclassifies required deferred central-schema declarations: "
+                + "; ".join(details),
+                "Record each audited KG, causal, factor, and historical recommendation table "
+                "as deferred with its reviewed source literal.",
             )
         )
 
@@ -730,6 +811,14 @@ def _validate_baseline_facts(
                 )
             )
     return findings
+
+
+def _has_provenance_literal(table: Mapping[str, Any], source: str, literal: str) -> bool:
+    provenance = table.get("provenance")
+    return isinstance(provenance, list) and any(
+        isinstance(item, dict) and item.get("source") == source and item.get("literal") == literal
+        for item in provenance
+    )
 
 
 def _declared_producer_source_missing(
@@ -1124,6 +1213,7 @@ def _iter_git_index(
         limits.max_raw_path_bytes + 512,
     )
     buffer = b""
+    completed = False
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -1182,8 +1272,9 @@ def _iter_git_index(
                 + _bounded_text(detail, limits.max_diagnostic_field_bytes),
                 "Repair Git availability or the repository index before running source-only discovery.",
             )
+        completed = True
     finally:
-        _terminate_process_group(process, force=not stderr_done.is_set())
+        _terminate_process_group(process, force=not completed)
         stdout.close()
         stderr_stream.close()
         stderr_thread.join(timeout=1)
@@ -1201,11 +1292,31 @@ def _terminate_process_group(process: subprocess.Popen[bytes], *, force: bool) -
     try:
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-        process.wait()
+        pass
+    if not force:
+        return
+
+    deadline = time.monotonic() + 1
+    while _process_group_exists(process.pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not _process_group_exists(process.pid):
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _parse_index_record(raw: bytes) -> tuple[str, str]:
@@ -1435,37 +1546,95 @@ def _discover_in_source(
             )
         ]
 
-    aliases: dict[str, str] = {}
-    layouts: set[str] = set()
     findings: list[ArchitectureFinding] = []
-    rebound_aliases: set[str] = set()
+    producers: list[WarehouseProducer] = []
+    producer_report_bytes = 0
+    finding_budget_exceeded = False
 
-    def add_finding(finding: ArchitectureFinding) -> bool:
-        if len(findings) >= finding_capacity:
-            return False
-        findings.append(finding)
-        return True
+    class _ProducerVisitor(ast.NodeVisitor):
+        def __init__(
+            self,
+            aliases: Mapping[str, str] | None = None,
+            layouts: set[str] | None = None,
+            rebound_aliases: set[str] | None = None,
+        ) -> None:
+            self.aliases = dict(aliases or {})
+            self.layouts = set(layouts or set())
+            self.rebound_aliases = set(rebound_aliases or set())
 
-    def result_budget_finding(message: str) -> list[ArchitectureFinding]:
-        return [
-            _producer_finding(
-                PRODUCER_RESULT_BUDGET,
-                path,
-                1,
-                message,
-                "Reduce the producer scope or make a reviewed governed result-budget increase.",
+        def _add_finding(self, finding: ArchitectureFinding) -> bool:
+            nonlocal finding_budget_exceeded
+            if len(findings) >= finding_capacity:
+                finding_budget_exceeded = True
+                return False
+            findings.append(finding)
+            return True
+
+        def _result_budget(self, message: str) -> None:
+            nonlocal finding_budget_exceeded
+            finding_budget_exceeded = True
+
+        def _invalidate_names(self, names: set[str]) -> None:
+            for name in names:
+                if name in self.aliases:
+                    self.rebound_aliases.add(name)
+                self.aliases.pop(name, None)
+                self.layouts.discard(name)
+
+        def _bind_names(
+            self,
+            names: set[str],
+            value: ast.AST | None,
+            *,
+            annotation: ast.AST | None = None,
+        ) -> None:
+            resolved = _resolve_expression(value, self.aliases)
+            if resolved in CANONICAL_WRITERS:
+                for name in names:
+                    self.aliases[name] = resolved
+                    self.rebound_aliases.discard(name)
+            else:
+                self._invalidate_names(names)
+            if _annotation_is_layout(annotation, self.aliases) or _is_layout_factory(
+                value, self.aliases
+            ):
+                self.layouts.update(names)
+
+        def _child(self) -> _ProducerVisitor:
+            return _ProducerVisitor(self.aliases, self.layouts, self.rebound_aliases)
+
+        def _visit_function(
+            self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+        ) -> None:
+            child = self._child()
+            arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+                *((node.args.vararg,) if node.args.vararg is not None else ()),
+                *((node.args.kwarg,) if node.args.kwarg is not None else ()),
             )
-        ]
+            for argument in arguments:
+                if _annotation_is_layout(argument.annotation, child.aliases):
+                    child.layouts.add(argument.arg)
+                else:
+                    child._invalidate_names({argument.arg})
+            if isinstance(node, ast.Lambda):
+                child.visit(node.body)
+                return
+            for statement in node.body:
+                child.visit(statement)
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        def visit_Import(self, node: ast.Import) -> None:
             for alias in node.names:
                 local = alias.asname or alias.name.split(".", 1)[0]
-                aliases[local] = alias.name if alias.asname else local
-        elif isinstance(node, ast.ImportFrom):
+                self.aliases[local] = alias.name if alias.asname else local
+                self.rebound_aliases.discard(local)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             module = _import_from_module(path, node)
             if module is None:
-                if not add_finding(
+                self._add_finding(
                     _producer_finding(
                         PRODUCER_UNRESOLVED_IMPORT,
                         path,
@@ -1473,22 +1642,22 @@ def _discover_in_source(
                         "relative warehouse import escapes the inspected package root",
                         "Use an import that resolves inside the repository package hierarchy.",
                     )
-                ):
-                    return [], result_budget_finding(
-                        "producer discovery findings exceed the configured result budget"
-                    )
-                continue
+                )
+                return
             for alias in node.names:
                 local = alias.asname or alias.name
                 if module in {CANONICAL_WAREHOUSE_MODULE, CANONICAL_WAREHOUSE_PACKAGE}:
                     if alias.name in {"write_table", "upsert_table"}:
-                        aliases[local] = f"{CANONICAL_WAREHOUSE_MODULE}.{alias.name}"
+                        self.aliases[local] = f"{CANONICAL_WAREHOUSE_MODULE}.{alias.name}"
+                        self.rebound_aliases.discard(local)
                     elif alias.name == "WarehouseLayout":
-                        aliases[local] = CANONICAL_LAYOUT
+                        self.aliases[local] = CANONICAL_LAYOUT
+                        self.rebound_aliases.discard(local)
                     elif alias.name == "io":
-                        aliases[local] = CANONICAL_WAREHOUSE_MODULE
+                        self.aliases[local] = CANONICAL_WAREHOUSE_MODULE
+                        self.rebound_aliases.discard(local)
                     elif alias.name == "*":
-                        if not add_finding(
+                        self._add_finding(
                             _producer_finding(
                                 PRODUCER_UNRESOLVED_IMPORT,
                                 path,
@@ -1496,12 +1665,9 @@ def _discover_in_source(
                                 "star import from the warehouse boundary cannot be resolved",
                                 "Import write_table or upsert_table explicitly from the canonical warehouse API.",
                             )
-                        ):
-                            return [], result_budget_finding(
-                                "producer discovery findings exceed the configured result budget"
-                            )
+                        )
                     elif _writer_like(alias.name):
-                        if not add_finding(
+                        self._add_finding(
                             _producer_finding(
                                 PRODUCER_UNRESOLVED_IMPORT,
                                 path,
@@ -1510,12 +1676,9 @@ def _discover_in_source(
                                 "Import write_table or upsert_table from trade_py.data.warehouse.io "
                                 "or the package re-export.",
                             )
-                        ):
-                            return [], result_budget_finding(
-                                "producer discovery findings exceed the configured result budget"
-                            )
+                        )
                 elif module.startswith(CANONICAL_WAREHOUSE_PACKAGE) and _writer_like(alias.name):
-                    if not add_finding(
+                    self._add_finding(
                         _producer_finding(
                             PRODUCER_UNRESOLVED_IMPORT,
                             path,
@@ -1523,129 +1686,179 @@ def _discover_in_source(
                             f"warehouse writer-like import {module}.{alias.name} is not canonical",
                             "Import a canonical writer from trade_py.data.warehouse.io.",
                         )
-                    ):
-                        return [], result_budget_finding(
-                            "producer discovery findings exceed the configured result budget"
+                    )
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self.visit(node.value)
+            self._bind_names(_assignment_names(node.targets), node.value)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                self.visit(node.value)
+            self._bind_names(
+                _assignment_names((node.target,)),
+                node.value,
+                annotation=node.annotation,
+            )
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            self.visit(node.value)
+            self._invalidate_names(_assignment_names((node.target,)))
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            self.visit(node.value)
+            self._bind_names(_assignment_names((node.target,)), node.value)
+
+        def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+            self.visit(node.iter)
+            self._invalidate_names(_assignment_names((node.target,)))
+            for statement in node.body:
+                self.visit(statement)
+            for statement in node.orelse:
+                self.visit(statement)
+
+        visit_AsyncFor = visit_For
+
+        def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+            for item in node.items:
+                self.visit(item.context_expr)
+                if item.optional_vars is not None:
+                    self._invalidate_names(_assignment_names((item.optional_vars,)))
+            for statement in node.body:
+                self.visit(statement)
+
+        visit_AsyncWith = visit_With
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.type is not None:
+                self.visit(node.type)
+            if node.name is not None:
+                self._invalidate_names({node.name})
+            for statement in node.body:
+                self.visit(statement)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                if default is not None:
+                    self.visit(default)
+            self._invalidate_names({node.name})
+            self._visit_function(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                if default is not None:
+                    self.visit(default)
+            self._invalidate_names({node.name})
+            self._visit_function(node)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            self._visit_function(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            for base in node.bases:
+                self.visit(base)
+            self._invalidate_names({node.name})
+            child = self._child()
+            for statement in node.body:
+                child.visit(statement)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            nonlocal producer_report_bytes
+            writer = _resolve_expression(node.func, self.aliases)
+            if writer not in CANONICAL_WRITERS:
+                if isinstance(node.func, ast.Name) and node.func.id in self.rebound_aliases:
+                    self._add_finding(
+                        _producer_finding(
+                            PRODUCER_UNRESOLVED_IMPORT,
+                            path,
+                            node.lineno,
+                            f"warehouse writer alias {node.func.id!r} was rebound or shadowed "
+                            "before this call",
+                            "Use a nonconflicting local name or an explicit canonical warehouse import.",
                         )
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            resolved = _resolve_expression(node.value, aliases)
-            names = _assignment_names(node.targets)
-            if resolved in CANONICAL_WRITERS:
-                for name in names:
-                    aliases[name] = resolved
-            else:
-                for name in names:
-                    if name in aliases:
-                        rebound_aliases.add(name)
-                    aliases.pop(name, None)
-            if _is_layout_factory(node.value, aliases):
-                layouts.update(names)
-            else:
-                layouts.difference_update(names)
-        elif isinstance(node, ast.AnnAssign):
-            names = _assignment_names((node.target,))
-            if _annotation_is_layout(node.annotation, aliases):
-                layouts.update(names)
-            elif _is_layout_factory(node.value, aliases):
-                layouts.update(names)
-            else:
-                layouts.difference_update(names)
-                for name in names:
-                    if name in aliases:
-                        rebound_aliases.add(name)
-                    aliases.pop(name, None)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
-                if _annotation_is_layout(argument.annotation, aliases):
-                    layouts.add(argument.arg)
-                else:
-                    aliases.pop(argument.arg, None)
-                    layouts.discard(argument.arg)
-
-    producers: list[WarehouseProducer] = []
-    producer_report_bytes = 0
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        writer = _resolve_expression(node.func, aliases)
-        if writer not in CANONICAL_WRITERS:
-            if isinstance(node.func, ast.Name) and node.func.id in rebound_aliases:
-                if not add_finding(
+                    )
+                self.generic_visit(node)
+                return
+            if not node.args or not _is_layout_expression(node.args[0], self.aliases, self.layouts):
+                self._add_finding(
                     _producer_finding(
-                        PRODUCER_UNRESOLVED_IMPORT,
+                        PRODUCER_UNRESOLVED_LAYOUT,
                         path,
                         node.lineno,
-                        f"warehouse writer alias {node.func.id!r} was rebound before this call",
-                        "Use a nonconflicting local name or an explicit canonical warehouse import.",
+                        f"canonical writer {writer} has no statically known WarehouseLayout first "
+                        "argument",
+                        "Bind the first argument from WarehouseLayout or WarehouseLayout.from_data_root.",
                     )
-                ):
-                    return producers, result_budget_finding(
-                        "producer discovery findings exceed the configured result budget"
+                )
+                self.generic_visit(node)
+                return
+            if len(node.args) < 3 or not all(
+                isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+                for argument in node.args[1:3]
+            ):
+                self._add_finding(
+                    _producer_finding(
+                        PRODUCER_NONLITERAL_TARGET,
+                        path,
+                        node.lineno,
+                        f"canonical writer {writer} has a nonliteral layer or table target",
+                        "Use literal layer and table strings so the artifact declaration is auditable.",
                     )
-            continue
-        if not node.args or not _is_layout_expression(node.args[0], aliases, layouts):
-            if not add_finding(
-                _producer_finding(
-                    PRODUCER_UNRESOLVED_LAYOUT,
-                    path,
-                    node.lineno,
-                    f"canonical writer {writer} has no statically known WarehouseLayout first argument",
-                    "Bind the first argument from WarehouseLayout or WarehouseLayout.from_data_root.",
                 )
-            ):
-                return producers, result_budget_finding(
-                    "producer discovery findings exceed the configured result budget"
+                self.generic_visit(node)
+                return
+            if len(producers) >= producer_capacity:
+                self._result_budget(
+                    "canonical writer-call inventory exceeds the configured result budget"
                 )
-            continue
-        if len(node.args) < 3 or not all(
-            isinstance(argument, ast.Constant) and isinstance(argument.value, str)
-            for argument in node.args[1:3]
-        ):
-            if not add_finding(
-                _producer_finding(
-                    PRODUCER_NONLITERAL_TARGET,
-                    path,
-                    node.lineno,
-                    f"canonical writer {writer} has a nonliteral layer or table target",
-                    "Use literal layer and table strings so the artifact declaration is auditable.",
+                return
+            layer = node.args[1]
+            table = node.args[2]
+            assert isinstance(layer, ast.Constant) and isinstance(layer.value, str)
+            assert isinstance(table, ast.Constant) and isinstance(table.value, str)
+            literal = ast.unparse(node)
+            if len(literal.encode("utf-8")) > limits.max_producer_literal_bytes:
+                self._result_budget(
+                    "canonical writer-call literal exceeds the configured result budget"
                 )
-            ):
-                return producers, result_budget_finding(
-                    "producer discovery findings exceed the configured result budget"
-                )
-            continue
-        if len(producers) >= producer_capacity:
-            return producers, result_budget_finding(
-                "canonical writer-call inventory exceeds the configured result budget"
+                return
+            producer = WarehouseProducer(
+                source=path,
+                line=node.lineno,
+                column=node.col_offset,
+                writer=writer,
+                layer=layer.value,
+                table=table.value,
+                literal=literal,
+                call_digest=_call_digest(node),
             )
-        layer = node.args[1]
-        table = node.args[2]
-        assert isinstance(layer, ast.Constant) and isinstance(layer.value, str)
-        assert isinstance(table, ast.Constant) and isinstance(table.value, str)
-        literal = ast.unparse(node)
-        if len(literal.encode("utf-8")) > limits.max_producer_literal_bytes:
-            return producers, result_budget_finding(
-                "canonical writer-call literal exceeds the configured result budget"
+            producer_size = _warehouse_producer_size(producer)
+            if producer_report_bytes + producer_size > producer_report_capacity:
+                self._result_budget(
+                    "canonical writer-call report exceeds the configured result-byte budget"
+                )
+                return
+            producers.append(producer)
+            producer_report_bytes += producer_size
+            self.generic_visit(node)
+
+    _ProducerVisitor().visit(tree)
+    if finding_budget_exceeded:
+        return producers, [
+            _producer_finding(
+                PRODUCER_RESULT_BUDGET,
+                path,
+                1,
+                "producer discovery findings exceed the configured result budget",
+                "Reduce the producer scope or make a reviewed governed result-budget increase.",
             )
-        producer = WarehouseProducer(
-            source=path,
-            line=node.lineno,
-            column=node.col_offset,
-            writer=writer,
-            layer=layer.value,
-            table=table.value,
-            literal=literal,
-            call_digest=_call_digest(node),
-        )
-        producer_size = _warehouse_producer_size(producer)
-        if producer_report_bytes + producer_size > producer_report_capacity:
-            return producers, result_budget_finding(
-                "canonical writer-call report exceeds the configured result-byte budget"
-            )
-        producers.append(producer)
-        producer_report_bytes += producer_size
+        ]
     return producers, findings
 
 

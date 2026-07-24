@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -139,7 +140,31 @@ target_context = "deferred"
 reason = "Target ownership requires a reviewed Study or Decision Support migration."
 required_child = "study-boundary"
 provenance = [
-  {{ source = "trade_py/db.py", literal = "CREATE TABLE causal_decision_snapshots", role = "bootstrap" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_decision_snapshots", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "causal_validation_outcomes"
+current_owner = "legacy"
+semantic_kind = "causal-validation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_validation_outcomes", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "causal_reward_punishment"
+current_owner = "legacy"
+semantic_kind = "causal-feedback-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS causal_reward_punishment", role = "bootstrap" }},
 ]
 
 [[tables]]
@@ -151,7 +176,19 @@ target_context = "deferred"
 reason = "Target ownership requires a reviewed Dataset or Study migration."
 required_child = "study-boundary"
 provenance = [
-  {{ source = "trade_py/db.py", literal = "CREATE TABLE factors", role = "bootstrap" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS factors", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "factor_registry"
+current_owner = "legacy"
+semantic_kind = "factor-metadata-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS factor_registry", role = "bootstrap" }},
 ]
 
 [[tables]]
@@ -163,7 +200,31 @@ target_context = "deferred"
 reason = "Target ownership requires a reviewed Dataset or Study migration."
 required_child = "study-boundary"
 provenance = [
-  {{ source = "trade_py/db.py", literal = "CREATE TABLE kg_nodes", role = "bootstrap" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_nodes", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "kg_relations"
+current_owner = "legacy"
+semantic_kind = "knowledge-graph-relation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_relations", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "kg_edge_candidates"
+current_owner = "legacy"
+semantic_kind = "knowledge-graph-candidate-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Study migration."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_edge_candidates", role = "bootstrap" }},
 ]
 
 [[tables]]
@@ -175,7 +236,7 @@ target_context = "deferred"
 reason = "Target ownership requires a reviewed Study migration."
 required_child = "study-boundary"
 provenance = [
-  {{ source = "trade_py/db.py", literal = "CREATE TABLE model_registry", role = "bootstrap" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_registry", role = "bootstrap" }},
 ]
 
 [[tables]]
@@ -187,7 +248,7 @@ target_context = "deferred"
 reason = "Target ownership requires a reviewed Study migration."
 required_child = "study-boundary"
 provenance = [
-  {{ source = "trade_py/db.py", literal = "CREATE TABLE model_eval_runs", role = "bootstrap" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_eval_runs", role = "bootstrap" }},
 ]
 
 [[tables]]
@@ -199,7 +260,19 @@ target_context = "deferred"
 reason = "Target ownership requires a reviewed Decision Support migration."
 required_child = "decision-support-boundary"
 provenance = [
-  {{ source = "trade_py/migrations.py", literal = "CREATE TABLE Recommendation", role = "migration" }},
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Recommendation", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "RecommendationTrace"
+current_owner = "legacy"
+semantic_kind = "historical-recommendation-trace"
+classification = "deferred"
+target_context = "deferred"
+reason = "Target ownership requires a reviewed Decision Support migration."
+required_child = "decision-support-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS RecommendationTrace", role = "migration" }},
 ]
 
 [[artifacts]]
@@ -476,14 +549,33 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             "LEGACY_DB = 1\n"
             'SQL = "CREATE TABLE legacy_records"\n'
             'CAUSAL_SQL = "CREATE TABLE causal_decision_snapshots"\n'
+            'CAUSAL_VALIDATION_SQL = "CREATE TABLE causal_validation_outcomes"\n'
+            'CAUSAL_FEEDBACK_SQL = "CREATE TABLE causal_reward_punishment"\n'
             'FACTORS_SQL = "CREATE TABLE factors"\n'
+            'FACTOR_REGISTRY_SQL = "CREATE TABLE factor_registry"\n'
             'KG_SQL = "CREATE TABLE kg_nodes"\n'
+            'KG_RELATIONS_SQL = "CREATE TABLE kg_relations"\n'
+            'KG_CANDIDATES_SQL = "CREATE TABLE kg_edge_candidates"\n'
             'MODELS_SQL = "CREATE TABLE model_registry"\n'
             'MODEL_EVAL_SQL = "CREATE TABLE model_eval_runs"\n'
         ),
-        "trade_py/migrations.py": (
-            'SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n'
-            'RECOMMENDATION_SQL = "CREATE TABLE Recommendation"\n'
+        "trade_py/migrations.py": ('SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n'),
+        "trade_py/db/__init__.py": "",
+        "trade_py/db/trade_db.py": (
+            'CAUSAL_SQL = "CREATE TABLE IF NOT EXISTS causal_decision_snapshots"\n'
+            'CAUSAL_VALIDATION_SQL = "CREATE TABLE IF NOT EXISTS causal_validation_outcomes"\n'
+            'CAUSAL_FEEDBACK_SQL = "CREATE TABLE IF NOT EXISTS causal_reward_punishment"\n'
+            'FACTORS_SQL = "CREATE TABLE IF NOT EXISTS factors"\n'
+            'FACTOR_REGISTRY_SQL = "CREATE TABLE IF NOT EXISTS factor_registry"\n'
+            'KG_SQL = "CREATE TABLE IF NOT EXISTS kg_nodes"\n'
+            'KG_RELATIONS_SQL = "CREATE TABLE IF NOT EXISTS kg_relations"\n'
+            'KG_CANDIDATES_SQL = "CREATE TABLE IF NOT EXISTS kg_edge_candidates"\n'
+            'MODELS_SQL = "CREATE TABLE IF NOT EXISTS model_registry"\n'
+            'MODEL_EVAL_SQL = "CREATE TABLE IF NOT EXISTS model_eval_runs"\n'
+        ),
+        "trade_py/db/migrations.py": (
+            'RECOMMENDATION_SQL = "CREATE TABLE IF NOT EXISTS Recommendation"\n'
+            'RECOMMENDATION_TRACE_SQL = "CREATE TABLE IF NOT EXISTS RecommendationTrace"\n'
         ),
         "trade_py/warehouse.py": 'path = f"{table}.parquet"\n',
         "trade_py/capture.py": "published_at = None\n",
@@ -568,11 +660,17 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
         "coverage",
         "enrichment_status",
         "causal_decision_snapshots",
+        "causal_validation_outcomes",
+        "causal_reward_punishment",
         "factors",
+        "factor_registry",
         "kg_nodes",
+        "kg_relations",
+        "kg_edge_candidates",
         "model_registry",
         "model_eval_runs",
         "Recommendation",
+        "RecommendationTrace",
     } <= table_names
     assert {
         "rss-provider-time-fallback",
@@ -608,6 +706,28 @@ def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path
         baseline.replace(
             '"interfaces", "bootstrap"]',
             '"interfaces", "bootstrap", "evidence"]',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        baseline.replace(
+            'logical_name = "factor_registry"\ncurrent_owner = "legacy"\n'
+            'semantic_kind = "factor-metadata-record"\nclassification = "deferred"',
+            'logical_name = "factor_registry"\ncurrent_owner = "legacy"\n'
+            'semantic_kind = "factor-metadata-record"\nclassification = "candidate"',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        baseline.replace(
+            'id = "rss-provider-time-fallback"\nsource = "trade_py/data/news/rss/base.py"',
+            'id = "rss-provider-time-fallback"\nsource = "trade_py/data/news/gdelt/source.py"',
             1,
         ),
     )
@@ -1038,6 +1158,43 @@ def test_rebound_or_shadowed_writer_is_not_misclassified(tmp_path: Path) -> None
     assert PRODUCER_UNRESOLVED_IMPORT in rules
 
 
+def test_lexical_writer_shadowing_preserves_outer_producer_and_rejects_inner_call(
+    tmp_path: Path,
+) -> None:
+    app = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        "def helper(write_table):\n"
+        '    write_table(layout, "ods", "shadowed", frame=None)\n'
+        'write_table(layout, "ods", "events", frame=None)\n'
+    )
+    repo = _init_repo(tmp_path, _sources(app))
+
+    report = validate_architecture_baseline(repo)
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_UNRESOLVED_IMPORT}
+    assert report.producers == ()
+
+    outer_only = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        "def helper(write_table):\n"
+        "    return write_table\n"
+        'write_table(layout, "ods", "events", frame=None)\n'
+    )
+    repo = _init_repo(
+        tmp_path / "outer-only",
+        _sources(outer_only, baseline_app=outer_only),
+    )
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    assert [(producer.layer, producer.table) for producer in report.producers] == [
+        ("ods", "events")
+    ]
+
+
 def test_relative_canonical_warehouse_import_is_resolved(tmp_path: Path) -> None:
     app = (
         "from .io import WarehouseLayout, write_table\n"
@@ -1138,6 +1295,37 @@ def test_git_discovery_timeout_fails_closed(
 
     assert {finding.rule_id for finding in report.findings} == {PRODUCER_TIMEOUT}
     assert report.producers == ()
+
+
+def test_git_discovery_timeout_cleans_background_stdout_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    child_pid_path = tmp_path / "background-child.pid"
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        '#!/bin/sh\nsleep 30 &\nprintf "%s\\n" "$!" > "$ARCH_GUARD_CHILD_PID_FILE"\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("ARCH_GUARD_CHILD_PID_FILE", str(child_pid_path))
+
+    report = validate_architecture_baseline(repo, limits=DiscoveryLimits(git_timeout_seconds=0.01))
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_TIMEOUT}
+    assert report.producers == ()
+    child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+    for _ in range(100):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("timed-out Git descendant still exists after process-group cleanup")
 
 
 def test_git_discovery_bounds_unterminated_stdout_and_nonzero_stderr(
