@@ -510,6 +510,14 @@ The classification is intentionally `candidate` for obvious families and
 non-authorizing. This avoids making the guard another global database facade or
 pretending exact future table names already exist.
 
+The baseline pins every audited static bootstrap, migration, alter, and
+backfill literal for legacy records whose schema history is directly
+recoverable from executable source. It does not claim literal-complete
+provenance for f-string-derived DDL in `Recommendation`,
+`RecommendationTrace`, or `factor_registry`: their owning migration children
+need a reviewed SQL-normalization or runtime migration-evidence design before
+making that claim.
+
 `BtcRunStore.current_path`, `compatibility_path`, and
 `engine/cmake/python_bindings.cmake` are pinned as source facts, alongside
 warehouse layout/materialization, Crypto ADS pointer/receipt, Kline
@@ -569,6 +577,11 @@ source-protection guarantee and avoids duplicate Git traversal.
   target Interfaces and Context paths. Literal SQL is allowed only in an
   explicit `approved_binding`; dynamic SQL needs a later parser/allowlist
   design and cannot bypass the first guard.
+- **Dynamic historical DDL lacks stable literals** -> Task 2.1 pins every
+  audited static schema-evolution and backfill literal but does not invent
+  provenance for f-string-built `Recommendation`, `RecommendationTrace`, or
+  `factor_registry` alters. Their owning migration children must add normalized
+  or runtime-backed evidence before claiming complete schema provenance.
 - **Guard volume or noisy diagnostics** -> Per-file, per-batch, total-scope,
   and concurrent-wave source-byte budgets; argv limits; timeout; versioned
   bounded envelope; stable sort; and explicit count-only truncation make

@@ -16,8 +16,11 @@ one-or-more provenance records, and a classification. A provenance record
 SHALL name a repository source, an exact source literal, and one of
 `bootstrap`, `migration`, `alter`, or `data_transform`; a single bootstrap DDL
 location SHALL not be treated as complete physical-schema evidence. A
-declaration with a known bootstrap and migration DDL SHALL record both exact
-source/literal/role facts. The validator SHALL transform executable source
+declaration with a known bootstrap and literal migration, alter, or backfill
+source SHALL record every audited exact source/literal/role fact. Dynamic SQL
+or f-string-derived DDL is outside this literal evidence contract and SHALL be
+recorded as a scoped limitation for the owning migration child rather than
+represented by an invented normalized literal. The validator SHALL transform executable source
 evidence, including a terminal transformation failure, at most once per source
 per invocation; Python inert-string masking SHALL advance through ordered spans
 without a repeated whole-span scan and reuse one UTF-8 byte-to-character mapping

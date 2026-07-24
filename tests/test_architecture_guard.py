@@ -36,7 +36,353 @@ DEFAULT_APP = (
     "layout = WarehouseLayout.from_data_root('data')\n"
     'write_table(layout, "ods", "events", frame=None)\n'
 )
+_AUDITED_SCHEMA_EVOLUTION_PROVENANCE = {
+    "event_log": (
+        ("trade_py/db/trade_db.py", "CREATE TABLE IF NOT EXISTS event_log", "bootstrap"),
+        ("trade_py/db/migrations.py", "INSERT OR IGNORE INTO event_log", "data_transform"),
+    ),
+    "event_handler_runs": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS event_handler_runs",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS event_handler_runs",
+            "migration",
+        ),
+    ),
+    "pipeline_dag": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS pipeline_dag",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN config_json TEXT DEFAULT '{}'",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN sync_source TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN sync_dataset TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN mode TEXT DEFAULT 'batch'",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'",
+            "data_transform",
+        ),
+    ),
+    "event_propagations": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS event_propagations",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE event_propagations ADD COLUMN rel_path TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE event_propagations ADD COLUMN validated_at TIMESTAMP",
+            "alter",
+        ),
+    ),
+    "job_runs": (
+        ("trade_py/db/trade_db.py", "CREATE TABLE IF NOT EXISTS job_runs", "bootstrap"),
+        ("trade_py/db/migrations.py", "ALTER TABLE job_runs ADD COLUMN stage TEXT", "alter"),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN trigger_event_id INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN result_summary TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN symbols_processed INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN elapsed_ms INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN completed_at TIMESTAMP",
+            "alter",
+        ),
+    ),
+    "instruments": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS instruments",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE instruments ADD COLUMN market_name TEXT NOT NULL DEFAULT ''",
+            "alter",
+        ),
+    ),
+    "kg_relations": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS kg_relations",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN direction INTEGER NOT NULL DEFAULT 1",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN typical_days INTEGER NOT NULL DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN evidence_json TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "alter",
+        ),
+        ("trade_py/db/migrations.py", "UPDATE kg_relations", "data_transform"),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE kg_relations SET weight = ABS(weight) WHERE weight < 0",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE kg_relations SET status = 'active' WHERE status IS NULL OR status = ''",
+            "data_transform",
+        ),
+    ),
+    "kg_edge_candidates": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+            "migration",
+        ),
+    ),
+    "model_registry": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS model_registry",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN target_name TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN backend TEXT DEFAULT 'lgbm'",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN artifact_format TEXT DEFAULT 'joblib'",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN feature_set TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN dataset_snapshot_id INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN promotion_state TEXT NOT NULL DEFAULT 'active'",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET target_name=COALESCE(target_name, model_name)",
+            "data_transform",
+        ),
+        ("trade_py/db/trade_db.py", "UPDATE model_registry SET backend=", "data_transform"),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET artifact_format=",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET promotion_state=",
+            "data_transform",
+        ),
+    ),
+    "signals": (
+        ("trade_py/db/trade_db.py", "CREATE TABLE IF NOT EXISTS signals", "bootstrap"),
+        ("trade_py/db/migrations.py", "INSERT OR IGNORE INTO signals", "data_transform"),
+    ),
+    "sector_members": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS sector_members",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO sector_members",
+            "data_transform",
+        ),
+    ),
+    "market_events": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS market_events",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO market_events",
+            "data_transform",
+        ),
+    ),
+    "sync_state": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS sync_state",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO sync_state",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR REPLACE INTO sync_state",
+            "data_transform",
+        ),
+    ),
+    "ui_snapshots": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS ui_snapshots",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS ui_snapshots",
+            "migration",
+        ),
+    ),
+    "signal_cache_v2": (
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS signal_cache_v2",
+            "migration",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO signal_cache_v2",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE signal_cache_v2 RENAME TO signal_cache",
+            "alter",
+        ),
+    ),
+    "bus_events": (
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS bus_events",
+            "migration",
+        ),
+        ("trade_py/db/migrations.py", "DROP TABLE IF EXISTS bus_events", "alter"),
+    ),
+}
 _REQUIRED_TABLE_FIXTURES = (
+    (
+        "event_log",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS event_log",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "pipeline_dag",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS pipeline_dag",
+        "deferred",
+        "deferred",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
     (
         "settings",
         "trade_py/db/trade_db.py",
@@ -183,13 +529,7 @@ _REQUIRED_TABLE_FIXTURES = (
     ),
 )
 _REQUIRED_TABLE_EXTRA_PROVENANCE = {
-    "ui_snapshots": (
-        (
-            "trade_py/db/migrations.py",
-            "CREATE TABLE IF NOT EXISTS ui_snapshots",
-            "migration",
-        ),
-    ),
+    table: requirements[1:] for table, requirements in _AUDITED_SCHEMA_EVOLUTION_PROVENANCE.items()
 }
 
 
@@ -418,6 +758,16 @@ reason = "Target ownership requires a reviewed Study migration."
 required_child = "study-boundary"
 provenance = [
   {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_relations", role = "bootstrap" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN direction INTEGER NOT NULL DEFAULT 1", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN typical_days INTEGER NOT NULL DEFAULT 0", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN evidence_json TEXT", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations", role = "data_transform" }},
+  {{ source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations SET weight = ABS(weight) WHERE weight < 0", role = "data_transform" }},
+  {{ source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations SET status = 'active' WHERE status IS NULL OR status = ''", role = "data_transform" }},
 ]
 
 [[tables]]
@@ -443,6 +793,16 @@ reason = "Target ownership requires a reviewed Study migration."
 required_child = "study-boundary"
 provenance = [
   {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_registry", role = "bootstrap" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN target_name TEXT", role = "alter" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN backend TEXT DEFAULT 'lgbm'", role = "alter" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN artifact_format TEXT DEFAULT 'joblib'", role = "alter" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN feature_set TEXT", role = "alter" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN dataset_snapshot_id INTEGER", role = "alter" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN promotion_state TEXT NOT NULL DEFAULT 'active'", role = "alter" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET target_name=COALESCE(target_name, model_name)", role = "data_transform" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET backend=", role = "data_transform" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET artifact_format=", role = "data_transform" }},
+  {{ source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET promotion_state=", role = "data_transform" }},
 ]
 
 [[tables]]
@@ -563,6 +923,7 @@ reason = "Requires immutable Dataset lineage before ownership transfer."
 required_child = "dataset-product-boundary"
 provenance = [
   {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS market_events", role = "bootstrap" }},
+  {{ source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO market_events", role = "data_transform" }},
 ]
 
 [[tables]]
@@ -575,6 +936,8 @@ reason = "Requires feature and validation ownership evidence before transfer."
 required_child = "dataset-product-boundary"
 provenance = [
   {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_propagations", role = "bootstrap" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE event_propagations ADD COLUMN rel_path TEXT", role = "alter" }},
+  {{ source = "trade_py/db/migrations.py", literal = "ALTER TABLE event_propagations ADD COLUMN validated_at TIMESTAMP", role = "alter" }},
 ]
 
 [[tables]]
@@ -1019,6 +1382,8 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'SETTINGS_SQL = "CREATE TABLE IF NOT EXISTS settings"\n'
             'WATCHLIST_SQL = "CREATE TABLE IF NOT EXISTS watchlist"\n'
             'SIGNALS_SQL = "CREATE TABLE IF NOT EXISTS signals"\n'
+            'EVENT_LOG_SQL = "CREATE TABLE IF NOT EXISTS event_log"\n'
+            'PIPELINE_DAG_SQL = "CREATE TABLE IF NOT EXISTS pipeline_dag"\n'
             'JOB_RUNS_SQL = "CREATE TABLE IF NOT EXISTS job_runs"\n'
             'EVENT_HANDLER_RUNS_SQL = "CREATE TABLE IF NOT EXISTS event_handler_runs"\n'
             'INSTRUMENTS_SQL = "CREATE TABLE IF NOT EXISTS instruments"\n'
@@ -1048,11 +1413,58 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'KG_CANDIDATES_SQL = "CREATE TABLE IF NOT EXISTS kg_edge_candidates"\n'
             'MODELS_SQL = "CREATE TABLE IF NOT EXISTS model_registry"\n'
             'MODEL_EVAL_SQL = "CREATE TABLE IF NOT EXISTS model_eval_runs"\n'
+            'INSTRUMENTS_ALTER_TOTAL_SHARES = "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0"\n'
+            'INSTRUMENTS_ALTER_FLOAT_SHARES = "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0"\n'
+            "INSTRUMENTS_ALTER_MARKET_NAME = \"ALTER TABLE instruments ADD COLUMN market_name TEXT NOT NULL DEFAULT ''\"\n"
+            'MODEL_REGISTRY_ALTER_TARGET = "ALTER TABLE model_registry ADD COLUMN target_name TEXT"\n'
+            "MODEL_REGISTRY_ALTER_BACKEND = \"ALTER TABLE model_registry ADD COLUMN backend TEXT DEFAULT 'lgbm'\"\n"
+            "MODEL_REGISTRY_ALTER_FORMAT = \"ALTER TABLE model_registry ADD COLUMN artifact_format TEXT DEFAULT 'joblib'\"\n"
+            'MODEL_REGISTRY_ALTER_FEATURE_SET = "ALTER TABLE model_registry ADD COLUMN feature_set TEXT"\n'
+            'MODEL_REGISTRY_ALTER_SNAPSHOT = "ALTER TABLE model_registry ADD COLUMN dataset_snapshot_id INTEGER"\n'
+            "MODEL_REGISTRY_ALTER_PROMOTION = \"ALTER TABLE model_registry ADD COLUMN promotion_state TEXT NOT NULL DEFAULT 'active'\"\n"
+            'MODEL_REGISTRY_TARGET_BACKFILL = "UPDATE model_registry SET target_name=COALESCE(target_name, model_name)"\n'
+            'MODEL_REGISTRY_BACKEND_BACKFILL = "UPDATE model_registry SET backend="\n'
+            'MODEL_REGISTRY_FORMAT_BACKFILL = "UPDATE model_registry SET artifact_format="\n'
+            'MODEL_REGISTRY_PROMOTION_BACKFILL = "UPDATE model_registry SET promotion_state="\n'
         ),
         "trade_py/db/migrations.py": (
             'MIGRATIONS_SQL = "CREATE TABLE IF NOT EXISTS schema_migrations"\n'
             'SIGNAL_CACHE_SQL = "CREATE TABLE IF NOT EXISTS signal_cache_v2"\n'
             'BUS_EVENTS_SQL = "CREATE TABLE IF NOT EXISTS bus_events"\n'
+            'BUS_EVENTS_DROP_SQL = "DROP TABLE IF EXISTS bus_events"\n'
+            'SIGNAL_CACHE_INSERT_SQL = "INSERT OR IGNORE INTO signal_cache_v2"\n'
+            'SIGNAL_CACHE_RENAME_SQL = "ALTER TABLE signal_cache_v2 RENAME TO signal_cache"\n'
+            'EVENT_LOG_INSERT_SQL = "INSERT OR IGNORE INTO event_log"\n'
+            'SIGNALS_INSERT_SQL = "INSERT OR IGNORE INTO signals"\n'
+            'SECTOR_MEMBERS_INSERT_SQL = "INSERT OR IGNORE INTO sector_members"\n'
+            'MARKET_EVENTS_INSERT_SQL = "INSERT OR IGNORE INTO market_events"\n'
+            'SYNC_STATE_IGNORE_SQL = "INSERT OR IGNORE INTO sync_state"\n'
+            'SYNC_STATE_REPLACE_SQL = "INSERT OR REPLACE INTO sync_state"\n'
+            'EVENT_PROPAGATIONS_ALTER_PATH = "ALTER TABLE event_propagations ADD COLUMN rel_path TEXT"\n'
+            'EVENT_PROPAGATIONS_ALTER_VALIDATED = "ALTER TABLE event_propagations ADD COLUMN validated_at TIMESTAMP"\n'
+            'JOB_RUNS_ALTER_STAGE = "ALTER TABLE job_runs ADD COLUMN stage TEXT"\n'
+            'JOB_RUNS_ALTER_EVENT = "ALTER TABLE job_runs ADD COLUMN trigger_event_id INTEGER"\n'
+            'JOB_RUNS_ALTER_SUMMARY = "ALTER TABLE job_runs ADD COLUMN result_summary TEXT"\n'
+            'JOB_RUNS_ALTER_SYMBOLS = "ALTER TABLE job_runs ADD COLUMN symbols_processed INTEGER"\n'
+            'JOB_RUNS_ALTER_ELAPSED = "ALTER TABLE job_runs ADD COLUMN elapsed_ms INTEGER"\n'
+            'JOB_RUNS_ALTER_COMPLETED = "ALTER TABLE job_runs ADD COLUMN completed_at TIMESTAMP"\n'
+            'KG_RELATIONS_ALTER_DIRECTION = "ALTER TABLE kg_relations ADD COLUMN direction INTEGER NOT NULL DEFAULT 1"\n'
+            'KG_RELATIONS_ALTER_DAYS = "ALTER TABLE kg_relations ADD COLUMN typical_days INTEGER NOT NULL DEFAULT 0"\n'
+            'KG_RELATIONS_ALTER_CONFIDENCE = "ALTER TABLE kg_relations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0"\n'
+            'KG_RELATIONS_ALTER_SAMPLES = "ALTER TABLE kg_relations ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0"\n'
+            'KG_RELATIONS_ALTER_EVIDENCE = "ALTER TABLE kg_relations ADD COLUMN evidence_json TEXT"\n'
+            "KG_RELATIONS_ALTER_STATUS = \"ALTER TABLE kg_relations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'\"\n"
+            'KG_RELATIONS_ALTER_UPDATED = "ALTER TABLE kg_relations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"\n'
+            'KG_RELATIONS_DIRECTION_BACKFILL = "UPDATE kg_relations"\n'
+            'KG_RELATIONS_WEIGHT_BACKFILL = "UPDATE kg_relations SET weight = ABS(weight) WHERE weight < 0"\n'
+            "KG_RELATIONS_STATUS_BACKFILL = \"UPDATE kg_relations SET status = 'active' WHERE status IS NULL OR status = ''\"\n"
+            "PIPELINE_DAG_ALTER_CONFIG = \"ALTER TABLE pipeline_dag ADD COLUMN config_json TEXT DEFAULT '{}'\"\n"
+            'PIPELINE_DAG_ALTER_SOURCE = "ALTER TABLE pipeline_dag ADD COLUMN sync_source TEXT"\n'
+            'PIPELINE_DAG_ALTER_DATASET = "ALTER TABLE pipeline_dag ADD COLUMN sync_dataset TEXT"\n'
+            "PIPELINE_DAG_ALTER_MODE = \"ALTER TABLE pipeline_dag ADD COLUMN mode TEXT DEFAULT 'batch'\"\n"
+            'PIPELINE_DAG_SYNC_BACKFILL = "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?"\n'
+            "PIPELINE_DAG_STREAM_MODE = \"UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'\"\n"
+            "PIPELINE_DAG_BOTH_MODE = \"UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'\"\n"
             'EVENT_HANDLER_RUNS_SQL = "CREATE TABLE IF NOT EXISTS event_handler_runs"\n'
             'KG_CANDIDATES_SQL = "CREATE TABLE IF NOT EXISTS kg_edge_candidates"\n'
             'UI_SNAPSHOTS_SQL = "CREATE TABLE IF NOT EXISTS ui_snapshots"\n'
@@ -1506,25 +1918,25 @@ def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("table_name", "literal"),
-    (
-        ("event_handler_runs", "CREATE TABLE IF NOT EXISTS event_handler_runs"),
-        ("kg_edge_candidates", "CREATE TABLE IF NOT EXISTS kg_edge_candidates"),
-        ("ui_snapshots", "CREATE TABLE IF NOT EXISTS ui_snapshots"),
+    ("table_name", "source", "literal", "role"),
+    tuple(
+        (table_name, source, literal, role)
+        for table_name, requirements in _AUDITED_SCHEMA_EVOLUTION_PROVENANCE.items()
+        for source, literal, role in requirements
     ),
 )
-def test_required_multi_source_table_provenance_fails_closed(
+def test_audited_schema_evolution_provenance_fails_closed(
     tmp_path: Path,
     table_name: str,
+    source: str,
     literal: str,
+    role: str,
 ) -> None:
     repo = _init_repo(tmp_path, _sources())
     baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
-    migration_record = (
-        '  { source = "trade_py/db/migrations.py", '
-        f'literal = "{literal}", role = "migration" }},\n'
-    )
-    _write_baseline(repo, baseline.replace(migration_record, "", 1))
+    provenance_record = f'  {{ source = "{source}", literal = "{literal}", role = "{role}" }},\n'
+    assert provenance_record in baseline, f"{table_name}: {provenance_record}"
+    _write_baseline(repo, baseline.replace(provenance_record, "", 1))
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
 

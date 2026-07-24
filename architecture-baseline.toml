@@ -45,7 +45,7 @@ reason = "The legacy event log is a current shared operational record, not an ap
 required_child = "process-manager-and-platform-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_log", role = "bootstrap" },
-  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO event_log", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO event_log", role = "data_transform" },
 ]
 
 [[tables]]
@@ -71,7 +71,13 @@ reason = "The legacy DAG mixes scheduling and business orchestration."
 required_child = "process-manager-and-platform-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS pipeline_dag", role = "bootstrap" },
-  { source = "trade_py/db/migrations.py", literal = "def _migrate_v11", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN config_json TEXT DEFAULT '{}'", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN sync_source TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN sync_dataset TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE pipeline_dag ADD COLUMN mode TEXT DEFAULT 'batch'", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'", role = "data_transform" },
 ]
 
 [[tables]]
@@ -266,6 +272,7 @@ reason = "Market events currently mix extraction, canonicalization, and decision
 required_child = "dataset-product-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS market_events", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO market_events", role = "data_transform" },
 ]
 
 [[tables]]
@@ -278,6 +285,8 @@ reason = "Propagation records combine graph transformation, realized-return back
 required_child = "dataset-product-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_propagations", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE event_propagations ADD COLUMN rel_path TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE event_propagations ADD COLUMN validated_at TIMESTAMP", role = "alter" },
 ]
 
 [[tables]]
@@ -362,6 +371,16 @@ reason = "Knowledge-graph relation ownership and Dataset/Study lineage require a
 required_child = "study-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS kg_relations", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN direction INTEGER NOT NULL DEFAULT 1", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN typical_days INTEGER NOT NULL DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN evidence_json TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE kg_relations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations SET weight = ABS(weight) WHERE weight < 0", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "UPDATE kg_relations SET status = 'active' WHERE status IS NULL OR status = ''", role = "data_transform" },
 ]
 
 [[tables]]
@@ -388,6 +407,15 @@ required_child = "study-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_registry", role = "bootstrap" },
   { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN target_name TEXT", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN backend TEXT DEFAULT 'lgbm'", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN artifact_format TEXT DEFAULT 'joblib'", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN feature_set TEXT", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN dataset_snapshot_id INTEGER", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE model_registry ADD COLUMN promotion_state TEXT NOT NULL DEFAULT 'active'", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET target_name=COALESCE(target_name, model_name)", role = "data_transform" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET backend=", role = "data_transform" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET artifact_format=", role = "data_transform" },
+  { source = "trade_py/db/trade_db.py", literal = "UPDATE model_registry SET promotion_state=", role = "data_transform" },
 ]
 
 [[tables]]
@@ -556,6 +584,7 @@ reason = "Signals are Decision Support migration inputs, but current rows lack i
 required_child = "decision-support-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS signals", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO signals", role = "data_transform" },
 ]
 
 [[tables]]
@@ -568,6 +597,12 @@ reason = "Job execution history requires a platform ExecutionRun boundary before
 required_child = "process-manager-and-platform-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS job_runs", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN stage TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN trigger_event_id INTEGER", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN result_summary TEXT", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN symbols_processed INTEGER", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN elapsed_ms INTEGER", role = "alter" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE job_runs ADD COLUMN completed_at TIMESTAMP", role = "alter" },
 ]
 
 [[tables]]
@@ -580,6 +615,9 @@ reason = "Instrument reference data is a Datasets migration input pending explic
 required_child = "dataset-product-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS instruments", role = "bootstrap" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0", role = "alter" },
+  { source = "trade_py/db/trade_db.py", literal = "ALTER TABLE instruments ADD COLUMN market_name TEXT NOT NULL DEFAULT ''", role = "alter" },
 ]
 
 [[tables]]
@@ -592,6 +630,7 @@ reason = "Sector membership is a Datasets migration input pending versioned sour
 required_child = "dataset-product-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS sector_members", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO sector_members", role = "data_transform" },
 ]
 
 [[tables]]
@@ -604,6 +643,8 @@ reason = "Sync state is a Capture checkpoint migration input pending SourceManif
 required_child = "capture-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS sync_state", role = "bootstrap" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO sync_state", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR REPLACE INTO sync_state", role = "data_transform" },
 ]
 
 [[tables]]
@@ -701,6 +742,8 @@ reason = "The historical signal cache needs a separate decision and study proven
 required_child = "decision-support-boundary"
 provenance = [
   { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS signal_cache_v2", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO signal_cache_v2", role = "data_transform" },
+  { source = "trade_py/db/migrations.py", literal = "ALTER TABLE signal_cache_v2 RENAME TO signal_cache", role = "alter" },
 ]
 
 [[tables]]
@@ -713,6 +756,7 @@ reason = "The historical bus event table requires explicit outbox, replay, and d
 required_child = "process-manager-and-platform-boundary"
 provenance = [
   { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS bus_events", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "DROP TABLE IF EXISTS bus_events", role = "alter" },
 ]
 
 [[artifacts]]

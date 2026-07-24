@@ -216,6 +216,20 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
     ),
 }
 _REQUIRED_TABLE_BINDINGS = {
+    "event_log": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS event_log",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+    ),
+    "pipeline_dag": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS pipeline_dag",
+        "deferred",
+        "deferred",
+        "process-manager-and-platform-boundary",
+    ),
     "source_health_daily": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS source_health_daily",
@@ -526,6 +540,18 @@ _REQUIRED_TABLE_BINDINGS = {
     ),
 }
 _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
+    "event_log": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS event_log",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO event_log",
+            "data_transform",
+        ),
+    ),
     "event_handler_runs": (
         (
             "trade_py/db/trade_db.py",
@@ -536,6 +562,181 @@ _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
             "trade_py/db/migrations.py",
             "CREATE TABLE IF NOT EXISTS event_handler_runs",
             "migration",
+        ),
+    ),
+    "pipeline_dag": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS pipeline_dag",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN config_json TEXT DEFAULT '{}'",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN sync_source TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN sync_dataset TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE pipeline_dag ADD COLUMN mode TEXT DEFAULT 'batch'",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET sync_source=?, sync_dataset=?",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET mode='streaming' WHERE job_name=? AND mode='batch'",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE pipeline_dag SET mode='both' WHERE job_name=? AND mode='batch'",
+            "data_transform",
+        ),
+    ),
+    "event_propagations": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS event_propagations",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE event_propagations ADD COLUMN rel_path TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE event_propagations ADD COLUMN validated_at TIMESTAMP",
+            "alter",
+        ),
+    ),
+    "job_runs": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS job_runs",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN stage TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN trigger_event_id INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN result_summary TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN symbols_processed INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN elapsed_ms INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE job_runs ADD COLUMN completed_at TIMESTAMP",
+            "alter",
+        ),
+    ),
+    "instruments": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS instruments",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE instruments ADD COLUMN total_shares INTEGER DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE instruments ADD COLUMN float_shares INTEGER DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE instruments ADD COLUMN market_name TEXT NOT NULL DEFAULT ''",
+            "alter",
+        ),
+    ),
+    "kg_relations": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS kg_relations",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN direction INTEGER NOT NULL DEFAULT 1",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN typical_days INTEGER NOT NULL DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN confidence REAL NOT NULL DEFAULT 0.0",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN sample_count INTEGER NOT NULL DEFAULT 0",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN evidence_json TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE kg_relations ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "alter",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE kg_relations",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE kg_relations SET weight = ABS(weight) WHERE weight < 0",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "UPDATE kg_relations SET status = 'active' WHERE status IS NULL OR status = ''",
+            "data_transform",
         ),
     ),
     "kg_edge_candidates": (
@@ -550,6 +751,116 @@ _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
             "migration",
         ),
     ),
+    "model_registry": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS model_registry",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN target_name TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN backend TEXT DEFAULT 'lgbm'",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN artifact_format TEXT DEFAULT 'joblib'",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN feature_set TEXT",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN dataset_snapshot_id INTEGER",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "ALTER TABLE model_registry ADD COLUMN promotion_state TEXT NOT NULL DEFAULT 'active'",
+            "alter",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET target_name=COALESCE(target_name, model_name)",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET backend=",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET artifact_format=",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/trade_db.py",
+            "UPDATE model_registry SET promotion_state=",
+            "data_transform",
+        ),
+    ),
+    "signals": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS signals",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO signals",
+            "data_transform",
+        ),
+    ),
+    "sector_members": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS sector_members",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO sector_members",
+            "data_transform",
+        ),
+    ),
+    "market_events": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS market_events",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO market_events",
+            "data_transform",
+        ),
+    ),
+    "sync_state": (
+        (
+            "trade_py/db/trade_db.py",
+            "CREATE TABLE IF NOT EXISTS sync_state",
+            "bootstrap",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO sync_state",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR REPLACE INTO sync_state",
+            "data_transform",
+        ),
+    ),
     "ui_snapshots": (
         (
             "trade_py/db/trade_db.py",
@@ -560,6 +871,35 @@ _REQUIRED_MULTI_SOURCE_TABLE_PROVENANCE = {
             "trade_py/db/migrations.py",
             "CREATE TABLE IF NOT EXISTS ui_snapshots",
             "migration",
+        ),
+    ),
+    "signal_cache_v2": (
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS signal_cache_v2",
+            "migration",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "INSERT OR IGNORE INTO signal_cache_v2",
+            "data_transform",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "ALTER TABLE signal_cache_v2 RENAME TO signal_cache",
+            "alter",
+        ),
+    ),
+    "bus_events": (
+        (
+            "trade_py/db/migrations.py",
+            "CREATE TABLE IF NOT EXISTS bus_events",
+            "migration",
+        ),
+        (
+            "trade_py/db/migrations.py",
+            "DROP TABLE IF EXISTS bus_events",
+            "alter",
         ),
     ),
 }
