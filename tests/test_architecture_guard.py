@@ -1244,6 +1244,30 @@ def test_function_local_non_writer_import_does_not_trigger_writer_diagnostic(
     ]
 
 
+def test_producer_discovery_scales_with_irrelevant_imports_and_sibling_scopes(
+    tmp_path: Path,
+) -> None:
+    irrelevant_source = "".join(
+        f"import ignored_{index:05d}\ndef sibling_{index:05d}():\n    return None\n"
+        for index in range(15_000)
+    )
+    app = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        f"{irrelevant_source}"
+        'write_table(layout, "ods", "events", frame=None)\n'
+    )
+    assert len(app.encode("utf-8")) <= DEFAULT_LIMITS.max_file_bytes
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=app))
+
+    started = time.monotonic()
+    report = validate_architecture_baseline(repo)
+    elapsed_seconds = time.monotonic() - started
+
+    assert report.ok, report.findings
+    assert elapsed_seconds < 3.0
+
+
 def test_relative_canonical_warehouse_import_is_resolved(tmp_path: Path) -> None:
     app = (
         "from .io import WarehouseLayout, write_table\n"

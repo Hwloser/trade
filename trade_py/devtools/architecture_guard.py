@@ -1514,6 +1514,72 @@ def _read_descriptor(descriptor: int, size: int, path: str) -> bytes:
     return payload
 
 
+class _ScopedBindings(Mapping[str, str]):
+    """Lexical warehouse bindings with local shadowing and O(1) child creation."""
+
+    def __init__(self, parent: _ScopedBindings | None = None) -> None:
+        self._parent = parent
+        self._aliases: dict[str, str | None] = {}
+        self._layouts: dict[str, bool] = {}
+        self._rebound_aliases: dict[str, bool] = {}
+
+    def __getitem__(self, name: str) -> str:
+        current: _ScopedBindings | None = self
+        while current is not None:
+            if name in current._aliases:
+                value = current._aliases[name]
+                if value is not None:
+                    return value
+                break
+            current = current._parent
+        raise KeyError(name)
+
+    def __iter__(self) -> Iterator[str]:
+        seen: set[str] = set()
+        current: _ScopedBindings | None = self
+        while current is not None:
+            for name, value in current._aliases.items():
+                if name not in seen:
+                    seen.add(name)
+                    if value is not None:
+                        yield name
+            current = current._parent
+
+    def __len__(self) -> int:
+        return sum(1 for _ in self)
+
+    def child(self) -> _ScopedBindings:
+        return _ScopedBindings(self)
+
+    def bind_alias(self, name: str, target: str | None) -> None:
+        self._aliases[name] = target
+
+    def bind_layout(self, name: str, is_layout: bool) -> None:
+        self._layouts[name] = is_layout
+
+    def bind_rebound_alias(self, name: str, is_rebound: bool) -> None:
+        self._rebound_aliases[name] = is_rebound
+
+    def is_layout(self, name: str) -> bool:
+        current: _ScopedBindings | None = self
+        while current is not None:
+            if name in current._layouts:
+                return current._layouts[name]
+            current = current._parent
+        return False
+
+    def is_rebound_alias(self, name: str) -> bool:
+        current: _ScopedBindings | None = self
+        while current is not None:
+            if name in current._rebound_aliases:
+                return current._rebound_aliases[name]
+            current = current._parent
+        return False
+
+    def has_tracked_binding(self, name: str) -> bool:
+        return self.get(name) is not None or self.is_layout(name) or self.is_rebound_alias(name)
+
+
 def _discover_in_source(
     path: str,
     text: str,
@@ -1552,15 +1618,8 @@ def _discover_in_source(
     finding_budget_exceeded = False
 
     class _ProducerVisitor(ast.NodeVisitor):
-        def __init__(
-            self,
-            aliases: Mapping[str, str] | None = None,
-            layouts: set[str] | None = None,
-            rebound_aliases: set[str] | None = None,
-        ) -> None:
-            self.aliases = dict(aliases or {})
-            self.layouts = set(layouts or set())
-            self.rebound_aliases = set(rebound_aliases or set())
+        def __init__(self, bindings: _ScopedBindings | None = None) -> None:
+            self.bindings = bindings or _ScopedBindings()
 
         def _add_finding(self, finding: ArchitectureFinding) -> bool:
             nonlocal finding_budget_exceeded
@@ -1576,16 +1635,26 @@ def _discover_in_source(
 
         def _invalidate_names(self, names: set[str]) -> None:
             for name in names:
-                if self.aliases.get(name) in CANONICAL_WRITERS:
-                    self.rebound_aliases.add(name)
-                self.aliases.pop(name, None)
-                self.layouts.discard(name)
+                was_writer = self.bindings.get(name) in CANONICAL_WRITERS
+                if was_writer:
+                    self.bindings.bind_rebound_alias(name, True)
+                if was_writer or self.bindings.has_tracked_binding(name):
+                    self.bindings.bind_alias(name, None)
+                    self.bindings.bind_layout(name, False)
 
-        def _bind_noncanonical_alias(self, name: str, target: str) -> None:
-            if self.aliases.get(name) in CANONICAL_WRITERS:
-                self.rebound_aliases.add(name)
-            self.aliases[name] = target
-            self.layouts.discard(name)
+        def _bind_noncanonical_alias(
+            self,
+            name: str,
+            target: str,
+            *,
+            track_alias: bool,
+        ) -> None:
+            was_writer = self.bindings.get(name) in CANONICAL_WRITERS
+            if was_writer:
+                self.bindings.bind_rebound_alias(name, True)
+            if track_alias or was_writer or self.bindings.has_tracked_binding(name):
+                self.bindings.bind_alias(name, target if track_alias else None)
+                self.bindings.bind_layout(name, False)
 
         def _bind_names(
             self,
@@ -1594,20 +1663,21 @@ def _discover_in_source(
             *,
             annotation: ast.AST | None = None,
         ) -> None:
-            resolved = _resolve_expression(value, self.aliases)
+            resolved = _resolve_expression(value, self.bindings)
             if resolved in CANONICAL_WRITERS:
                 for name in names:
-                    self.aliases[name] = resolved
-                    self.rebound_aliases.discard(name)
+                    self.bindings.bind_alias(name, resolved)
+                    self.bindings.bind_rebound_alias(name, False)
             else:
                 self._invalidate_names(names)
-            if _annotation_is_layout(annotation, self.aliases) or _is_layout_factory(
-                value, self.aliases
+            if _annotation_is_layout(annotation, self.bindings) or _is_layout_factory(
+                value, self.bindings
             ):
-                self.layouts.update(names)
+                for name in names:
+                    self.bindings.bind_layout(name, True)
 
         def _child(self) -> _ProducerVisitor:
-            return _ProducerVisitor(self.aliases, self.layouts, self.rebound_aliases)
+            return _ProducerVisitor(self.bindings.child())
 
         def _visit_function(
             self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
@@ -1623,8 +1693,8 @@ def _discover_in_source(
                 *((node.args.kwarg,) if node.args.kwarg is not None else ()),
             )
             for argument in arguments:
-                if _annotation_is_layout(argument.annotation, child.aliases):
-                    child.layouts.add(argument.arg)
+                if _annotation_is_layout(argument.annotation, child.bindings):
+                    child.bindings.bind_layout(argument.arg, True)
                 else:
                     child._invalidate_names({argument.arg})
             if isinstance(node, ast.Lambda):
@@ -1639,6 +1709,7 @@ def _discover_in_source(
                 self._bind_noncanonical_alias(
                     local,
                     alias.name if alias.asname else local,
+                    track_alias=_tracks_warehouse_namespace(alias.name),
                 )
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -1658,13 +1729,17 @@ def _discover_in_source(
                 local = alias.asname or alias.name
                 if module in {CANONICAL_WAREHOUSE_MODULE, CANONICAL_WAREHOUSE_PACKAGE}:
                     if alias.name in {"write_table", "upsert_table"}:
-                        self.aliases[local] = f"{CANONICAL_WAREHOUSE_MODULE}.{alias.name}"
-                        self.rebound_aliases.discard(local)
-                        self.layouts.discard(local)
+                        self.bindings.bind_alias(
+                            local, f"{CANONICAL_WAREHOUSE_MODULE}.{alias.name}"
+                        )
+                        self.bindings.bind_rebound_alias(local, False)
+                        self.bindings.bind_layout(local, False)
                     elif alias.name == "WarehouseLayout":
-                        self._bind_noncanonical_alias(local, CANONICAL_LAYOUT)
+                        self._bind_noncanonical_alias(local, CANONICAL_LAYOUT, track_alias=True)
                     elif alias.name == "io":
-                        self._bind_noncanonical_alias(local, CANONICAL_WAREHOUSE_MODULE)
+                        self._bind_noncanonical_alias(
+                            local, CANONICAL_WAREHOUSE_MODULE, track_alias=True
+                        )
                     elif alias.name == "*":
                         self._add_finding(
                             _producer_finding(
@@ -1689,7 +1764,12 @@ def _discover_in_source(
                     else:
                         self._invalidate_names({local})
                 else:
-                    self._bind_noncanonical_alias(local, f"{module}.{alias.name}")
+                    target = f"{module}.{alias.name}"
+                    self._bind_noncanonical_alias(
+                        local,
+                        target,
+                        track_alias=_tracks_warehouse_namespace(target),
+                    )
                     if module.startswith(CANONICAL_WAREHOUSE_PACKAGE) and _writer_like(alias.name):
                         self._add_finding(
                             _producer_finding(
@@ -1783,9 +1863,9 @@ def _discover_in_source(
 
         def visit_Call(self, node: ast.Call) -> None:
             nonlocal producer_report_bytes
-            writer = _resolve_expression(node.func, self.aliases)
+            writer = _resolve_expression(node.func, self.bindings)
             if writer not in CANONICAL_WRITERS:
-                if isinstance(node.func, ast.Name) and node.func.id in self.rebound_aliases:
+                if isinstance(node.func, ast.Name) and self.bindings.is_rebound_alias(node.func.id):
                     self._add_finding(
                         _producer_finding(
                             PRODUCER_UNRESOLVED_IMPORT,
@@ -1798,7 +1878,9 @@ def _discover_in_source(
                     )
                 self.generic_visit(node)
                 return
-            if not node.args or not _is_layout_expression(node.args[0], self.aliases, self.layouts):
+            if not node.args or not _is_layout_expression(
+                node.args[0], self.bindings, self.bindings
+            ):
                 self._add_finding(
                     _producer_finding(
                         PRODUCER_UNRESOLVED_LAYOUT,
@@ -1889,6 +1971,12 @@ def _import_from_module(path: str, node: ast.ImportFrom) -> str | None:
     return ".".join(resolved)
 
 
+def _tracks_warehouse_namespace(target: str) -> bool:
+    return target == CANONICAL_WAREHOUSE_PACKAGE or target.startswith(
+        f"{CANONICAL_WAREHOUSE_PACKAGE}."
+    )
+
+
 def _call_digest(node: ast.Call) -> str:
     normalized = ast.dump(node, annotate_fields=True, include_attributes=False)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -1925,9 +2013,13 @@ def _is_layout_factory(node: ast.AST | None, aliases: Mapping[str, str]) -> bool
 def _is_layout_expression(
     node: ast.AST,
     aliases: Mapping[str, str],
-    layouts: set[str],
+    bindings: _ScopedBindings,
 ) -> bool:
-    return isinstance(node, ast.Name) and node.id in layouts or _is_layout_factory(node, aliases)
+    return (
+        isinstance(node, ast.Name)
+        and bindings.is_layout(node.id)
+        or _is_layout_factory(node, aliases)
+    )
 
 
 def _annotation_is_layout(node: ast.AST | None, aliases: Mapping[str, str]) -> bool:
