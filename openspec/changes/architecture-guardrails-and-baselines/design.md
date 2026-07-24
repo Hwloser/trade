@@ -112,11 +112,13 @@ a `trade dev check` contributor.
 Acceptance for Task 2.1 requires baseline source/table/pointer claims to match
 the current repository text; all mandatory Capture-risk and dynamic-DDL
 inventories to be closed and non-authorizing; approved table-binding proof to
-be static, exact, direct-scope, receiver-matched, and conservatively reachable
-after falsey-literal branches, non-entering loops, terminal flow, and terminal
-`try` bodies have been excluded. It is bounded by persistence-operation,
-retained-SQL-byte, AST-node, and AST-depth limits, and every rejected
-relationship has a focused failing fixture.
+be static, exact, receiver-matched, and bound to one unique undecorated
+module-level callable with no competing module binding. A proof is admitted
+only from its straight-line statement prefix or a directly nested transaction
+`with` block; branches, loops, exception handlers, assertions, matches, and
+deferred comprehensions never authorize persistence. It is bounded by
+persistence-operation, retained-SQL-byte, AST-node, and AST-depth limits, and
+every rejected relationship has a focused failing fixture.
 
 Task 2.3 will make `trade dev check` architecture-aware. It will trigger for
 the baseline, `src/trade/**/*.py`, declared evidence, guard/contributor/registry
@@ -179,13 +181,16 @@ table-specific reads passed to a persistence call; transaction proof must be a
 static table-specific persistence call inside a transaction context using the
 same receiver or that context manager's explicit `as` alias. SQL table
 identifiers match at supported statement positions with identifier boundaries,
-not by substring. Proof collection ignores a static-false branch and statements
-after an unconditional `return` or `raise`, and fails closed above its callable
-operation or retained-SQL-byte budget. Thus a valid but unrelated legacy
-literal, suffix-named table, cross-adapter proof, uncalled nested helper,
-top-level constant, dead proof, or unrelated transaction receiver cannot
-authorize the table. Prose, comments, stale literals, unnamed or malformed
-adapter scopes, and data/artifact paths cannot authorize a binding.
+not by substring. Proof collection accepts only a straight-line callable prefix
+and directly nested transaction `with` blocks, stopping before any conditional,
+loop, exception, assertion, match, or deferred comprehension. It rejects a
+decorated, duplicate, deleted, assigned, imported, or otherwise rebound
+callable name, and fails closed above its callable operation, retained-SQL-byte,
+AST-node, or AST-depth budget. Thus a valid but unrelated legacy literal,
+suffix-named table, cross-adapter proof, uncalled nested helper, top-level
+constant, dead proof, or unrelated transaction receiver cannot authorize the
+table. Prose, comments, stale literals, unnamed or malformed adapter scopes,
+and data/artifact paths cannot authorize a binding.
 
 Static provenance is intentionally a bounded, named audit inventory, not a
 claim to discover or semantically normalize every legacy SQL statement. The
@@ -660,6 +665,19 @@ source-protection guarantee and avoids duplicate Git traversal.
   overlapping-prefix matcher parity, per-source literal-budget refusal, and
   large line-separated, same-line, and token-over-budget inert-string fixtures
   without adding runtime application I/O.
+- **Approved-binding proof needs control-flow interpretation** -> The guard
+  deliberately authorizes only direct calls in a unique, undecorated,
+  unrebound module-level callable's straight-line prefix and directly nested
+  transaction `with` blocks. It does not infer reachability through branches,
+  loops, exceptions, assertions, matches, or comprehensions; an owning child
+  must expose a small explicit persistence operation or propose a separate
+  reviewed CFG-proof expansion before relying on such a path.
+- **Many distinct approved proof callables increase retained review state** ->
+  Per-callable operation, SQL-byte, and AST budgets prevent individual growth,
+  and the aggregate source/baseline input budgets constrain the current
+  surface. A later `callable-proof-capacity` follow-up must introduce an
+  aggregate summary/operation/retained-SQL budget and callable index if a child
+  starts using many approved bindings.
 - **A source-text rule cannot prove runtime ownership** -> The guard blocks
   direct architectural bypasses and fail-closes unknown table/artifact,
   dynamic-loading, and process-spawn paths, but does not claim dynamic behavior

@@ -2193,6 +2193,45 @@ def _unreachable_approved_adapter_callable(field: str, unreachable_kind: str) ->
             "    else:\n"
             f"{body}"
         )
+    if unreachable_kind == "try_handler_after_return":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return (
+            f"\n\ndef {callable_name}(session):\n"
+            "    try:\n"
+            "        return None\n"
+            "    except RuntimeError:\n"
+            f"{body}"
+        )
+    if unreachable_kind == "if_truthy_else":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return (
+            f"\n\ndef {callable_name}(session):\n"
+            "    if (1,):\n"
+            "        return None\n"
+            "    else:\n"
+            f"{body}"
+        )
+    if unreachable_kind == "if_not_one":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    if not 1:\n{body}"
+    if unreachable_kind == "if_literal_comparison":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    if 1 == 0:\n{body}"
+    if unreachable_kind == "while_break":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    while True:\n        break\n{body}"
+    if unreachable_kind == "for_empty":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    for _ in ():\n{body}"
+    if unreachable_kind == "generator_empty":
+        sql = (
+            "INSERT INTO approved_records (id) VALUES (?)"
+            if field in {"writer_evidence", "transaction_evidence"}
+            else "SELECT id FROM approved_records"
+        )
+        return (
+            f'\n\ndef {callable_name}(session):\n    return (session.execute("{sql}") for _ in ())'
+        )
     if unreachable_kind == "after_return":
         return f"\n\ndef {callable_name}(session):\n    return None\n{operation}"
     if unreachable_kind == "after_raise":
@@ -2398,6 +2437,13 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
         "while_zero",
         "while_none",
         "try_else_after_terminal",
+        "try_handler_after_return",
+        "if_truthy_else",
+        "if_not_one",
+        "if_literal_comparison",
+        "while_break",
+        "for_empty",
+        "generator_empty",
         "after_return",
         "after_raise",
     ),
@@ -2450,6 +2496,60 @@ def test_approved_binding_rejects_unreachable_direct_scope_proofs(
     _write_baseline(
         repo, baseline + "\n" + _approved_binding_declaration().replace(original, replacement)
     )
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
+    ("redefinition", "description"),
+    (
+        (
+            "\n\ndef persist_approved(session):\n    return None\n",
+            "duplicate definition",
+        ),
+        (
+            "\n\npersist_approved = lambda session: None\n",
+            "subsequent assignment",
+        ),
+        (
+            "\n\ndel persist_approved\n",
+            "subsequent deletion",
+        ),
+        (
+            "\n\nif enabled:\n    persist_approved = lambda session: None\n",
+            "nested control-flow assignment",
+        ),
+    ),
+)
+def test_approved_binding_rejects_rebound_proof_callable(
+    tmp_path: Path,
+    redefinition: str,
+    description: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source() + redefinition, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
+
+
+def test_approved_binding_rejects_decorated_proof_callable(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source().replace(
+            "def persist_approved(session):",
+            "@decorator\ndef persist_approved(session):",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
 
     assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
@@ -2509,6 +2609,28 @@ def test_approved_binding_proof_ast_budget_fails_without_crashing(tmp_path: Path
         "architecture.baseline_evidence_budget_exceeded"
     }
     assert report.producers == ()
+
+
+def test_approved_binding_proof_within_ast_depth_budget_validates(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    expression = "+" * 300 + "1"
+    source.write_text(
+        _approved_adapter_source().replace(
+            "def persist_approved(session):\n",
+            f"def persist_approved(session):\n    value = {expression}\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    report = validate_architecture_baseline(repo, limits=DiscoveryLimits(max_ast_depth=512))
+
+    assert report.ok
+    assert report.producers
 
 
 def test_callable_proof_recursion_failure_is_terminally_cached(

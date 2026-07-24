@@ -70,19 +70,22 @@ accepted by the same source-only admission and no-follow validation as other
 baseline evidence. Every proof SHALL be in the one named target adapter module
 `src/trade/<adapter_scope path>.py` and within the named callable's direct
 lexical scope; nested function, async-function, lambda, and class bodies SHALL
-not satisfy a proof. Writer evidence SHALL occur as a static table-specific
+not satisfy a proof. The callable SHALL be exactly one undecorated top-level
+function or async function and SHALL have no other executable module binding,
+including a duplicate definition, assignment, deletion, import, or nested
+control-flow rebind. Writer evidence SHALL occur as a static table-specific
 write statement passed to a persistence call; reader and compatibility evidence
 SHALL occur as static table-specific read statements passed to a persistence
 call; transaction evidence SHALL occur inside a transaction context containing
 a static table-specific persistence operation on that transaction receiver or
 its explicit `as` alias. Every accepted SQL table identifier SHALL match at a
 supported statement position with identifier boundaries, not as a substring.
-Proof collection SHALL ignore branches with a statically false Python literal
-condition, statements after an unconditional terminal flow, and a `try` `else`
-whose body cannot complete normally; it SHALL conservatively retain only
-reachable direct-scope evidence. It SHALL fail closed before retaining more
-than the governed callable proof operation, SQL-byte, AST-node, or AST-depth
-budgets.
+Proof collection SHALL retain only direct calls in the callable's straight-line
+statement prefix and directly nested transaction `with` blocks. It SHALL stop
+before a conditional, loop, exception handler, assertion, match, or deferred
+comprehension rather than inferring a control-flow path through that construct.
+It SHALL fail closed before retaining more than the governed callable proof
+operation, SQL-byte, AST-node, or AST-depth budgets.
 `candidate` and `deferred` declarations SHALL reject every persistence-binding
 field.
 
@@ -123,10 +126,11 @@ runtime-behavior claim.
   path, a stale literal, a suffix-named table, a proof from another adapter or
   callable, an uncalled nested function/lambda/class helper, a top-level
   constant, a writer/reader/compatibility literal that does not identify the
-  declared logical table, a proof in a statically false literal branch, loop,
-  or unreachable `try` `else`, a proof after an unconditional terminal
-  statement, a proof above the governed operation, SQL-byte, AST-node, or
-  AST-depth budget, or a transaction context with an unrelated receiver
+  declared logical table, a decorated, duplicate, rebound, or imported proof
+  callable, a proof in a branch, loop, exception handler, assertion, match, or
+  deferred comprehension, a proof after an unconditional terminal statement, a
+  proof above the governed operation, SQL-byte, AST-node, or AST-depth budget,
+  or a transaction context with an unrelated receiver
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
 

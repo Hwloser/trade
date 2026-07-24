@@ -3007,13 +3007,93 @@ def _validate_approved_table_binding(
 
 
 def _adapter_callable(tree: ast.Module, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-    for statement in tree.body:
-        if (
-            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and statement.name == name
+    """Return one uniquely bound top-level callable suitable for static proof."""
+
+    candidates = [
+        statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name
+    ]
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    if candidate.decorator_list:
+        return None
+    if any(
+        statement is not candidate and _module_statement_binds_name(statement, name)
+        for statement in tree.body
+    ):
+        return None
+    return candidate
+
+
+def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
+    """Return whether executable module code can bind or delete ``name``."""
+
+    pending: list[ast.AST] = [statement]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                return True
+            continue
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, ast.Assign) and any(
+            _assignment_target_binds_name(target, name) for target in node.targets
         ):
-            return statement
-    return None
+            return True
+        if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and _assignment_target_binds_name(
+            node.target, name
+        ):
+            return True
+        if isinstance(node, ast.Delete) and any(
+            _assignment_target_binds_name(target, name) for target in node.targets
+        ):
+            return True
+        if isinstance(node, (ast.For, ast.AsyncFor)) and _assignment_target_binds_name(
+            node.target, name
+        ):
+            return True
+        if (
+            isinstance(node, ast.withitem)
+            and node.optional_vars is not None
+            and _assignment_target_binds_name(node.optional_vars, name)
+        ):
+            return True
+        if isinstance(node, ast.ExceptHandler) and node.name == name:
+            return True
+        if isinstance(node, ast.NamedExpr) and _assignment_target_binds_name(node.target, name):
+            return True
+        if isinstance(node, ast.MatchAs) and node.name == name:
+            return True
+        if isinstance(node, ast.MatchStar) and node.name == name:
+            return True
+        if isinstance(node, ast.MatchMapping) and node.rest == name:
+            return True
+        if isinstance(node, ast.Import) and any(
+            (alias.asname or alias.name.split(".", 1)[0]) == name for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name != "*" and (alias.asname or alias.name) == name for alias in node.names
+        ):
+            return True
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _assignment_target_binds_name(target: ast.expr, name: str) -> bool:
+    pending: list[ast.expr] = [target]
+    while pending:
+        candidate = pending.pop()
+        if isinstance(candidate, ast.Name) and candidate.id == name:
+            return True
+        if isinstance(candidate, ast.Starred):
+            pending.append(candidate.value)
+        elif isinstance(candidate, (ast.Tuple, ast.List)):
+            pending.extend(candidate.elts)
+    return False
 
 
 def _summarize_callable_proof(
@@ -3047,8 +3127,8 @@ def _validate_callable_proof_shape(
         )
 
 
-class _CallableProofVisitor(ast.NodeVisitor):
-    """Track static persistence calls and enclosing direct-scope transactions."""
+class _CallableProofVisitor:
+    """Track only straight-line direct-call evidence for approved bindings."""
 
     def __init__(self, *, source: str, limits: DiscoveryLimits) -> None:
         self._source = source
@@ -3057,69 +3137,71 @@ class _CallableProofVisitor(ast.NodeVisitor):
         self._operation_sql_bytes = 0
         self._transaction_receivers: list[frozenset[tuple[str, ...]]] = [frozenset()]
 
-    def visit_statements(self, statements: Sequence[ast.stmt]) -> bool:
-        """Visit conservatively reachable statements and return terminal status."""
+    def visit_statements(self, statements: Sequence[ast.stmt]) -> None:
+        """Scan a straight-line prefix and stop before ambiguous control flow."""
 
         for statement in statements:
-            self.visit(statement)
-            if _is_unconditional_terminal_statement(statement):
-                return True
-        return False
+            if isinstance(statement, (ast.With, ast.AsyncWith)):
+                self._visit_transaction_block(statement.items, statement.body)
+                continue
+            if isinstance(statement, ast.Expr):
+                self._visit_direct_expression(statement.value)
+                continue
+            if isinstance(statement, ast.Assign):
+                self._visit_direct_expression(statement.value)
+                continue
+            if isinstance(statement, ast.AnnAssign) and statement.value is not None:
+                self._visit_direct_expression(statement.value)
+                continue
+            if isinstance(statement, ast.AugAssign):
+                self._visit_direct_expression(statement.value)
+                continue
+            if isinstance(statement, ast.Return):
+                if statement.value is not None:
+                    self._visit_direct_expression(statement.value)
+                return
+            if isinstance(statement, ast.Raise):
+                if statement.exc is not None:
+                    self._visit_direct_expression(statement.exc)
+                if statement.cause is not None:
+                    self._visit_direct_expression(statement.cause)
+                return
+            if (
+                isinstance(
+                    statement,
+                    (
+                        ast.If,
+                        ast.For,
+                        ast.AsyncFor,
+                        ast.While,
+                        ast.Try,
+                        ast.Assert,
+                        ast.Match,
+                    ),
+                )
+                or type(statement).__name__ == "TryStar"
+            ):
+                return
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        del node
+    def _visit_direct_expression(self, expression: ast.expr) -> None:
+        """Visit immediate call chains without following deferred or conditional AST nodes."""
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        del node
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        del node
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        del node
-
-    def visit_With(self, node: ast.With) -> None:
-        self._visit_transaction_block(node.items, node.body)
-
-    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
-        self._visit_transaction_block(node.items, node.body)
-
-    def visit_If(self, node: ast.If) -> None:
-        truth_value = _static_boolean_value(node.test)
-        if truth_value is True:
-            self.visit_statements(node.body)
-        elif truth_value is False:
-            self.visit_statements(node.orelse)
-        else:
-            self.visit_statements(node.body)
-            self.visit_statements(node.orelse)
-
-    def visit_While(self, node: ast.While) -> None:
-        truth_value = _static_boolean_value(node.test)
-        if truth_value is not False:
-            self.visit_statements(node.body)
-        if truth_value is not True:
-            self.visit_statements(node.orelse)
-
-    def visit_Try(self, node: ast.Try) -> None:
-        body_is_terminal = self.visit_statements(node.body)
-        for handler in node.handlers:
-            self.visit_statements(handler.body)
-        if not body_is_terminal:
-            self.visit_statements(node.orelse)
-        self.visit_statements(node.finalbody)
-
-    def visit_TryStar(self, node: ast.AST) -> None:
-        body_is_terminal = self.visit_statements(getattr(node, "body", ()))
-        for handler in getattr(node, "handlers", ()):
-            self.visit_statements(handler.body)
-        if not body_is_terminal:
-            self.visit_statements(getattr(node, "orelse", ()))
-        self.visit_statements(getattr(node, "finalbody", ()))
-
-    def visit_Call(self, node: ast.Call) -> None:
-        self._record_persistence_operation(node)
-        self.generic_visit(node)
+        pending: list[ast.expr] = [expression]
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ast.Call):
+                self._record_persistence_operation(node)
+                pending.append(node.func)
+                pending.extend(node.args)
+                pending.extend(keyword.value for keyword in node.keywords)
+            elif isinstance(node, ast.Attribute):
+                pending.append(node.value)
+            elif isinstance(node, ast.Await):
+                pending.append(node.value)
+            elif isinstance(node, ast.Subscript):
+                pending.append(node.value)
+                if isinstance(node.slice, ast.expr):
+                    pending.append(node.slice)
 
     def _visit_transaction_block(
         self,
@@ -3130,8 +3212,10 @@ class _CallableProofVisitor(ast.NodeVisitor):
         for item in items:
             transaction_receivers.update(_transaction_receivers(item))
         self._transaction_receivers.append(frozenset(transaction_receivers))
-        self.visit_statements(body)
-        self._transaction_receivers.pop()
+        try:
+            self.visit_statements(body)
+        finally:
+            self._transaction_receivers.pop()
 
     def _record_persistence_operation(self, node: ast.Call) -> None:
         if _call_attribute_name(node) not in _PERSISTENCE_CALL_NAMES:
@@ -3178,57 +3262,6 @@ def _summary_has_persistence_operation(
         if field != "transaction_evidence" or operation.receiver in operation.transaction_receivers:
             return True
     return False
-
-
-def _static_boolean_value(node: ast.expr) -> bool | None:
-    if isinstance(node, ast.Constant):
-        return bool(node.value)
-    if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and not node.elts:
-        return False
-    if isinstance(node, ast.Dict) and not node.keys:
-        return False
-    return None
-
-
-def _is_unconditional_terminal_statement(statement: ast.stmt) -> bool:
-    if isinstance(statement, (ast.Return, ast.Raise)):
-        return True
-    if isinstance(statement, ast.If):
-        truth_value = _static_boolean_value(statement.test)
-        if truth_value is True:
-            return _statements_end_in_terminal(statement.body)
-        if truth_value is False:
-            return _statements_end_in_terminal(statement.orelse)
-        return (
-            bool(statement.body)
-            and bool(statement.orelse)
-            and _statements_end_in_terminal(statement.body)
-            and _statements_end_in_terminal(statement.orelse)
-        )
-    if isinstance(statement, (ast.With, ast.AsyncWith)):
-        return _statements_end_in_terminal(statement.body)
-    if isinstance(statement, ast.Try):
-        if _statements_end_in_terminal(statement.finalbody):
-            return True
-        return _statements_end_in_terminal(statement.body) and all(
-            _statements_end_in_terminal(handler.body) for handler in statement.handlers
-        )
-    if type(statement).__name__ == "TryStar":
-        finalbody = getattr(statement, "finalbody", ())
-        body = getattr(statement, "body", ())
-        handlers = getattr(statement, "handlers", ())
-        if _statements_end_in_terminal(finalbody):
-            return True
-        return _statements_end_in_terminal(body) and all(
-            _statements_end_in_terminal(getattr(handler, "body", ())) for handler in handlers
-        )
-    if isinstance(statement, ast.While) and _static_boolean_value(statement.test) is True:
-        return _statements_end_in_terminal(statement.body)
-    return False
-
-
-def _statements_end_in_terminal(statements: Sequence[ast.stmt]) -> bool:
-    return bool(statements) and _is_unconditional_terminal_statement(statements[-1])
 
 
 def _transaction_receivers(item: ast.withitem) -> frozenset[tuple[str, ...]]:
