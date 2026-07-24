@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import os
 import re
 import select
@@ -18,6 +19,7 @@ import stat
 import subprocess
 import threading
 import time
+import tokenize
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -119,13 +121,82 @@ _REQUIRED_CAPTURE_RISK_IDS = frozenset(
     }
 )
 _REQUIRED_CAPTURE_RISK_BINDINGS = {
+    "raw-record-single-publication-clock": (
+        "trade_py/intelligence/raw_record.py",
+        "published_at: datetime",
+        "trade_py.intelligence",
+        "capture-boundary",
+        "provider-observed-received-available-revision-clocks-collapsed",
+    ),
+    "cctv-date-only-publication-time": (
+        "trade_py/data/news/akshare_news.py",
+        "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)",
+        "trade_py.data.news",
+        "capture-boundary",
+        "date-only-inferred-precision",
+    ),
+    "warehouse-rss-fetched-time-substitution": (
+        "trade_py/data/warehouse/fetch.py",
+        '"published_at": published_at or fetched_at',
+        "trade_py.data.warehouse",
+        "capture-boundary",
+        "provider-timestamp-absence-substitution",
+    ),
     "rss-provider-time-fallback": (
         "trade_py/data/news/rss/base.py",
         "pub_time = datetime.now(timezone.utc)",
+        "trade_py.data.news.rss",
+        "capture-boundary",
+        "provider-timestamp-absence-substitution",
+    ),
+    "archive-date-only-publication-time": (
+        "trade_py/data/news/rss/archive.py",
+        "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)",
+        "trade_py.data.news.rss",
+        "capture-boundary",
+        "date-only-inferred-precision",
+    ),
+    "rss-catalog-environment-override": (
+        "trade_py/data/news/rss/catalog.py",
+        'override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")',
+        "trade_py.data.news.rss",
+        "capture-boundary",
+        "catalog-environment-override-and-absent-rights-evidence",
     ),
     "gdelt-catalog-db-config": (
         "trade_py/data/news/gdelt/source.py",
         'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")',
+        "trade_py.data.news.gdelt",
+        "capture-boundary",
+        "db-first-provider-channel-config",
+    ),
+    "gdelt-provider-time-fallback": (
+        "trade_py/data/news/gdelt/source.py",
+        "pub = datetime.now(timezone.utc)",
+        "trade_py.data.news.gdelt",
+        "capture-boundary",
+        "provider-timestamp-absence-substitution",
+    ),
+    "gdelt-streaming-local-state-and-refetch": (
+        "trade_py/data/news/gdelt/source.py",
+        "bronze_offsets = scan_bronze_channel_offsets(data_root)",
+        "trade_py.data.news.gdelt",
+        "capture-boundary",
+        "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor",
+    ),
+    "ingest-wal-replay": (
+        "trade_py/data/ingest/batch.py",
+        "self._recover_wal()",
+        "trade_py.data.ingest",
+        "capture-boundary",
+        "provider-refetch-versus-local-artifact-replay-versus-wal-recovery",
+    ),
+    "warehouse-semantic-quarantine": (
+        "trade_py/data/warehouse/articles.py",
+        'quality_status = "quarantined"',
+        "trade_py.data.warehouse",
+        "dataset-product-boundary",
+        "transport-integrity-versus-downstream-semantic-quarantine",
     ),
 }
 _REQUIRED_TABLE_BINDINGS = {
@@ -325,6 +396,118 @@ _REQUIRED_TABLE_BINDINGS = {
         "deferred",
         "decision-support-boundary",
     ),
+    "settings": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS settings",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+    ),
+    "watchlist": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS watchlist",
+        "candidate",
+        "decision_support",
+        "decision-support-boundary",
+    ),
+    "signals": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS signals",
+        "candidate",
+        "decision_support",
+        "decision-support-boundary",
+    ),
+    "job_runs": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS job_runs",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+    ),
+    "instruments": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS instruments",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "sector_members": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS sector_members",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "sync_state": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS sync_state",
+        "candidate",
+        "capture",
+        "capture-boundary",
+    ),
+    "trading_calendar": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS trading_calendar",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "planned_events": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS planned_events",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "agenda_queue": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS agenda_queue",
+        "candidate",
+        "processes",
+        "process-manager-and-platform-boundary",
+    ),
+    "backup_snapshots": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS backup_snapshots",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+    ),
+    "ui_snapshots": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS ui_snapshots",
+        "candidate",
+        "interfaces",
+        "cli-http-sdk-compatibility",
+    ),
+    "readiness_recovery_actions": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS readiness_recovery_actions",
+        "candidate",
+        "processes",
+        "process-manager-and-platform-boundary",
+    ),
+    "schema_migrations": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS schema_migrations",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+    ),
+    "signal_cache_v2": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS signal_cache_v2",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
+    ),
+    "bus_events": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS bus_events",
+        "deferred",
+        "deferred",
+        "process-manager-and-platform-boundary",
+    ),
 }
 _REQUIRED_ARTIFACT_SOURCES = {
     "catalog-sqlite-projection": "trade_py/observatory/catalog/store.py",
@@ -362,6 +545,7 @@ class DiscoveryLimits:
     max_producer_literal_bytes: int = 8 * 1024
     max_producer_report_bytes: int = 256 * 1024
     max_ast_nodes_per_file: int = 250_000
+    max_ast_depth: int = 512
     max_findings: int = 64
     max_diagnostic_field_bytes: int = 1_024
     max_git_record_bytes: int = 128 * 1024 + 512
@@ -668,6 +852,13 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
             f"baseline TOML cannot be parsed: {exc}",
             "Repair the baseline TOML syntax and required declarations.",
         ) from exc
+    except RecursionError as exc:
+        raise _GuardError(
+            _BASELINE_MALFORMED,
+            baseline_name,
+            "baseline TOML exceeds the supported parser recursion depth",
+            "Reduce baseline nesting and keep declarations as bounded flat tables.",
+        ) from exc
     except _GuardError:
         raise
 
@@ -678,7 +869,8 @@ def _load_baseline(root: Path, baseline_name: str, limits: DiscoveryLimits) -> _
             "baseline TOML root must be a table",
             "Use a TOML table with the required architecture declarations.",
         )
-    if parsed.get("schema_version") != 1:
+    schema_version = parsed.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
         raise _GuardError(
             _BASELINE_MALFORMED,
             baseline_name,
@@ -804,11 +996,20 @@ def _validate_baseline_facts(
     missing_capture_risks = sorted(_REQUIRED_CAPTURE_RISK_IDS - set(capture_risks_by_id))
     invalid_capture_risks = [
         risk_id
-        for risk_id, (source, literal) in _REQUIRED_CAPTURE_RISK_BINDINGS.items()
+        for risk_id, (
+            source,
+            literal,
+            current_owner,
+            required_child,
+            risk_kind,
+        ) in _REQUIRED_CAPTURE_RISK_BINDINGS.items()
         if risk_id in capture_risks_by_id
         and (
             capture_risks_by_id[risk_id].get("source") != source
             or capture_risks_by_id[risk_id].get("literal") != literal
+            or capture_risks_by_id[risk_id].get("current_owner") != current_owner
+            or capture_risks_by_id[risk_id].get("required_child") != required_child
+            or capture_risks_by_id[risk_id].get("risk_kind") != risk_kind
         )
     ]
     if missing_capture_risks or invalid_capture_risks:
@@ -824,8 +1025,8 @@ def _validate_baseline_facts(
                 None,
                 "baseline omits or misbinds required Capture-risk declarations: "
                 + "; ".join(risk_details),
-                "Record each audited Capture temporal, replay, and quarantine risk at its "
-                "reviewed source literal.",
+                "Record each audited Capture temporal, replay, and quarantine risk with its "
+                "reviewed source, literal, owner, child change, and risk kind.",
             )
         )
 
@@ -1190,7 +1391,16 @@ def _validate_source_literal(
             "declared evidence source is not valid UTF-8",
             "Keep declared evidence as stable UTF-8 source inside the repository.",
         ) from exc
-    if not _source_literal_is_present(text, literal):
+    try:
+        literal_is_present = _source_literal_is_present(text, literal, source=source)
+    except (RecursionError, SyntaxError, tokenize.TokenError) as exc:
+        raise _GuardError(
+            _BASELINE_INVALID_SOURCE,
+            source,
+            "declared Python evidence source cannot be parsed safely",
+            "Repair the source before relying on it as architecture baseline evidence.",
+        ) from exc
+    if not literal_is_present:
         raise _GuardError(
             _BASELINE_LITERAL_MISMATCH,
             source,
@@ -1200,13 +1410,94 @@ def _validate_source_literal(
         )
 
 
-def _source_literal_is_present(text: str, literal: str) -> bool:
-    """Match table DDL literals as complete identifiers, not name prefixes."""
+def _source_literal_is_present(text: str, literal: str, *, source: str) -> bool:
+    """Match evidence in executable Python, excluding comments and inert strings."""
+
+    if PurePosixPath(source).suffix in {".py", ".pyi"}:
+        text = _live_python_source_text(text)
 
     match = _CREATE_TABLE_LITERAL.fullmatch(literal)
     if match is None:
         return literal in text
     return any(candidate.group(0) == literal for candidate in _CREATE_TABLE_LITERAL.finditer(text))
+
+
+def _live_python_source_text(text: str) -> str:
+    """Mask comments and bare string expressions without changing code offsets."""
+
+    tree = ast.parse(text)
+    line_offsets = _source_line_offsets(text)
+    inert_string_spans = _inert_python_string_spans(tree, line_offsets)
+    characters = list(text)
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        if token.type != tokenize.COMMENT and (
+            token.type != tokenize.STRING
+            or not _offset_overlaps_any(
+                _source_position_offset(line_offsets, token.start),
+                _source_position_offset(line_offsets, token.end),
+                inert_string_spans,
+            )
+        ):
+            continue
+        _mask_source_span(
+            characters,
+            _source_position_offset(line_offsets, token.start),
+            _source_position_offset(line_offsets, token.end),
+        )
+    return "".join(characters)
+
+
+def _source_line_offsets(text: str) -> tuple[int, ...]:
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    return tuple(offsets)
+
+
+def _source_position_offset(line_offsets: Sequence[int], position: tuple[int, int]) -> int:
+    line, column = position
+    if line < 1 or line >= len(line_offsets):
+        return line_offsets[-1]
+    return line_offsets[line - 1] + column
+
+
+def _inert_python_string_spans(
+    tree: ast.AST,
+    line_offsets: Sequence[int],
+) -> tuple[tuple[int, int], ...]:
+    spans: list[tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.end_lineno is not None
+            and node.end_col_offset is not None
+        ):
+            spans.append(
+                (
+                    _source_position_offset(line_offsets, (node.lineno, node.col_offset)),
+                    _source_position_offset(
+                        line_offsets,
+                        (node.end_lineno, node.end_col_offset),
+                    ),
+                )
+            )
+    return tuple(spans)
+
+
+def _offset_overlaps_any(
+    start: int,
+    end: int,
+    spans: Sequence[tuple[int, int]],
+) -> bool:
+    return any(start < span_end and span_start < end for span_start, span_end in spans)
+
+
+def _mask_source_span(characters: list[str], start: int, end: int) -> None:
+    for index in range(max(0, start), min(len(characters), end)):
+        if characters[index] not in "\r\n":
+            characters[index] = " "
 
 
 def _is_allowed_evidence_source(source: str) -> bool:
@@ -1374,7 +1665,10 @@ def _iter_git_index(
     def drain_stderr() -> None:
         nonlocal stderr_size
         try:
-            while chunk := stderr_stream.read(8_192):
+            while True:
+                chunk = stderr_stream.read(8_192)
+                if not chunk:
+                    break
                 with stderr_lock:
                     remaining = limits.max_git_stderr_bytes - stderr_size
                     if remaining > 0:
@@ -1776,6 +2070,16 @@ def _discover_in_source(
 ) -> tuple[list[WarehouseProducer], list[ArchitectureFinding]]:
     try:
         tree = ast.parse(text, filename=path)
+    except RecursionError:
+        return [], [
+            ArchitectureFinding(
+                _BASELINE_INVALID_SOURCE,
+                path,
+                1,
+                "production source exceeds the supported parser recursion depth",
+                "Reduce source nesting before relying on its architecture inventory.",
+            )
+        ]
     except SyntaxError as exc:
         return [], [
             ArchitectureFinding(
@@ -1786,7 +2090,8 @@ def _discover_in_source(
                 "Repair the source syntax before relying on its architecture inventory.",
             )
         ]
-    if sum(1 for _ in ast.walk(tree)) > limits.max_ast_nodes_per_file:
+    ast_node_count, ast_depth = _ast_shape(tree)
+    if ast_node_count > limits.max_ast_nodes_per_file:
         return [], [
             _producer_finding(
                 PRODUCER_RESULT_BUDGET,
@@ -1794,6 +2099,16 @@ def _discover_in_source(
                 1,
                 "production source AST exceeds the configured node budget",
                 "Split the source or make a reviewed governed AST-node budget increase.",
+            )
+        ]
+    if ast_depth > limits.max_ast_depth:
+        return [], [
+            _producer_finding(
+                PRODUCER_RESULT_BUDGET,
+                path,
+                1,
+                "production source AST exceeds the configured nesting-depth budget",
+                "Reduce source nesting or make a reviewed governed AST-depth budget increase.",
             )
         ]
 
@@ -2015,6 +2330,7 @@ def _discover_in_source(
             self._bind_names(_assignment_names(node.targets), node.value)
 
         def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            self.visit(node.annotation)
             if node.value is not None:
                 self.visit(node.value)
             self._bind_names(
@@ -2077,6 +2393,7 @@ def _discover_in_source(
             for default in (*node.args.defaults, *node.args.kw_defaults):
                 if default is not None:
                     self.visit(default)
+            self._visit_function_annotations(node)
             self._invalidate_names({node.name})
             self._visit_function(node)
 
@@ -2086,11 +2403,26 @@ def _discover_in_source(
             for default in (*node.args.defaults, *node.args.kw_defaults):
                 if default is not None:
                     self.visit(default)
+            self._visit_function_annotations(node)
             self._invalidate_names({node.name})
             self._visit_function(node)
 
         def visit_Lambda(self, node: ast.Lambda) -> None:
             self._visit_function(node)
+
+        def _visit_function_annotations(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+                *((node.args.vararg,) if node.args.vararg is not None else ()),
+                *((node.args.kwarg,) if node.args.kwarg is not None else ()),
+            )
+            for argument in arguments:
+                if argument.annotation is not None:
+                    self.visit(argument.annotation)
+            if node.returns is not None:
+                self.visit(node.returns)
 
         def visit_ListComp(self, node: ast.ListComp) -> None:
             self._visit_comprehension(node.generators, (node.elt,))
@@ -2109,6 +2441,8 @@ def _discover_in_source(
                 self.visit(decorator)
             for base in node.bases:
                 self.visit(base)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
             self._invalidate_names({node.name})
             child = _ProducerVisitor(
                 self.lexical_bindings.child(),
@@ -2199,7 +2533,18 @@ def _discover_in_source(
             producer_report_bytes += producer_size
             self.generic_visit(node)
 
-    _ProducerVisitor().visit(tree)
+    try:
+        _ProducerVisitor().visit(tree)
+    except RecursionError:
+        return [], [
+            _producer_finding(
+                PRODUCER_RESULT_BUDGET,
+                path,
+                1,
+                "production source exceeds the guarded AST traversal recursion depth",
+                "Reduce source nesting or make a reviewed governed AST-depth budget increase.",
+            )
+        ]
     if finding_budget_exceeded:
         return producers, [
             _producer_finding(
@@ -2211,6 +2556,20 @@ def _discover_in_source(
             )
         ]
     return producers, findings
+
+
+def _ast_shape(tree: ast.AST) -> tuple[int, int]:
+    """Count AST nodes and maximum depth without recursive traversal."""
+
+    node_count = 0
+    maximum_depth = 0
+    pending: list[tuple[ast.AST, int]] = [(tree, 1)]
+    while pending:
+        node, depth = pending.pop()
+        node_count += 1
+        maximum_depth = max(maximum_depth, depth)
+        pending.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+    return node_count, maximum_depth
 
 
 def _import_from_module(path: str, node: ast.ImportFrom) -> str | None:

@@ -35,6 +35,152 @@ DEFAULT_APP = (
     "layout = WarehouseLayout.from_data_root('data')\n"
     'write_table(layout, "ods", "events", frame=None)\n'
 )
+_REQUIRED_TABLE_FIXTURES = (
+    (
+        "settings",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS settings",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "watchlist",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS watchlist",
+        "candidate",
+        "decision_support",
+        "decision-support-boundary",
+        "bootstrap",
+    ),
+    (
+        "signals",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS signals",
+        "candidate",
+        "decision_support",
+        "decision-support-boundary",
+        "bootstrap",
+    ),
+    (
+        "job_runs",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS job_runs",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "instruments",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS instruments",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+        "bootstrap",
+    ),
+    (
+        "sector_members",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS sector_members",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+        "bootstrap",
+    ),
+    (
+        "sync_state",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS sync_state",
+        "candidate",
+        "capture",
+        "capture-boundary",
+        "bootstrap",
+    ),
+    (
+        "trading_calendar",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS trading_calendar",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+        "bootstrap",
+    ),
+    (
+        "planned_events",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS planned_events",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+        "bootstrap",
+    ),
+    (
+        "agenda_queue",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS agenda_queue",
+        "candidate",
+        "processes",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "backup_snapshots",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS backup_snapshots",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "ui_snapshots",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS ui_snapshots",
+        "candidate",
+        "interfaces",
+        "cli-http-sdk-compatibility",
+        "bootstrap",
+    ),
+    (
+        "readiness_recovery_actions",
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS readiness_recovery_actions",
+        "candidate",
+        "processes",
+        "process-manager-and-platform-boundary",
+        "bootstrap",
+    ),
+    (
+        "schema_migrations",
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS schema_migrations",
+        "candidate",
+        "platform",
+        "process-manager-and-platform-boundary",
+        "migration",
+    ),
+    (
+        "signal_cache_v2",
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS signal_cache_v2",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
+        "migration",
+    ),
+    (
+        "bus_events",
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS bus_events",
+        "deferred",
+        "deferred",
+        "process-manager-and-platform-boundary",
+        "migration",
+    ),
+)
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -81,6 +227,35 @@ def _producer_identity(
 
 def _toml_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _required_table_declarations() -> str:
+    declarations = []
+    for (
+        name,
+        source,
+        literal,
+        classification,
+        target_context,
+        required_child,
+        role,
+    ) in _REQUIRED_TABLE_FIXTURES:
+        declarations.append(
+            f'''
+[[tables]]
+logical_name = "{name}"
+current_owner = "legacy"
+semantic_kind = "reviewed-legacy-schema"
+classification = "{classification}"
+target_context = "{target_context}"
+reason = "Fixture declaration."
+required_child = "{required_child}"
+provenance = [
+  {{ source = "{source}", literal = "{literal}", role = "{role}" }},
+]
+'''.strip()
+        )
+    return "\n\n".join(declarations)
 
 
 def _baseline(
@@ -465,6 +640,8 @@ provenance = [
   {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS FreshnessStatus", role = "migration" }},
 ]
 
+{_required_table_declarations()}
+
 [[artifacts]]
 id = "warehouse-parquet"
 source = "trade_py/warehouse.py"
@@ -511,19 +688,19 @@ required_child = "dataset-product-boundary"
 
 [[capture_risks]]
 id = "raw-record-single-publication-clock"
-source = "trade_py/capture.py"
-literal = "published_at"
-current_owner = "legacy"
+source = "trade_py/intelligence/raw_record.py"
+literal = "published_at: datetime"
+current_owner = "trade_py.intelligence"
 required_child = "capture-boundary"
-risk_kind = "clock-collapse"
+risk_kind = "provider-observed-received-available-revision-clocks-collapsed"
 current_behavior = "One field represents multiple clocks."
 required_migration_proof = "Independent clocks."
 
 [[capture_risks]]
 id = "cctv-date-only-publication-time"
-source = "trade_py/cctv.py"
-literal = "synthetic_noon"
-current_owner = "legacy"
+source = "trade_py/data/news/akshare_news.py"
+literal = "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)"
+current_owner = "trade_py.data.news"
 required_child = "capture-boundary"
 risk_kind = "date-only-inferred-precision"
 current_behavior = "Date-only values have synthetic time."
@@ -531,9 +708,9 @@ required_migration_proof = "Preserve source precision."
 
 [[capture_risks]]
 id = "warehouse-rss-fetched-time-substitution"
-source = "trade_py/rss.py"
-literal = "published_at or fetched_at"
-current_owner = "legacy"
+source = "trade_py/data/warehouse/fetch.py"
+literal = '"published_at": published_at or fetched_at'
+current_owner = "trade_py.data.warehouse"
 required_child = "capture-boundary"
 risk_kind = "provider-timestamp-absence-substitution"
 current_behavior = "Fetch time substitutes provider time."
@@ -543,7 +720,7 @@ required_migration_proof = "Separate provider and received clocks."
 id = "rss-provider-time-fallback"
 source = "trade_py/data/news/rss/base.py"
 literal = "pub_time = datetime.now(timezone.utc)"
-current_owner = "legacy"
+current_owner = "trade_py.data.news.rss"
 required_child = "capture-boundary"
 risk_kind = "provider-timestamp-absence-substitution"
 current_behavior = "Missing RSS provider time is replaced with the local collection clock."
@@ -551,9 +728,9 @@ required_migration_proof = "Persist provider precision separately from received 
 
 [[capture_risks]]
 id = "archive-date-only-publication-time"
-source = "trade_py/archive.py"
-literal = "archive_noon"
-current_owner = "legacy"
+source = "trade_py/data/news/rss/archive.py"
+literal = "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)"
+current_owner = "trade_py.data.news.rss"
 required_child = "capture-boundary"
 risk_kind = "date-only-inferred-precision"
 current_behavior = "Archive dates gain synthetic time."
@@ -561,9 +738,9 @@ required_migration_proof = "Preserve date-only precision."
 
 [[capture_risks]]
 id = "rss-catalog-environment-override"
-source = "trade_py/catalog.py"
-literal = "RSS_OVERRIDE"
-current_owner = "legacy"
+source = "trade_py/data/news/rss/catalog.py"
+literal = 'override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")'
+current_owner = "trade_py.data.news.rss"
 required_child = "capture-boundary"
 risk_kind = "catalog-environment-override-and-absent-rights-evidence"
 current_behavior = "Environment can replace the feed catalog."
@@ -573,7 +750,7 @@ required_migration_proof = "Version SourceManifest rights."
 id = "gdelt-catalog-db-config"
 source = "trade_py/data/news/gdelt/source.py"
 literal = 'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")'
-current_owner = "legacy"
+current_owner = "trade_py.data.news.gdelt"
 required_child = "capture-boundary"
 risk_kind = "db-first-provider-channel-config"
 current_behavior = "GDELT channel query, language, enablement, and priority can change from DB-first catalog settings."
@@ -583,7 +760,7 @@ required_migration_proof = "Freeze SourceManifest channel configuration digest i
 id = "gdelt-provider-time-fallback"
 source = "trade_py/data/news/gdelt/source.py"
 literal = "pub = datetime.now(timezone.utc)"
-current_owner = "legacy"
+current_owner = "trade_py.data.news.gdelt"
 required_child = "capture-boundary"
 risk_kind = "provider-timestamp-absence-substitution"
 current_behavior = "Invalid provider time uses collection time."
@@ -593,7 +770,7 @@ required_migration_proof = "Separate provider and received clocks."
 id = "gdelt-streaming-local-state-and-refetch"
 source = "trade_py/data/news/gdelt/source.py"
 literal = "bronze_offsets = scan_bronze_channel_offsets(data_root)"
-current_owner = "legacy"
+current_owner = "trade_py.data.news.gdelt"
 required_child = "capture-boundary"
 risk_kind = "provider-refetch-versus-local-artifact-replay-versus-stateful-stream-cursor"
 current_behavior = "Streaming uses mutable state and provider fetches."
@@ -601,9 +778,9 @@ required_migration_proof = "Replay immutable CaptureArtifact segments."
 
 [[capture_risks]]
 id = "ingest-wal-replay"
-source = "trade_py/wal.py"
-literal = "replay_wal"
-current_owner = "legacy"
+source = "trade_py/data/ingest/batch.py"
+literal = "self._recover_wal()"
+current_owner = "trade_py.data.ingest"
 required_child = "capture-boundary"
 risk_kind = "provider-refetch-versus-local-artifact-replay-versus-wal-recovery"
 current_behavior = "WAL replay writes legacy data."
@@ -611,9 +788,9 @@ required_migration_proof = "Replay immutable CaptureArtifact references."
 
 [[capture_risks]]
 id = "warehouse-semantic-quarantine"
-source = "trade_py/quarantine.py"
-literal = "quality_status = 'quarantined'"
-current_owner = "legacy"
+source = "trade_py/data/warehouse/articles.py"
+literal = 'quality_status = "quarantined"'
+current_owner = "trade_py.data.warehouse"
 required_child = "dataset-product-boundary"
 risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
 current_behavior = "Semantic quality uses a legacy quarantine flag."
@@ -752,6 +929,19 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
         "trade_py/migrations.py": ('SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n'),
         "trade_py/db/__init__.py": "",
         "trade_py/db/trade_db.py": (
+            'SETTINGS_SQL = "CREATE TABLE IF NOT EXISTS settings"\n'
+            'WATCHLIST_SQL = "CREATE TABLE IF NOT EXISTS watchlist"\n'
+            'SIGNALS_SQL = "CREATE TABLE IF NOT EXISTS signals"\n'
+            'JOB_RUNS_SQL = "CREATE TABLE IF NOT EXISTS job_runs"\n'
+            'INSTRUMENTS_SQL = "CREATE TABLE IF NOT EXISTS instruments"\n'
+            'SECTOR_MEMBERS_SQL = "CREATE TABLE IF NOT EXISTS sector_members"\n'
+            'SYNC_STATE_SQL = "CREATE TABLE IF NOT EXISTS sync_state"\n'
+            'TRADING_CALENDAR_SQL = "CREATE TABLE IF NOT EXISTS trading_calendar"\n'
+            'PLANNED_EVENTS_SQL = "CREATE TABLE IF NOT EXISTS planned_events"\n'
+            'AGENDA_QUEUE_SQL = "CREATE TABLE IF NOT EXISTS agenda_queue"\n'
+            'BACKUP_SNAPSHOTS_SQL = "CREATE TABLE IF NOT EXISTS backup_snapshots"\n'
+            'UI_SNAPSHOTS_SQL = "CREATE TABLE IF NOT EXISTS ui_snapshots"\n'
+            'RECOVERY_ACTIONS_SQL = "CREATE TABLE IF NOT EXISTS readiness_recovery_actions"\n'
             'SOURCE_HEALTH_SQL = "CREATE TABLE IF NOT EXISTS source_health_daily"\n'
             'SOURCE_EVAL_SQL = "CREATE TABLE IF NOT EXISTS source_eval_daily"\n'
             'EVENT_EVAL_SQL = "CREATE TABLE IF NOT EXISTS event_eval_runs"\n'
@@ -772,6 +962,9 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'MODEL_EVAL_SQL = "CREATE TABLE IF NOT EXISTS model_eval_runs"\n'
         ),
         "trade_py/db/migrations.py": (
+            'MIGRATIONS_SQL = "CREATE TABLE IF NOT EXISTS schema_migrations"\n'
+            'SIGNAL_CACHE_SQL = "CREATE TABLE IF NOT EXISTS signal_cache_v2"\n'
+            'BUS_EVENTS_SQL = "CREATE TABLE IF NOT EXISTS bus_events"\n'
             'ARTICLE_EVENT_SQL = "CREATE TABLE IF NOT EXISTS ArticleEvent"\n'
             'INFLUENCE_SIGNAL_SQL = "CREATE TABLE IF NOT EXISTS InfluenceSignal"\n'
             'EVIDENCE_SQL = "CREATE TABLE IF NOT EXISTS Evidence"\n'
@@ -784,17 +977,22 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'RECOMMENDATION_TRACE_SQL = "CREATE TABLE IF NOT EXISTS RecommendationTrace"\n'
         ),
         "trade_py/warehouse.py": 'path = f"{table}.parquet"\n',
-        "trade_py/capture.py": "published_at = None\n",
-        "trade_py/cctv.py": "synthetic_noon = True\n",
-        "trade_py/rss.py": "published_at or fetched_at\n",
-        "trade_py/archive.py": "archive_noon = True\n",
-        "trade_py/catalog.py": 'RSS_OVERRIDE = "RSS_OVERRIDE"\n',
-        "trade_py/wal.py": "replay_wal = True\n",
-        "trade_py/quarantine.py": "quality_status = 'quarantined'\n",
+        "trade_py/intelligence/raw_record.py": "published_at: datetime\n",
         "trade_py/data/__init__.py": "",
+        "trade_py/data/ingest/__init__.py": "",
+        "trade_py/data/ingest/batch.py": "self._recover_wal()\n",
         "trade_py/data/news/__init__.py": "",
+        "trade_py/data/news/akshare_news.py": (
+            "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)\n"
+        ),
         "trade_py/data/news/rss/__init__.py": "",
         "trade_py/data/news/rss/base.py": "pub_time = datetime.now(timezone.utc)\n",
+        "trade_py/data/news/rss/archive.py": (
+            "return datetime.combine(day, time(12, 0), tzinfo=timezone.utc)\n"
+        ),
+        "trade_py/data/news/rss/catalog.py": (
+            'override = os.environ.get("TRADE_RSS_FEED_INDEX_PATH")\n'
+        ),
         "trade_py/data/news/gdelt/__init__.py": "",
         "trade_py/data/news/gdelt/source.py": (
             'payload = load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")\n'
@@ -805,6 +1003,10 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
         "trade_py/data/warehouse/__init__.py": (
             "from trade_py.data.warehouse.io import WarehouseLayout, write_table, upsert_table\n"
         ),
+        "trade_py/data/warehouse/fetch.py": (
+            'row = {"published_at": published_at or fetched_at}\n'
+        ),
+        "trade_py/data/warehouse/articles.py": 'quality_status = "quarantined"\n',
         "trade_py/data/warehouse/io.py": (
             "class WarehouseLayout:\n"
             "    @classmethod\n"
@@ -879,6 +1081,22 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
         "ingest_runs",
         "coverage",
         "enrichment_status",
+        "settings",
+        "watchlist",
+        "signals",
+        "job_runs",
+        "instruments",
+        "sector_members",
+        "sync_state",
+        "trading_calendar",
+        "planned_events",
+        "agenda_queue",
+        "backup_snapshots",
+        "ui_snapshots",
+        "readiness_recovery_actions",
+        "schema_migrations",
+        "signal_cache_v2",
+        "bus_events",
         "causal_decision_snapshots",
         "causal_validation_outcomes",
         "causal_reward_punishment",
@@ -997,6 +1215,30 @@ def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
 
 
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        'current_owner = "incorrect.owner"',
+        'required_child = "study-boundary"',
+        'risk_kind = "incorrect-risk-kind"',
+    ),
+)
+def test_required_capture_risk_bindings_reject_owner_child_and_kind_mutation(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    original = 'current_owner = "trade_py.data.news.rss"'
+    if replacement.startswith("required_child"):
+        original = 'required_child = "capture-boundary"'
+    elif replacement.startswith("risk_kind"):
+        original = 'risk_kind = "provider-timestamp-absence-substitution"'
+    _write_baseline(repo, baseline.replace(original, replacement, 1))
+
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
 def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, _sources())
     migration_source = repo / "trade_py/db/migrations.py"
@@ -1017,6 +1259,10 @@ def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path)
     (
         (
             lambda text: text.replace("schema_version = 1", "schema_version = 2"),
+            "architecture.baseline_malformed",
+        ),
+        (
+            lambda text: text.replace("schema_version = 1", "schema_version = true"),
             "architecture.baseline_malformed",
         ),
         (
@@ -1062,13 +1308,47 @@ def test_baseline_schema_and_non_authorizing_states_fail_closed(
     assert expected_rule in _rule_ids(repo)
 
 
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "# LEGACY_DB = 1\n",
+        '"""LEGACY_DB = 1"""\n',
+    ),
+)
+def test_comments_and_inert_strings_do_not_satisfy_source_evidence(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    (repo / "trade_py/db.py").write_text(replacement, encoding="utf-8")
+
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+
+def test_toml_recursion_failure_is_reported_without_producers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    import trade_py.devtools.architecture_guard as guard
+
+    def raise_recursion(_: str) -> None:
+        raise RecursionError("fixture recursion limit")
+
+    monkeypatch.setattr(guard.tomllib, "loads", raise_recursion)
+
+    report = validate_architecture_baseline(repo)
+
+    assert {finding.rule_id for finding in report.findings} == {"architecture.baseline_malformed"}
+    assert report.producers == ()
+
+
 def test_missing_or_changed_declared_source_fails_closed(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, _sources())
     (repo / "trade_py/db.py").unlink()
     assert "architecture.baseline_missing_source" in _rule_ids(repo)
 
     repo = _init_repo(tmp_path / "changed", _sources())
-    path = repo / "trade_py/capture.py"
+    path = repo / "trade_py/intelligence/raw_record.py"
     path.write_text("received_at = None\n", encoding="utf-8")
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
 
@@ -1393,10 +1673,10 @@ def test_source_evidence_is_memoized_and_aggregate_budgeted(
 
     budget_report = validate_architecture_baseline(
         repo,
-        limits=DiscoveryLimits(max_aggregate_evidence_bytes=1),
+        limits=DiscoveryLimits(max_aggregate_evidence_bytes=1, max_findings=4),
     )
-    assert {finding.rule_id for finding in budget_report.findings} == {
-        "architecture.baseline_evidence_budget_exceeded"
+    assert "architecture.baseline_evidence_budget_exceeded" in {
+        finding.rule_id for finding in budget_report.findings
     }
     assert budget_report.producers == ()
 
@@ -1659,6 +1939,50 @@ def test_producer_discovery_scales_with_irrelevant_imports_and_sibling_scopes(
 
     assert report.ok, report.findings
     assert elapsed_seconds < 3.0
+
+
+@pytest.mark.parametrize(
+    "app",
+    (
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "def annotation(value: write_table(layout, 'ods', 'annotation', frame=None)) -> None:\n"
+            "    return None\n"
+        ),
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "class Container(metaclass=write_table(layout, 'ods', 'class_keyword', frame=None)):\n"
+            "    pass\n"
+        ),
+    ),
+)
+def test_writer_calls_in_annotations_and_class_keywords_are_discovered(
+    tmp_path: Path,
+    app: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    report = validate_architecture_baseline(repo)
+
+    assert PRODUCER_UNDECLARED_WRITER in {finding.rule_id for finding in report.findings}
+    assert report.producers == ()
+
+
+def test_deep_production_ast_fails_closed_without_recursion_error(tmp_path: Path) -> None:
+    nested_expression = "[" * 128 + "0" + "]" * 128
+    app = (
+        "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+        "layout = WarehouseLayout.from_data_root('data')\n"
+        f'write_table(layout, "ods", "events", {nested_expression})\n'
+    )
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    report = validate_architecture_baseline(repo, limits=DiscoveryLimits(max_ast_depth=32))
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_RESULT_BUDGET}
+    assert report.producers == ()
 
 
 def test_relative_canonical_warehouse_import_is_resolved(tmp_path: Path) -> None:

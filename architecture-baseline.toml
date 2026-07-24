@@ -45,7 +45,7 @@ reason = "The legacy event log is a current shared operational record, not an ap
 required_child = "process-manager-and-platform-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_log", role = "bootstrap" },
-  { source = "trade_py/db/migrations.py", literal = "bus_events → event_log", role = "migration" },
+  { source = "trade_py/db/migrations.py", literal = "INSERT OR IGNORE INTO event_log", role = "migration" },
 ]
 
 [[tables]]
@@ -521,6 +521,198 @@ provenance = [
   { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS RecommendationTrace", role = "migration" },
 ]
 
+[[tables]]
+logical_name = "settings"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-platform-settings-record"
+classification = "candidate"
+target_context = "platform"
+reason = "Global settings require an explicit platform settings boundary and compatibility migration before ownership transfer."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS settings", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "watchlist"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-watchlist-record"
+classification = "candidate"
+target_context = "decision_support"
+reason = "Watchlists are Decision Support migration inputs, but current rows lack DecisionCase audit and compatibility evidence."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS watchlist", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "signals"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-signal-record"
+classification = "candidate"
+target_context = "decision_support"
+reason = "Signals are Decision Support migration inputs, but current rows lack immutable Dataset and Study result references."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS signals", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "job_runs"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-job-execution-record"
+classification = "candidate"
+target_context = "platform"
+reason = "Job execution history requires a platform ExecutionRun boundary before ownership transfer."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS job_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "instruments"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-instrument-reference-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Instrument reference data is a Datasets migration input pending explicit version and source lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS instruments", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "sector_members"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-sector-reference-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Sector membership is a Datasets migration input pending versioned source and revision lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS sector_members", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "sync_state"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-collection-checkpoint-record"
+classification = "candidate"
+target_context = "capture"
+reason = "Sync state is a Capture checkpoint migration input pending SourceManifest and CaptureRun binding."
+required_child = "capture-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS sync_state", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "trading_calendar"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-calendar-reference-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Trading calendars are versioned reference-data candidates pending DatasetVersion and availability lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS trading_calendar", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "planned_events"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-planned-event-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Planned event records are Datasets candidates pending immutable source and revision lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS planned_events", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "agenda_queue"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-agenda-process-state"
+classification = "candidate"
+target_context = "processes"
+reason = "Agenda queue state is a Process Manager migration input pending idempotency and compensation evidence."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS agenda_queue", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "backup_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-backup-operation-record"
+classification = "candidate"
+target_context = "platform"
+reason = "Backup snapshots are platform operation records pending backup receipt and recovery ownership proof."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS backup_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "ui_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-ui-cache-projection"
+classification = "candidate"
+target_context = "interfaces"
+reason = "UI snapshots are interface cache projections pending BFF cache and invalidation ownership evidence."
+required_child = "cli-http-sdk-compatibility"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS ui_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "readiness_recovery_actions"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-recovery-process-state"
+classification = "candidate"
+target_context = "processes"
+reason = "Recovery actions are Process Manager migration inputs pending durable retry and compensation evidence."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS readiness_recovery_actions", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "schema_migrations"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-schema-migration-ledger"
+classification = "candidate"
+target_context = "platform"
+reason = "The migration ledger is a platform migration-runner input pending an owned schema evolution boundary."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS schema_migrations", role = "migration" },
+]
+
+[[tables]]
+logical_name = "signal_cache_v2"
+current_owner = "trade_py.db"
+semantic_kind = "historical-signal-cache-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "The historical signal cache needs a separate decision and study provenance assessment before ownership assignment."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS signal_cache_v2", role = "migration" },
+]
+
+[[tables]]
+logical_name = "bus_events"
+current_owner = "trade_py.db"
+semantic_kind = "historical-event-bus-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "The historical bus event table requires explicit outbox, replay, and delivery-state migration evidence."
+required_child = "process-manager-and-platform-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS bus_events", role = "migration" },
+]
+
 [[artifacts]]
 id = "warehouse-parquet"
 source = "trade_py/data/warehouse/io.py"
@@ -622,7 +814,7 @@ required_migration_proof = "Independent provider, observed, received, available,
 [[capture_risks]]
 id = "cctv-date-only-publication-time"
 source = "trade_py/data/news/akshare_news.py"
-literal = "CCTV API only gives date; set published_at to noon CST"
+literal = "pub = datetime(cur.year, cur.month, cur.day, 12, 0, 0, tzinfo=CST)"
 current_owner = "trade_py.data.news"
 required_child = "capture-boundary"
 risk_kind = "date-only-inferred-precision"
@@ -702,7 +894,7 @@ required_migration_proof = "Capture checkpoints and immutable segments must supp
 [[capture_risks]]
 id = "ingest-wal-replay"
 source = "trade_py/data/ingest/batch.py"
-literal = "Replay any leftover WAL segments into main parquet at startup."
+literal = "self._recover_wal()"
 current_owner = "trade_py.data.ingest"
 required_child = "capture-boundary"
 risk_kind = "provider-refetch-versus-local-artifact-replay-versus-wal-recovery"
