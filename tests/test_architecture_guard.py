@@ -2169,6 +2169,30 @@ def _unreachable_approved_adapter_callable(field: str, unreachable_kind: str) ->
     if unreachable_kind == "if_false":
         body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
         return f"\n\ndef {callable_name}(session):\n    if False:\n{body}"
+    if unreachable_kind in {"if_zero", "if_none", "if_empty_string", "if_empty_tuple"}:
+        test = {
+            "if_zero": "0",
+            "if_none": "None",
+            "if_empty_string": '""',
+            "if_empty_tuple": "()",
+        }[unreachable_kind]
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    if {test}:\n{body}"
+    if unreachable_kind in {"while_zero", "while_none"}:
+        test = {"while_zero": "0", "while_none": "None"}[unreachable_kind]
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return f"\n\ndef {callable_name}(session):\n    while {test}:\n{body}"
+    if unreachable_kind == "try_else_after_terminal":
+        body = "".join(f"    {line}\n" for line in operation.rstrip().splitlines())
+        return (
+            f"\n\ndef {callable_name}(session):\n"
+            "    try:\n"
+            "        return None\n"
+            "    except RuntimeError:\n"
+            "        return None\n"
+            "    else:\n"
+            f"{body}"
+        )
     if unreachable_kind == "after_return":
         return f"\n\ndef {callable_name}(session):\n    return None\n{operation}"
     if unreachable_kind == "after_raise":
@@ -2363,7 +2387,21 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
     "field",
     ("writer_evidence", "reader_evidence", "transaction_evidence", "compatibility_evidence"),
 )
-@pytest.mark.parametrize("unreachable_kind", ("if_false", "after_return", "after_raise"))
+@pytest.mark.parametrize(
+    "unreachable_kind",
+    (
+        "if_false",
+        "if_zero",
+        "if_none",
+        "if_empty_string",
+        "if_empty_tuple",
+        "while_zero",
+        "while_none",
+        "try_else_after_terminal",
+        "after_return",
+        "after_raise",
+    ),
+)
 def test_approved_binding_rejects_unreachable_direct_scope_proofs(
     tmp_path: Path,
     field: str,
@@ -2447,6 +2485,61 @@ def test_approved_binding_proof_collection_is_budgeted(
     assert "architecture.baseline_evidence_budget_exceeded" in {
         finding.rule_id for finding in report.findings
     }
+
+
+def test_approved_binding_proof_ast_budget_fails_without_crashing(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    expression = " + ".join("1" for _ in range(64))
+    source.write_text(
+        _approved_adapter_source().replace(
+            "def persist_approved(session):\n",
+            f"def persist_approved(session):\n    value = {expression}\n",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    report = validate_architecture_baseline(repo, limits=DiscoveryLimits(max_ast_depth=24))
+
+    assert {finding.rule_id for finding in report.findings} == {
+        "architecture.baseline_evidence_budget_exceeded"
+    }
+    assert report.producers == ()
+
+
+def test_callable_proof_recursion_failure_is_terminally_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source(), encoding="utf-8")
+    import trade_py.devtools.architecture_guard as guard
+
+    calls = 0
+
+    def raise_recursion(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        nonlocal calls
+        calls += 1
+        raise RecursionError("fixture recursion limit")
+
+    monkeypatch.setattr(guard, "_summarize_callable_proof", raise_recursion)
+    evidence = guard._EvidenceReader(repo, DEFAULT_LIMITS)
+
+    for _ in range(2):
+        with pytest.raises(guard._GuardError) as exc_info:
+            evidence.callable_proof_summary(
+                "src/trade/datasets/adapters/persistence/warehouse.py",
+                "persist_approved",
+            )
+        assert exc_info.value.finding.rule_id == "architecture.baseline_evidence_budget_exceeded"
+
+    assert calls == 1
 
 
 def test_approved_binding_rejects_table_suffix_and_comment_only_proofs(

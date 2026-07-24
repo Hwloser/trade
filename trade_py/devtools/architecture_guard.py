@@ -1516,6 +1516,17 @@ class _EvidenceReader:
         except _GuardError as exc:
             self._callable_proof_failures[key] = exc.finding
             raise
+        except RecursionError as exc:
+            failure = _baseline_evidence_budget_error(
+                relative,
+                "approved-binding callable proof exceeds the guarded AST traversal depth",
+                remediation=(
+                    "Reduce callable nesting or make a reviewed approved-binding "
+                    "AST-depth-budget increase."
+                ),
+            )
+            self._callable_proof_failures[key] = failure.finding
+            raise failure from exc
         self._callable_proof_summaries[key] = summary
         return summary
 
@@ -3013,9 +3024,27 @@ def _summarize_callable_proof(
 ) -> _CallableProofSummary:
     """Collect reachable direct-scope static SQL operations without closures."""
 
+    _validate_callable_proof_shape(callable_node, source=source, limits=limits)
     visitor = _CallableProofVisitor(source=source, limits=limits)
     visitor.visit_statements(callable_node.body)
     return _CallableProofSummary(tuple(visitor.operations))
+
+
+def _validate_callable_proof_shape(
+    callable_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    source: str,
+    limits: DiscoveryLimits,
+) -> None:
+    node_count, depth = _ast_shape(callable_node)
+    if node_count > limits.max_ast_nodes_per_file or depth > limits.max_ast_depth:
+        raise _baseline_evidence_budget_error(
+            source,
+            "approved-binding callable proof exceeds the configured AST node or depth budget",
+            remediation=(
+                "Reduce callable complexity or make a reviewed approved-binding AST-budget increase."
+            ),
+        )
 
 
 class _CallableProofVisitor(ast.NodeVisitor):
@@ -3066,18 +3095,26 @@ class _CallableProofVisitor(ast.NodeVisitor):
             self.visit_statements(node.orelse)
 
     def visit_While(self, node: ast.While) -> None:
-        if _static_boolean_value(node.test) is not False:
+        truth_value = _static_boolean_value(node.test)
+        if truth_value is not False:
             self.visit_statements(node.body)
-        self.visit_statements(node.orelse)
+        if truth_value is not True:
+            self.visit_statements(node.orelse)
 
     def visit_Try(self, node: ast.Try) -> None:
-        self.visit_statements(node.body)
-        self.visit_statements(node.orelse)
+        body_is_terminal = self.visit_statements(node.body)
+        for handler in node.handlers:
+            self.visit_statements(handler.body)
+        if not body_is_terminal:
+            self.visit_statements(node.orelse)
         self.visit_statements(node.finalbody)
 
     def visit_TryStar(self, node: ast.AST) -> None:
-        self.visit_statements(getattr(node, "body", ()))
-        self.visit_statements(getattr(node, "orelse", ()))
+        body_is_terminal = self.visit_statements(getattr(node, "body", ()))
+        for handler in getattr(node, "handlers", ()):
+            self.visit_statements(handler.body)
+        if not body_is_terminal:
+            self.visit_statements(getattr(node, "orelse", ()))
         self.visit_statements(getattr(node, "finalbody", ()))
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -3144,27 +3181,50 @@ def _summary_has_persistence_operation(
 
 
 def _static_boolean_value(node: ast.expr) -> bool | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-        return node.value
+    if isinstance(node, ast.Constant):
+        return bool(node.value)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and not node.elts:
+        return False
+    if isinstance(node, ast.Dict) and not node.keys:
+        return False
     return None
 
 
 def _is_unconditional_terminal_statement(statement: ast.stmt) -> bool:
     if isinstance(statement, (ast.Return, ast.Raise)):
         return True
-    if not isinstance(statement, ast.If):
-        return False
-    truth_value = _static_boolean_value(statement.test)
-    if truth_value is True:
+    if isinstance(statement, ast.If):
+        truth_value = _static_boolean_value(statement.test)
+        if truth_value is True:
+            return _statements_end_in_terminal(statement.body)
+        if truth_value is False:
+            return _statements_end_in_terminal(statement.orelse)
+        return (
+            bool(statement.body)
+            and bool(statement.orelse)
+            and _statements_end_in_terminal(statement.body)
+            and _statements_end_in_terminal(statement.orelse)
+        )
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
         return _statements_end_in_terminal(statement.body)
-    if truth_value is False:
-        return _statements_end_in_terminal(statement.orelse)
-    return (
-        bool(statement.body)
-        and bool(statement.orelse)
-        and _statements_end_in_terminal(statement.body)
-        and _statements_end_in_terminal(statement.orelse)
-    )
+    if isinstance(statement, ast.Try):
+        if _statements_end_in_terminal(statement.finalbody):
+            return True
+        return _statements_end_in_terminal(statement.body) and all(
+            _statements_end_in_terminal(handler.body) for handler in statement.handlers
+        )
+    if type(statement).__name__ == "TryStar":
+        finalbody = getattr(statement, "finalbody", ())
+        body = getattr(statement, "body", ())
+        handlers = getattr(statement, "handlers", ())
+        if _statements_end_in_terminal(finalbody):
+            return True
+        return _statements_end_in_terminal(body) and all(
+            _statements_end_in_terminal(getattr(handler, "body", ())) for handler in handlers
+        )
+    if isinstance(statement, ast.While) and _static_boolean_value(statement.test) is True:
+        return _statements_end_in_terminal(statement.body)
+    return False
 
 
 def _statements_end_in_terminal(statements: Sequence[ast.stmt]) -> bool:

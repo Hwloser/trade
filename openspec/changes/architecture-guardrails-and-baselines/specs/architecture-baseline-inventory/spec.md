@@ -77,12 +77,22 @@ call; transaction evidence SHALL occur inside a transaction context containing
 a static table-specific persistence operation on that transaction receiver or
 its explicit `as` alias. Every accepted SQL table identifier SHALL match at a
 supported statement position with identifier boundaries, not as a substring.
-Proof collection SHALL ignore statically false branches and statements after an
-unconditional `return` or `raise`; it SHALL conservatively retain only
+Proof collection SHALL ignore branches with a statically false Python literal
+condition, statements after an unconditional terminal flow, and a `try` `else`
+whose body cannot complete normally; it SHALL conservatively retain only
 reachable direct-scope evidence. It SHALL fail closed before retaining more
-than the governed callable proof operation or SQL-byte budgets.
+than the governed callable proof operation, SQL-byte, AST-node, or AST-depth
+budgets.
 `candidate` and `deferred` declarations SHALL reject every persistence-binding
 field.
+
+The artifact, pointer, interface, and Capture-risk records are non-authorizing
+lexical migration inputs. Their source/literal bindings and pinned descriptive
+fields do not prove the runtime branch, provider interaction, or data state
+surrounding a fact. A later `source-fact-semantic-evidence` child or owning
+Context child SHALL add AST-backed reachability and fact-specific semantic
+binding before a legacy source fact supports authorization, ownership, or a
+runtime-behavior claim.
 
 #### Scenario: A baseline table source changes
 
@@ -113,9 +123,10 @@ field.
   path, a stale literal, a suffix-named table, a proof from another adapter or
   callable, an uncalled nested function/lambda/class helper, a top-level
   constant, a writer/reader/compatibility literal that does not identify the
-  declared logical table, a proof in an `if False` branch or after an
-  unconditional terminal statement, a proof above the governed operation or
-  SQL-byte budget, or a transaction context with an unrelated receiver
+  declared logical table, a proof in a statically false literal branch, loop,
+  or unreachable `try` `else`, a proof after an unconditional terminal
+  statement, a proof above the governed operation, SQL-byte, AST-node, or
+  AST-depth budget, or a transaction context with an unrelated receiver
 - **THEN** baseline validation fails and the declaration does not authorize
   persistence access
 
@@ -188,6 +199,13 @@ and prove independent provider/observed/received/available/revision/finality
 clocks, SourceManifest rights enforcement, provider-free replay, and the
 Capture transport-versus-Datasets semantic quarantine split before migrating
 the corresponding audited news or NLP adapter.
+
+The Task 2.1 negative-I/O fixture audits the guard's admitted descriptor reader
+and selected database/parquet boundaries; it is not process-wide interception
+of every Python file API. A later `guard-io-admission` child SHALL instrument
+the file-open boundary so that only the baseline, declared evidence, and
+verified production-Python discovery descriptors are admitted, and every other
+in-repository, data/artifact, or out-of-repository open attempt fails.
 
 All source literals SHALL occur in executable/admitted source content. Python
 comments and standalone string, bytes, or f-string expressions, shell/CMake
@@ -297,14 +315,16 @@ print(f"included_paths={paths} source_bytes={source_bytes}")
 The output SHALL be `included_paths=306 source_bytes=3102353`; a changed
 reviewed measurement requires a governed evidence update and review.
 
-After the initial inventory, every modified, added, renamed, or untracked
-production Python file receives the same bounded AST import/call prefilter
+### Task 2.3 future requirement: scoped producer delta admission
+
+When Task 2.3 is implemented, every modified, added, renamed, or untracked
+production Python file SHALL receive the same bounded AST import/call prefilter
 before the planner classifies the delta as legacy-only. `ScopeSelection` SHALL
 carry this canonical, unfiltered producer-candidate set and rename/delete
 endpoints as an immutable `ProducerDiscoverySelection`, rather than permitting
-the contributor to rediscover Git. The selector SHALL enforce the same
+the contributor to rediscover Git. The future selector SHALL enforce the same
 512-path, 64-KiB-path, 32-MiB-source, and 1-MiB-file limits before AST work.
-The contributor SHALL transport existing candidates in deterministic
+The future contributor SHALL transport existing candidates in deterministic
 `batched_paths()` producer-prefilter steps within the existing 65,536-byte argv
 limit; it SHALL create no manifest, cache, or mutable application state. A
 candidate set whose encoded argv batch would exceed that limit SHALL split
@@ -314,15 +334,16 @@ rename-source endpoints are not opened; they are matched against declared
 producer sources and produce a baseline-staleness failure until reconciled.
 
 A detected canonical writer, a changed or deleted declared producer source, or
-an unresolved warehouse-writer import forces baseline validation. Those
-producer signals are architecture-sensitive: if `--path` excludes any
-modified, added, deleted, rename-source, rename-target, or untracked signal,
-the planner SHALL emit `architecture.partial_scope` with the excluded paths
-before any acceptance result. A noncandidate legacy-only delta remains
-non-triggering. The validator fails until the baseline declares every
-discovered producer; it does not accept a hand-maintained required-table list
-or one materialization module as proof of completeness. Test fixtures are not
-production artifact producers. Each declaration SHALL name the producer
+an unresolved warehouse-writer import SHALL force baseline validation when
+Task 2.3 is implemented. Those producer signals are architecture-sensitive:
+if `--path` excludes any modified, added, deleted, rename-source, rename-target,
+or untracked signal, the future planner SHALL emit
+`architecture.partial_scope` with the excluded paths before any acceptance
+result. A noncandidate legacy-only delta remains non-triggering. The direct
+Task 2.1 validator fails until the baseline declares every producer discovered
+by its initial inventory; it does not accept a hand-maintained required-table
+list or one materialization module as proof of completeness. Test fixtures are
+not production artifact producers. Each declaration SHALL name the producer
 source, exact call literal, layer, table, path role, and target/deferred
 classification. This includes
 `ads_warehouse_validation_report` where the producer exists even when a
@@ -350,23 +371,23 @@ validation-required table list omits it, and the CLI fetch producers
 
 #### Scenario: A changed producer is not already in the baseline
 
-- **WHEN** a changed or untracked production Python file contains a call that
-  resolves to a canonical warehouse writer
+- **WHEN** Task 2.3 is implemented and a changed or untracked production
+  Python file contains a call that resolves to a canonical warehouse writer
 - **THEN** its bounded prefilter prevents a legacy-only plan, baseline
   validation runs, and an undeclared producer fails closed until the inventory
   declaration is added
 
 #### Scenario: A producer signal is excluded by a path filter
 
-- **WHEN** `--path` excludes a modified, added, deleted, rename-source,
-  rename-target, or untracked producer-discovery signal
+- **WHEN** Task 2.3 is implemented and `--path` excludes a modified, added,
+  deleted, rename-source, rename-target, or untracked producer-discovery signal
 - **THEN** planning reports `architecture.partial_scope` and the excluded
   repository-relative paths before any target or baseline acceptance result
 
 #### Scenario: A declared producer source is renamed or deleted
 
-- **WHEN** a child renames or deletes a source named by a warehouse producer
-  declaration
+- **WHEN** Task 2.3 is implemented and a child renames or deletes a source
+  named by a warehouse producer declaration
 - **THEN** the baseline contributor runs from canonical rename/delete metadata
   and fails until the declaration is updated or removed with the corresponding
   producer inventory evidence
@@ -398,8 +419,9 @@ validation-required table list omits it, and the CLI fetch producers
 
 #### Scenario: A declared pointer or receipt source is changed
 
-- **WHEN** a child renames, deletes, or rewrites the code declaration of a
-  recorded artifact, pointer, receipt, or Capture-risk fact
+- **WHEN** Task 2.3 is implemented and a child renames, deletes, or rewrites
+  the code declaration of a recorded artifact, pointer, receipt, or
+  Capture-risk fact
 - **THEN** the architecture contributor runs and fails until the baseline
   declaration and the owning child's migration evidence are updated together
 
@@ -443,9 +465,9 @@ native-boundary, and rollback criteria.
 
 #### Scenario: An interface evidence source changes
 
-- **WHEN** a child renames, deletes, or changes the source declaration of a
-  canonical CLI domain, FastAPI route/router, OpenAPI creation path, SSE media
-  type, or its existing contract-test source
+- **WHEN** Task 2.3 is implemented and a child renames, deletes, or changes
+  the source declaration of a canonical CLI domain, FastAPI route/router,
+  OpenAPI creation path, SSE media type, or its existing contract-test source
 - **THEN** the architecture baseline contributor runs and fails until the
   source-only inventory and the owning interface child evidence are updated
 

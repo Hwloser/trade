@@ -112,8 +112,11 @@ a `trade dev check` contributor.
 Acceptance for Task 2.1 requires baseline source/table/pointer claims to match
 the current repository text; all mandatory Capture-risk and dynamic-DDL
 inventories to be closed and non-authorizing; approved table-binding proof to
-be static, exact, direct-scope, conservatively reachable, receiver-matched,
-and bounded; and every rejected relationship to have a focused failing fixture.
+be static, exact, direct-scope, receiver-matched, and conservatively reachable
+after falsey-literal branches, non-entering loops, terminal flow, and terminal
+`try` bodies have been excluded. It is bounded by persistence-operation,
+retained-SQL-byte, AST-node, and AST-depth limits, and every rejected
+relationship has a focused failing fixture.
 
 Task 2.3 will make `trade dev check` architecture-aware. It will trigger for
 the baseline, `src/trade/**/*.py`, declared evidence, guard/contributor/registry
@@ -322,9 +325,11 @@ commit before any owner migration consumes it.
 
 ### Performance and capacity
 
-Task 2.1 has no contributor, target-batch, subprocess, executor, timeout, or
-structured output-envelope lifecycle. It reads only the finite set of
-baseline-declared source files and one bounded producer-inventory pass. No
+Task 2.1 has no contributor, target-batch, quality-executor, or structured
+output-envelope lifecycle. It reads only the finite set of baseline-declared
+source files and one bounded producer-inventory pass. The pass uses a bounded
+internal Git-index subprocess with a 30-second deadline, bounded stderr, and
+process-group cleanup; it is not a Task 2.3 quality-executor lifecycle. No
 network access, package installation, database scan, artifact hash, or
 recursive full-repository AST scan is permitted, except for the separately
 bounded producer-inventory pass below. Baseline validation groups declared
@@ -332,9 +337,9 @@ evidence literals by source and scans each transformed source once for its
 pending literals using a deterministic multi-pattern automaton. It rejects a
 source with more than 256 distinct literals or more than 64 KiB of literal
 bytes before matching, and rejects a callable proof above 256 persistence
-operations or 64 KiB of retained SQL text. It caches terminal proof failures,
-so a repeated proof cannot expand work or turn a failure into partial
-authorization.
+operations, 64 KiB of retained SQL text, or its guarded AST node/depth budget.
+It caches terminal proof failures, so a repeated proof cannot expand work or
+turn a failure into partial authorization.
 
 Task 2.3 will add explicit contributor triggers, `batched_paths()`,
 deterministic producer-prefilter/baseline/target batch identifiers, target
@@ -700,7 +705,21 @@ source-protection guarantee and avoids duplicate Git traversal.
 - **Source-only baseline reads data by accident** -> The validator allowlists
   only its baseline/evidence source files in a temporary fixture and explicitly
   denies in-repository data/artifact sentinels as well as external paths. A
-  source fact cannot justify physical artifact inspection.
+  source fact cannot justify physical artifact inspection. The current
+  negative-I/O fixture audits the guard's admitted descriptor reader and
+  patches known database/parquet entry points; it is not a process-wide
+  interception of every Python file API. A later `guard-io-admission` follow-up
+  must add boundary instrumentation that permits only the baseline, declared
+  evidence, and verified production-source descriptors and rejects every other
+  file-open attempt.
+- **Lexical source facts could be mistaken for runtime behavior proof** ->
+  Artifact, pointer, interface, and Capture-risk facts are bounded,
+  source-verified, non-authorizing migration inputs. Their exact literals and
+  pinned descriptions do not prove the surrounding runtime branch, provider
+  interaction, or data state. A later `source-fact-semantic-evidence` child or
+  owning Context child must add AST-backed reachability and fact-specific
+  semantic binding before a legacy source fact can support authorization,
+  ownership, or behavior claims.
 - **First-child interface scope expands into a compatibility migration** ->
   This child inventories definition/test sources only. It does not generate
   behavioral snapshots, delegate a route, or alter a response form; those remain
