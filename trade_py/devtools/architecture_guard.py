@@ -3153,6 +3153,19 @@ def _is_module_namespace(node: ast.AST) -> bool:
     )
 
 
+def _object_namespace_root_name(node: ast.AST) -> str | None:
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "vars"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        return None
+    identity = _expression_identity(node.args[0])
+    return identity[0] if identity is not None else _UNKNOWN_BINDING_ROOT
+
+
 def _summarize_callable_proof(
     callable_node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -3405,6 +3418,11 @@ def _assignment_target_root_names(targets: Sequence[ast.expr | None]) -> frozens
         if isinstance(target, ast.Name):
             roots.add(target.id)
         elif isinstance(target, (ast.Attribute, ast.Subscript)):
+            if isinstance(target, ast.Subscript):
+                namespace_root = _object_namespace_root_name(target.value)
+                if namespace_root is not None:
+                    roots.add(namespace_root)
+                    continue
             if isinstance(target, ast.Subscript) and _is_module_namespace(target.value):
                 namespace_key = _static_string_expression(target.slice)
                 roots.add(namespace_key or _UNKNOWN_BINDING_ROOT)

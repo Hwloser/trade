@@ -123,7 +123,8 @@ compatibility proof must be one read-only `SELECT` statement; writer and
 transaction proof must be one write statement. The declared proof literal must
 exactly equal that direct SQL argument, not merely occur elsewhere in the
 adapter. A transaction receiver or explicit alias remains valid only until a
-direct-scope binding mutation or unmodelled dynamic call. A proof is admitted
+direct-scope binding or object-namespace mutation, or an unmodelled dynamic
+call. A proof is admitted
 only from its straight-line callable prefix and a direct transaction `with`
 block in that prefix; nested `with` blocks, branches, loops, exception
 handlers, assertions, matches, and deferred comprehensions never authorize
@@ -202,8 +203,8 @@ The declared source literal must exactly equal that static SQL argument and a
 mismatch points to the named adapter callable line.
 Transaction proof must be a static table-specific write inside one direct
 transaction `with` block using the same receiver or that context manager's
-explicit `as` alias, and that receiver identity must remain unmodified from
-transaction entry to the call. Any unmodelled direct-scope call invalidates
+explicit `as` alias, and that receiver identity and object namespace must remain
+unmodified from transaction entry to the call. Any unmodelled direct-scope call invalidates
 transaction receiver proof rather than being interpreted dynamically. Writer
 and transaction proof reject a semicolon-separated second statement after
 comments and values are masked. SQL table identifiers match at supported

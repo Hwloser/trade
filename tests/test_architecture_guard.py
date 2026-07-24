@@ -2437,6 +2437,14 @@ def test_approved_binding_accepts_explicit_transaction_alias(tmp_path: Path) -> 
             'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
             'with session.transaction() as tx:\n        globals()["tx"] = unrelated\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
         ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction():\n        vars(session)["execute"] = unrelated\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
+        (
+            'with session.transaction():\n        session.execute("INSERT INTO approved_records (id) VALUES (?)")',
+            'with session.transaction() as tx:\n        vars(tx)["execute"] = unrelated\n        tx.execute("INSERT INTO approved_records (id) VALUES (?)")',
+        ),
     ),
 )
 def test_approved_binding_rejects_dynamic_transaction_receiver_rebinding(

@@ -92,8 +92,8 @@ statement in that same position. A string only in a persistence parameter or
 keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
 direct transaction `with` block containing a static table-specific write on that
 transaction receiver or its explicit `as` alias. No direct-scope binding
-mutation or unmodelled dynamic call may alter that receiver root or alias before
-the operation.
+or object-namespace mutation, or unmodelled dynamic call, may alter that
+receiver root or alias before the operation.
 The declared proof literal SHALL exactly equal the static first SQL argument
 captured from the named callable, rather than merely occurring elsewhere in the
 adapter; an operation mismatch SHALL identify the adapter callable line.
