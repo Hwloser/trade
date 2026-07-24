@@ -165,16 +165,21 @@ semantic kind, target Context/defer reason, and required child. Neither
 `candidate` nor `deferred` authorizes persistence access. Only a later
 implementation child may add an explicit `approved_binding` that names one
 Context and one persistence-adapter scope after proving writer, reader,
-transaction, compatibility, and owner behavior.
+transaction, compatibility, and owner behavior. Each of its writer, reader,
+transaction, and compatibility proofs is a distinct `{ source, literal }`
+record verified through the same repository-confined source-only reader; prose,
+comments, stale literals, and data/artifact paths cannot authorize a binding.
 
 The checker reads UTF-8 text through repository-confined no-follow descriptors
 and rejects malformed TOML, missing sources, unsafe relative paths, symlinks,
 non-regular files, source identity drift, duplicate declarations, and source
-facts that no longer match their declared literal. It does not load modules,
-initialize `TradeDB`, read an artifact directory, or accept arbitrary paths
-outside the repository. The focused source-only fixture permits reads only of
-the baseline, declared source evidence, and verified regular descriptors in the
-bounded production-Python producer-discovery universe; it denies
+facts that no longer match an executable source literal. Python comments and
+bare string expressions, and admitted shell/CMake/C-family comments, cannot
+satisfy evidence. It does not load modules, initialize `TradeDB`, read an
+artifact directory, or accept arbitrary paths outside the repository. The
+focused source-only fixture permits reads only of the baseline, declared source
+evidence, and verified regular descriptors in the bounded production-Python
+producer-discovery universe; it denies
 `sqlite3.connect`, `duckdb.connect`, `pandas.read_parquet`, all reads of
 in-repository `data/**`, `warehouse/**`, `market/**`, SQLite, Parquet,
 manifest, pointer, and receipt sentinels, and all out-of-repository paths.
@@ -256,7 +261,9 @@ source input at once. A 30-second step timeout, 64 emitted findings, bounded
 fields, reserved metadata space, count-only truncation fallback, and 32 KiB
 serialized envelope prevent an oversized structured report. Baseline validation
 is linear in its declared evidence entries and is exercised from a temporary
-fixture repository.
+fixture repository. When a finding limit reserves one emitted slot for the
+truncation record, `omitted_count` counts every hidden real finding, including
+the displaced final finding.
 
 Warehouse producer inventory is a distinct source-only baseline pass, not a
 target-Context dependency scan. Its initial universe is every Git-tracked
@@ -348,7 +355,8 @@ repository-relative path and source line where the offending import,
 annotation, attribute, SQL literal, direct artifact client, dynamic loader,
 process spawn, vocabulary, or producer source occurs. They sort by path, line,
 rule, and message; truncation reports the emitted and omitted counts rather
-than hiding findings.
+than hiding findings, with the omitted count equal to the number of hidden
+real findings.
 
 `trade dev check --show-plan` shows the architecture step when triggered. A
 clean legacy-only implementation change does not silently receive an unrelated

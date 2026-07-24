@@ -66,6 +66,12 @@ _RESULT_TRUNCATED = "architecture.guard_result_truncated"
 
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
 _CLASSIFICATIONS = frozenset({"candidate", "deferred", "approved_binding"})
+_APPROVED_BINDING_EVIDENCE_FIELDS = (
+    "writer_evidence",
+    "reader_evidence",
+    "transaction_evidence",
+    "compatibility_evidence",
+)
 _CREATE_TABLE_LITERAL = re.compile(
     r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z_][A-Za-z0-9_]*"
 )
@@ -118,6 +124,7 @@ _REQUIRED_CAPTURE_RISK_IDS = frozenset(
         "gdelt-streaming-local-state-and-refetch",
         "ingest-wal-replay",
         "warehouse-semantic-quarantine",
+        "influence-signal-runtime-publication-time",
     }
 )
 _REQUIRED_CAPTURE_RISK_BINDINGS = {
@@ -197,6 +204,13 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         "trade_py.data.warehouse",
         "dataset-product-boundary",
         "transport-integrity-versus-downstream-semantic-quarantine",
+    ),
+    "influence-signal-runtime-publication-time": (
+        "trade_py/intelligence/feed_scorer.py",
+        "published_at = datetime.now(timezone.utc).isoformat()",
+        "trade_py.intelligence.feed_scorer",
+        "study-boundary",
+        "runtime-evaluation-time-substituted-for-publication-time",
     ),
 }
 _REQUIRED_TABLE_BINDINGS = {
@@ -509,10 +523,71 @@ _REQUIRED_TABLE_BINDINGS = {
         "process-manager-and-platform-boundary",
     ),
 }
-_REQUIRED_ARTIFACT_SOURCES = {
-    "catalog-sqlite-projection": "trade_py/observatory/catalog/store.py",
-    "catalog-generation-pointer": "trade_py/observatory/catalog/store.py",
-    "kline-reconciliation-operation-pointer": "trade_py/data/operations/checks.py",
+_REQUIRED_ARTIFACT_BINDINGS = {
+    "warehouse-parquet": (
+        "trade_py/data/warehouse/io.py",
+        'f"{table}.parquet"',
+        "legacy-warehouse-artifact-family",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "catalog-sqlite-projection": (
+        "trade_py/observatory/catalog/store.py",
+        'return base / "catalog.sqlite", base / "generation.json"',
+        "rebuildable-catalog-projection",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "catalog-generation-pointer": (
+        "trade_py/observatory/catalog/store.py",
+        'return base / "catalog.sqlite", base / "generation.json"',
+        "catalog-generation-pointer",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "crypto-ads-current-pointer": (
+        "trade_py/data/warehouse/crypto_store.py",
+        'CRYPTO_VALIDATION_CURRENT = "_crypto_validation_current.json"',
+        "legacy-current-pointer",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "crypto-ads-validation-receipt": (
+        "trade_py/data/warehouse/crypto_store.py",
+        'receipt_root = ads_root / "_validation_receipts"',
+        "completion-receipt",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "btc-compatibility-pointer": (
+        "trade_py/data/market/crypto/store.py",
+        'self.current_path = self.crypto_root / "btc_current.json"',
+        "legacy-current-pointer",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "kline-reconciliation-operation-pointer": (
+        "trade_py/data/operations/checks.py",
+        'path = root / "market" / "kline" / "reconciliation" / "current.json"',
+        "data-operation-reconciliation-pointer",
+        "deferred",
+        "deferred",
+        "dataset-product-boundary",
+    ),
+    "kline-reconciliation-pointer": (
+        "trade_py/utils/data_inspector.py",
+        'return KLINE_DIR(data_root) / "reconciliation" / "current.json"',
+        "legacy-reconciliation-pointer",
+        "deferred",
+        "deferred",
+        "dataset-product-boundary",
+    ),
 }
 _GIT_ENVIRONMENT_OVERRIDES = frozenset(
     {
@@ -966,7 +1041,13 @@ def _validate_baseline_facts(
                 if category != "warehouse_producers":
                     _validate_common_fact(root, fact, category, evidence)
                 if category == "artifacts":
-                    _validate_classification(fact, category, baseline.target_contexts)
+                    _validate_classification(
+                        root,
+                        fact,
+                        category,
+                        baseline.target_contexts,
+                        evidence,
+                    )
                     _require_text(fact, "role", category)
                 elif category == "capture_risks":
                     _require_text(fact, "risk_kind", category)
@@ -980,7 +1061,13 @@ def _validate_baseline_facts(
                     _require_text(fact, "current_binding", category)
                     _require_text(fact, "reserved_binding", category)
                 elif category == "warehouse_producers":
-                    _validate_classification(fact, category, baseline.target_contexts)
+                    _validate_classification(
+                        root,
+                        fact,
+                        category,
+                        baseline.target_contexts,
+                        evidence,
+                    )
                     _require_text(fact, "current_owner", category)
                     _require_text(fact, "required_child", category)
                     _require_text(fact, "layer", category)
@@ -1074,7 +1161,13 @@ def _validate_baseline_facts(
             _require_text(table, "semantic_kind", "tables")
             _require_text(table, "reason", "tables")
             _require_text(table, "required_child", "tables")
-            _validate_classification(table, "tables", baseline.target_contexts)
+            _validate_classification(
+                root,
+                table,
+                "tables",
+                baseline.target_contexts,
+                evidence,
+            )
             provenance = table.get("provenance")
             if not isinstance(provenance, list) or not provenance:
                 raise _GuardError(
@@ -1142,26 +1235,42 @@ def _validate_baseline_facts(
     artifacts_by_id = {
         fact.get("id"): fact for fact in baseline.artifacts if isinstance(fact.get("id"), str)
     }
-    missing_artifact_ids = sorted(set(_REQUIRED_ARTIFACT_SOURCES) - set(artifacts_by_id))
-    invalid_artifact_sources = [
+    missing_artifact_ids = sorted(set(_REQUIRED_ARTIFACT_BINDINGS) - set(artifacts_by_id))
+    invalid_artifact_bindings = [
         artifact_id
-        for artifact_id, source in _REQUIRED_ARTIFACT_SOURCES.items()
-        if artifact_id in artifacts_by_id and artifacts_by_id[artifact_id].get("source") != source
+        for artifact_id, (
+            source,
+            literal,
+            role,
+            classification,
+            target_context,
+            required_child,
+        ) in _REQUIRED_ARTIFACT_BINDINGS.items()
+        if artifact_id in artifacts_by_id
+        and (
+            artifacts_by_id[artifact_id].get("source") != source
+            or artifacts_by_id[artifact_id].get("literal") != literal
+            or artifacts_by_id[artifact_id].get("role") != role
+            or artifacts_by_id[artifact_id].get("classification") != classification
+            or artifacts_by_id[artifact_id].get("target_context") != target_context
+            or artifacts_by_id[artifact_id].get("required_child") != required_child
+        )
     ]
-    if missing_artifact_ids or invalid_artifact_sources:
+    if missing_artifact_ids or invalid_artifact_bindings:
         details: list[str] = []
         if missing_artifact_ids:
             details.append("missing " + ", ".join(missing_artifact_ids))
-        if invalid_artifact_sources:
-            details.append("wrong source " + ", ".join(sorted(invalid_artifact_sources)))
+        if invalid_artifact_bindings:
+            details.append("misbound " + ", ".join(sorted(invalid_artifact_bindings)))
         findings.append(
             ArchitectureFinding(
                 _BASELINE_MALFORMED,
                 BASELINE_FILENAME,
                 None,
-                "baseline omits or misbinds required projection and operation artifact facts: "
+                "baseline omits or misbinds required artifact, pointer, and receipt facts: "
                 + "; ".join(details),
-                "Record each required source-only projection, pointer, and data-operation fact.",
+                "Record every audited artifact family, projection, pointer, and receipt with its "
+                "reviewed source, literal, role, classification, target Context, and child change.",
             )
         )
 
@@ -1411,10 +1520,12 @@ def _validate_source_literal(
 
 
 def _source_literal_is_present(text: str, literal: str, *, source: str) -> bool:
-    """Match evidence in executable Python, excluding comments and inert strings."""
+    """Match evidence in admitted executable source, excluding comments."""
 
     if PurePosixPath(source).suffix in {".py", ".pyi"}:
         text = _live_python_source_text(text)
+    else:
+        text = _live_non_python_source_text(text, source=source)
 
     match = _CREATE_TABLE_LITERAL.fullmatch(literal)
     if match is None:
@@ -1427,7 +1538,7 @@ def _live_python_source_text(text: str) -> str:
 
     tree = ast.parse(text)
     line_offsets = _source_line_offsets(text)
-    inert_string_spans = _inert_python_string_spans(tree, line_offsets)
+    inert_string_spans = _inert_python_string_spans(tree, text, line_offsets)
     characters = list(text)
     for token in tokenize.generate_tokens(io.StringIO(text).readline):
         if token.type != tokenize.COMMENT and (
@@ -1463,6 +1574,7 @@ def _source_position_offset(line_offsets: Sequence[int], position: tuple[int, in
 
 def _inert_python_string_spans(
     tree: ast.AST,
+    text: str,
     line_offsets: Sequence[int],
 ) -> tuple[tuple[int, int], ...]:
     spans: list[tuple[int, int]] = []
@@ -1476,14 +1588,34 @@ def _inert_python_string_spans(
         ):
             spans.append(
                 (
-                    _source_position_offset(line_offsets, (node.lineno, node.col_offset)),
-                    _source_position_offset(
+                    _ast_source_position_offset(
+                        text,
+                        line_offsets,
+                        (node.lineno, node.col_offset),
+                    ),
+                    _ast_source_position_offset(
+                        text,
                         line_offsets,
                         (node.end_lineno, node.end_col_offset),
                     ),
                 )
             )
     return tuple(spans)
+
+
+def _ast_source_position_offset(
+    text: str,
+    line_offsets: Sequence[int],
+    position: tuple[int, int],
+) -> int:
+    """Convert AST UTF-8 byte columns to offsets in the decoded source text."""
+
+    line, column = position
+    if line < 1 or line >= len(line_offsets):
+        return line_offsets[-1]
+    line_start = line_offsets[line - 1]
+    encoded_prefix = text[line_start : line_offsets[line]].encode("utf-8")[:column]
+    return line_start + len(encoded_prefix.decode("utf-8"))
 
 
 def _offset_overlaps_any(
@@ -1498,6 +1630,51 @@ def _mask_source_span(characters: list[str], start: int, end: int) -> None:
     for index in range(max(0, start), min(len(characters), end)):
         if characters[index] not in "\r\n":
             characters[index] = " "
+
+
+def _live_non_python_source_text(text: str, *, source: str) -> str:
+    """Mask comments in admitted shell, CMake, and C-family evidence files."""
+
+    suffix = PurePosixPath(source).suffix.lower()
+    characters = list(text)
+    if source == "trade" or suffix in {".cmake", ".txt"}:
+        _mask_line_comments(characters, "#")
+    elif suffix in {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}:
+        _mask_c_family_comments(characters)
+    return "".join(characters)
+
+
+def _mask_line_comments(characters: list[str], marker: str) -> None:
+    start = 0
+    while start < len(characters):
+        if characters[start] == marker:
+            end = start
+            while end < len(characters) and characters[end] not in "\r\n":
+                end += 1
+            _mask_source_span(characters, start, end)
+            start = end
+        else:
+            start += 1
+
+
+def _mask_c_family_comments(characters: list[str]) -> None:
+    index = 0
+    while index + 1 < len(characters):
+        pair = "".join(characters[index : index + 2])
+        if pair == "//":
+            end = index + 2
+            while end < len(characters) and characters[end] not in "\r\n":
+                end += 1
+            _mask_source_span(characters, index, end)
+            index = end
+        elif pair == "/*":
+            end = index + 2
+            while end + 1 < len(characters) and "".join(characters[end : end + 2]) != "*/":
+                end += 1
+            _mask_source_span(characters, index, min(len(characters), end + 2))
+            index = end + 2
+        else:
+            index += 1
 
 
 def _is_allowed_evidence_source(source: str) -> bool:
@@ -1523,9 +1700,11 @@ def _is_allowed_evidence_source(source: str) -> bool:
 
 
 def _validate_classification(
+    root: Path,
     fact: Mapping[str, Any],
     category: str,
     target_contexts: frozenset[str],
+    evidence: _EvidenceReader,
 ) -> None:
     classification = _require_text(fact, "classification", category)
     if classification not in _CLASSIFICATIONS:
@@ -1544,6 +1723,7 @@ def _validate_classification(
                 f"{category} deferred declaration must target 'deferred'",
                 "Keep unproven ownership explicitly deferred until its child proves an owner.",
             )
+        _reject_non_authorizing_binding(fact, category)
         _require_text(fact, "reason", category)
         return
     if target_context == "deferred":
@@ -1561,22 +1741,9 @@ def _validate_classification(
             "Use one Context from the baseline target_contexts controlled vocabulary.",
         )
     if classification == "candidate":
-        if "approved_binding" in fact or "adapter_scope" in fact:
-            raise _GuardError(
-                _BASELINE_NONAUTHORIZING,
-                BASELINE_FILENAME,
-                f"{category} candidate declaration must not contain a persistence binding",
-                "Keep candidate facts audit-only until a separately reviewed approved binding exists.",
-            )
+        _reject_non_authorizing_binding(fact, category)
         return
-    for field in (
-        "adapter_scope",
-        "writer_evidence",
-        "reader_evidence",
-        "transaction_evidence",
-        "compatibility_evidence",
-    ):
-        _require_text(fact, field, category)
+    _require_text(fact, "adapter_scope", category)
     adapter_scope = str(fact["adapter_scope"])
     if not adapter_scope.startswith(f"{target_context}.adapters."):
         raise _GuardError(
@@ -1584,6 +1751,31 @@ def _validate_classification(
             BASELINE_FILENAME,
             f"{category} approved binding adapter_scope must belong to {target_context}.adapters",
             "Name a persistence adapter scope beneath the approved target Context.",
+        )
+    for field in _APPROVED_BINDING_EVIDENCE_FIELDS:
+        proof = fact.get(field)
+        if not isinstance(proof, Mapping):
+            raise _GuardError(
+                _BASELINE_MALFORMED,
+                BASELINE_FILENAME,
+                f"{category} approved binding must declare {field} as a source/literal record",
+                "Use a repository source and executable literal for every approved-binding proof.",
+            )
+        _validate_source_literal(root, proof, evidence)
+
+
+def _reject_non_authorizing_binding(fact: Mapping[str, Any], category: str) -> None:
+    binding_fields = (
+        "approved_binding",
+        "adapter_scope",
+        *_APPROVED_BINDING_EVIDENCE_FIELDS,
+    )
+    if any(field in fact for field in binding_fields):
+        raise _GuardError(
+            _BASELINE_NONAUTHORIZING,
+            BASELINE_FILENAME,
+            f"{category} audit-only declaration must not contain a persistence binding",
+            "Keep candidate and deferred facts audit-only until a separately reviewed approved binding exists.",
         )
 
 
@@ -2951,9 +3143,15 @@ def _report(
     limits: DiscoveryLimits,
 ) -> ArchitectureReport:
     ordered = _ordered_findings(findings)
-    emitted = tuple(_bounded_finding(finding, limits) for finding in ordered[: limits.max_findings])
-    omitted_count = len(ordered) - len(emitted)
-    if omitted_count:
+    if len(ordered) <= limits.max_findings:
+        emitted = tuple(_bounded_finding(finding, limits) for finding in ordered)
+        omitted_count = 0
+    elif limits.max_findings <= 0:
+        emitted = ()
+        omitted_count = len(ordered)
+    else:
+        emitted_real_count = limits.max_findings - 1
+        omitted_count = len(ordered) - emitted_real_count
         truncation = ArchitectureFinding(
             _RESULT_TRUNCATED,
             BASELINE_FILENAME,
@@ -2961,10 +3159,9 @@ def _report(
             f"{omitted_count} additional findings were omitted by the guarded report limit",
             "Address the emitted findings, then rerun the guard to inspect remaining issues.",
         )
-        if len(emitted) < limits.max_findings:
-            emitted += (_bounded_finding(truncation, limits),)
-        elif emitted:
-            emitted = emitted[:-1] + (_bounded_finding(truncation, limits),)
+        emitted = tuple(
+            _bounded_finding(finding, limits) for finding in ordered[:emitted_real_count]
+        ) + (_bounded_finding(truncation, limits),)
     return ArchitectureReport(
         findings=emitted,
         producers=tuple(producers),

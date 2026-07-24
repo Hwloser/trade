@@ -644,10 +644,10 @@ provenance = [
 
 [[artifacts]]
 id = "warehouse-parquet"
-source = "trade_py/warehouse.py"
+source = "trade_py/data/warehouse/io.py"
 literal = 'f"{{table}}.parquet"'
 current_owner = "legacy"
-role = "legacy-artifact"
+role = "legacy-warehouse-artifact-family"
 classification = "candidate"
 target_context = "datasets"
 reason = "Legacy output requires DatasetVersion migration."
@@ -676,6 +676,39 @@ reason = "The generation pointer is compatibility and recovery input."
 required_child = "dataset-product-boundary"
 
 [[artifacts]]
+id = "crypto-ads-current-pointer"
+source = "trade_py/data/warehouse/crypto_store.py"
+literal = 'CRYPTO_VALIDATION_CURRENT = "_crypto_validation_current.json"'
+current_owner = "legacy"
+role = "legacy-current-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The current pointer is a compatibility and rollback input."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "crypto-ads-validation-receipt"
+source = "trade_py/data/warehouse/crypto_store.py"
+literal = 'receipt_root = ads_root / "_validation_receipts"'
+current_owner = "legacy"
+role = "completion-receipt"
+classification = "candidate"
+target_context = "datasets"
+reason = "The receipt is a compatibility and rollback input."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "btc-compatibility-pointer"
+source = "trade_py/data/market/crypto/store.py"
+literal = 'self.current_path = self.crypto_root / "btc_current.json"'
+current_owner = "legacy"
+role = "legacy-current-pointer"
+classification = "candidate"
+target_context = "datasets"
+reason = "The BTC pointer is a compatibility and rollback input."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
 id = "kline-reconciliation-operation-pointer"
 source = "trade_py/data/operations/checks.py"
 literal = 'path = root / "market" / "kline" / "reconciliation" / "current.json"'
@@ -684,6 +717,17 @@ role = "data-operation-reconciliation-pointer"
 classification = "deferred"
 target_context = "deferred"
 reason = "The operation check reads a legacy reconciliation pointer."
+required_child = "dataset-product-boundary"
+
+[[artifacts]]
+id = "kline-reconciliation-pointer"
+source = "trade_py/utils/data_inspector.py"
+literal = 'return KLINE_DIR(data_root) / "reconciliation" / "current.json"'
+current_owner = "legacy"
+role = "legacy-reconciliation-pointer"
+classification = "deferred"
+target_context = "deferred"
+reason = "The inspection path reads a legacy reconciliation pointer."
 required_child = "dataset-product-boundary"
 
 [[capture_risks]]
@@ -795,6 +839,16 @@ required_child = "dataset-product-boundary"
 risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
 current_behavior = "Semantic quality uses a legacy quarantine flag."
 required_migration_proof = "Keep Capture transport and Dataset quality separate."
+
+[[capture_risks]]
+id = "influence-signal-runtime-publication-time"
+source = "trade_py/intelligence/feed_scorer.py"
+literal = "published_at = datetime.now(timezone.utc).isoformat()"
+current_owner = "trade_py.intelligence.feed_scorer"
+required_child = "study-boundary"
+risk_kind = "runtime-evaluation-time-substituted-for-publication-time"
+current_behavior = "Runtime evaluation time becomes legacy InfluenceSignal publication time."
+required_migration_proof = "Separate source publication, evaluation, and availability clocks."
 
 [[interfaces]]
 id = "cli"
@@ -910,7 +964,7 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
     application = app or DEFAULT_APP
     return {
         "architecture-baseline.toml": _baseline(producer_app=baseline_app),
-        "trade": "#!/bin/sh\n# legacy-cli\n",
+        "trade": "#!/bin/sh\nlegacy-cli\n",
         "trade_py/__init__.py": "",
         "trade_py/db.py": (
             "LEGACY_DB = 1\n"
@@ -976,8 +1030,10 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'RECOMMENDATION_SQL = "CREATE TABLE IF NOT EXISTS Recommendation"\n'
             'RECOMMENDATION_TRACE_SQL = "CREATE TABLE IF NOT EXISTS RecommendationTrace"\n'
         ),
-        "trade_py/warehouse.py": 'path = f"{table}.parquet"\n',
         "trade_py/intelligence/raw_record.py": "published_at: datetime\n",
+        "trade_py/intelligence/feed_scorer.py": (
+            "published_at = datetime.now(timezone.utc).isoformat()\n"
+        ),
         "trade_py/data/__init__.py": "",
         "trade_py/data/ingest/__init__.py": "",
         "trade_py/data/ingest/batch.py": "self._recover_wal()\n",
@@ -1016,9 +1072,20 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             "    return None\n"
             "def upsert_table(layout, layer, table, frame, *, key_cols):\n"
             "    return None\n"
+            'path = f"{table}.parquet"\n'
+        ),
+        "trade_py/data/warehouse/crypto_store.py": (
+            'CRYPTO_VALIDATION_CURRENT = "_crypto_validation_current.json"\n'
+            'receipt_root = ads_root / "_validation_receipts"\n'
+        ),
+        "trade_py/data/market/crypto/store.py": (
+            'self.current_path = self.crypto_root / "btc_current.json"\n'
         ),
         "trade_py/data/operations/checks.py": (
             'path = root / "market" / "kline" / "reconciliation" / "current.json"\n'
+        ),
+        "trade_py/utils/data_inspector.py": (
+            'return KLINE_DIR(data_root) / "reconciliation" / "current.json"\n'
         ),
         "trade_py/observatory/catalog/store.py": (
             'return base / "catalog.sqlite", base / "generation.json"\n'
@@ -1127,6 +1194,7 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
         "RecommendationTrace",
     } <= table_names
     assert {
+        "influence-signal-runtime-publication-time",
         "rss-provider-time-fallback",
         "gdelt-catalog-db-config",
         "gdelt-provider-time-fallback",
@@ -1138,6 +1206,19 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
 def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, _sources())
     baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+
+    for artifact_id in (
+        "warehouse-parquet",
+        "catalog-sqlite-projection",
+        "catalog-generation-pointer",
+        "crypto-ads-current-pointer",
+        "crypto-ads-validation-receipt",
+        "btc-compatibility-pointer",
+        "kline-reconciliation-operation-pointer",
+        "kline-reconciliation-pointer",
+    ):
+        _write_baseline(repo, baseline.replace(f'id = "{artifact_id}"', 'id = "removed"', 1))
+        assert "architecture.baseline_malformed" in _rule_ids(repo)
 
     _write_baseline(
         repo,
@@ -1216,6 +1297,30 @@ def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    ("path", "source"),
+    (
+        (
+            "trade",
+            "# legacy-cli\n",
+        ),
+        (
+            "engine/cmake/python_bindings.cmake",
+            "# nanobind_add_module(trade_py bindings.cpp)\n",
+        ),
+    ),
+)
+def test_non_python_comments_do_not_satisfy_source_evidence(
+    tmp_path: Path,
+    path: str,
+    source: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    (repo / path).write_text(source, encoding="utf-8")
+
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+
+@pytest.mark.parametrize(
     "replacement",
     (
         'current_owner = "incorrect.owner"',
@@ -1237,6 +1342,72 @@ def test_required_capture_risk_bindings_reject_owner_child_and_kind_mutation(
     _write_baseline(repo, baseline.replace(original, replacement, 1))
 
     assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+
+def test_approved_binding_requires_source_verified_proofs(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "trade_py/approved_binding.py"
+    source.write_text(
+        'APPROVED_RECORD_SQL = "CREATE TABLE approved_records"\n'
+        'WRITER_PROOF = "writer"\n'
+        'READER_PROOF = "reader"\n'
+        'TRANSACTION_PROOF = "transaction"\n'
+        'COMPATIBILITY_PROOF = "compatibility"\n',
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    approved = (
+        "[[tables]]\n"
+        'logical_name = "approved_records"\n'
+        'current_owner = "legacy"\n'
+        'semantic_kind = "approved-fixture-record"\n'
+        'classification = "approved_binding"\n'
+        'target_context = "datasets"\n'
+        'reason = "Fixture approved binding."\n'
+        'required_child = "dataset-product-boundary"\n'
+        'adapter_scope = "datasets.adapters.persistence.warehouse"\n'
+        'writer_evidence = { source = "trade_py/approved_binding.py", literal = "WRITER_PROOF" }\n'
+        'reader_evidence = { source = "trade_py/approved_binding.py", literal = "READER_PROOF" }\n'
+        'transaction_evidence = { source = "trade_py/approved_binding.py", literal = "TRANSACTION_PROOF" }\n'
+        'compatibility_evidence = { source = "trade_py/approved_binding.py", literal = "COMPATIBILITY_PROOF" }\n'
+        "provenance = [\n"
+        '  { source = "trade_py/approved_binding.py", literal = "CREATE TABLE approved_records", role = "bootstrap" },\n'
+        "]"
+    )
+    approved_baseline = baseline + "\n" + approved
+
+    _write_baseline(repo, approved_baseline)
+    assert validate_architecture_baseline(repo).ok
+
+    _write_baseline(
+        repo,
+        approved_baseline.replace(
+            'writer_evidence = { source = "trade_py/approved_binding.py", literal = "WRITER_PROOF" }',
+            'writer_evidence = "arbitrary prose"',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        approved_baseline.replace(
+            'reader_evidence = { source = "trade_py/approved_binding.py", literal = "READER_PROOF" }',
+            'reader_evidence = { source = "trade_py/approved_binding.py", literal = "STALE_READER_PROOF" }',
+            1,
+        ),
+    )
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+    source.write_text(
+        '# WRITER_PROOF = "writer"\n'
+        'READER_PROOF = "reader"\n'
+        'TRANSACTION_PROOF = "transaction"\n'
+        'COMPATIBILITY_PROOF = "compatibility"\n',
+        encoding="utf-8",
+    )
+    _write_baseline(repo, approved_baseline)
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
 
 
 def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path) -> None:
@@ -1283,6 +1454,14 @@ def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path)
         ),
         (
             lambda text: text.replace(
+                'classification = "deferred"\ntarget_context = "deferred"\nreason = "Requires evidence before ownership transfer."',
+                'classification = "deferred"\ntarget_context = "deferred"\nadapter_scope = "forbidden"\nreason = "Requires evidence before ownership transfer."',
+                1,
+            ),
+            "architecture.baseline_non_authorizing_binding",
+        ),
+        (
+            lambda text: text.replace(
                 'artifact_id = "warehouse-parquet"', 'artifact_id = "missing"'
             ),
             "architecture.baseline_missing_producer_artifact",
@@ -1320,6 +1499,14 @@ def test_comments_and_inert_strings_do_not_satisfy_source_evidence(
     replacement: str,
 ) -> None:
     repo = _init_repo(tmp_path, _sources())
+    (repo / "trade_py/db.py").write_text(replacement, encoding="utf-8")
+
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+
+def test_unicode_before_inert_string_does_not_satisfy_source_evidence(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    replacement = "prefix = '" + "\u00e9" * 20 + "'; 'LEGACY_DB = 1'\n"
     (repo / "trade_py/db.py").write_text(replacement, encoding="utf-8")
 
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
@@ -2034,16 +2221,27 @@ required_child = "dataset-product-boundary"
         repo,
         (repo / BASELINE_FILENAME).read_text(encoding="utf-8") + "\n" + duplicate_facts,
     )
-    report_limits = DiscoveryLimits(max_findings=3, max_diagnostic_field_bytes=32)
-    bounded_report = validate_architecture_baseline(repo, limits=report_limits)
+    for max_findings, expected_emitted, expected_omitted in (
+        (0, 0, 5),
+        (1, 1, 5),
+        (3, 3, 3),
+        (4, 4, 2),
+        (5, 5, 0),
+    ):
+        report_limits = DiscoveryLimits(
+            max_findings=max_findings,
+            max_diagnostic_field_bytes=32,
+        )
+        bounded_report = validate_architecture_baseline(repo, limits=report_limits)
 
-    assert len(bounded_report.findings) == 3
-    assert bounded_report.omitted_findings_count == 2
-    assert bounded_report.findings[-1].rule_id == "architecture.guard_result_truncated"
-    assert all(
-        len(finding.message.encode("utf-8")) <= report_limits.max_diagnostic_field_bytes
-        for finding in bounded_report.findings
-    )
+        assert len(bounded_report.findings) == expected_emitted
+        assert bounded_report.omitted_findings_count == expected_omitted
+        if expected_emitted and expected_omitted:
+            assert bounded_report.findings[-1].rule_id == "architecture.guard_result_truncated"
+        assert all(
+            len(finding.message.encode("utf-8")) <= report_limits.max_diagnostic_field_bytes
+            for finding in bounded_report.findings
+        )
 
 
 def test_ast_and_producer_literal_budgets_fail_before_partial_inventory(tmp_path: Path) -> None:

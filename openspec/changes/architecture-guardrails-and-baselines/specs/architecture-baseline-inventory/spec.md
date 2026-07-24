@@ -21,7 +21,12 @@ reason, required owning child, and explicit activation state. `candidate` and
 `deferred` are audit-only classifications and SHALL never authorize target
 persistence access. Only a later, separately reviewed `approved_binding` with
 one target Context and a named persistence-adapter scope authorizes a literal
-SQL table reference.
+SQL table reference. An `approved_binding` SHALL also declare separate
+`writer_evidence`, `reader_evidence`, `transaction_evidence`, and
+`compatibility_evidence` records; each record SHALL contain a repository source
+and an executable source literal accepted by the same source-only admission
+and no-follow validation as other baseline evidence. `candidate` and
+`deferred` declarations SHALL reject every persistence-binding field.
 
 #### Scenario: A baseline table source changes
 
@@ -45,6 +50,14 @@ SQL table reference.
 - **THEN** a target Datasets adapter cannot query that table; the guard fails
   closed until its owning child adds the approved binding and focused owner,
   transaction, reader, and compatibility evidence
+
+#### Scenario: An approved binding has unverified proof
+
+- **WHEN** an owning child supplies prose, a comment-only literal, an unsafe
+  path, or a stale literal for writer, reader, transaction, or compatibility
+  proof
+- **THEN** baseline validation fails and the declaration does not authorize
+  persistence access
 
 #### Scenario: Historical DDL has two provenance roles
 
@@ -70,22 +83,35 @@ families, the Crypto ADS current pointer and completion-receipt convention, the
 BTC compatibility pointer, and the Kline reconciliation `current.json` fact.
 It SHALL record each fact's repository source, exact literal, current code
 owner, compatibility or recovery role, candidate target Context or deferred
-state, and required owning child. These are source-only migration inputs, not
-runtime artifact inspection or release authorization.
+state, and required owning child. The mandatory inventory includes the
+warehouse Parquet family, catalog SQLite projection and generation pointer,
+Crypto ADS current pointer and validation receipt, BTC compatibility pointer,
+and both Kline reconciliation pointers. The validator SHALL fail if any
+mandatory fact is absent or its source, literal, role, classification, target
+Context/deferred state, or required child differs from the governed binding.
+These are source-only migration inputs, not runtime artifact inspection or
+release authorization.
 
 The baseline SHALL also record the current Capture-risk facts for the legacy
 `RawRecord` temporal model and every known RSS, GDELT, warehouse, archive, and
-date-only publication-time fallback. Every Capture-risk record SHALL state its
-repository source, exact literal, risk kind, current behavior, required child,
-and required migration proof. Required risk kinds include provider timestamp
-absence/substitution, date-only inferred precision, catalog/environment
-override and absent rights-policy evidence, provider-refetch versus local
-artifact replay versus WAL recovery, and transport/integrity failure versus
-downstream semantic quarantine. `capture-boundary` SHALL treat those
+date-only publication-time fallback, plus the `InfluenceSignal` runtime
+evaluation-time substitution for `published_at`. Every Capture-risk record
+SHALL state its repository source, exact literal, risk kind, current behavior,
+required child, and required migration proof. Required risk kinds include
+provider timestamp absence/substitution, date-only inferred precision,
+catalog/environment override and absent rights-policy evidence,
+provider-refetch versus local artifact replay versus WAL recovery,
+transport/integrity failure versus downstream semantic quarantine, and
+runtime-evaluation-time substituted for publication time. `capture-boundary`
+and `study-boundary` SHALL treat those
 declarations as mandatory inputs and prove independent
 provider/observed/received/available/revision/finality clocks, SourceManifest
 rights enforcement, provider-free replay, and the Capture transport-versus-
 Datasets semantic quarantine split before migrating a news or NLP adapter.
+
+All source literals SHALL occur in executable/admitted source content. Python
+comments and inert string expressions, shell/CMake `#` comments, and C-family
+line or block comments SHALL NOT satisfy an evidence literal.
 
 The warehouse artifact inventory SHALL be producer-driven. Its only canonical
 writer targets are the module-level functions

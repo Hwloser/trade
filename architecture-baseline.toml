@@ -911,6 +911,16 @@ risk_kind = "transport-integrity-versus-downstream-semantic-quarantine"
 current_behavior = "Article semantic quality marks rows quarantined in the warehouse transform."
 required_migration_proof = "Capture transport failures remain distinct from Datasets semantic quality quarantine."
 
+[[capture_risks]]
+id = "influence-signal-runtime-publication-time"
+source = "trade_py/intelligence/feed_scorer.py"
+literal = "published_at = datetime.now(timezone.utc).isoformat()"
+current_owner = "trade_py.intelligence.feed_scorer"
+required_child = "study-boundary"
+risk_kind = "runtime-evaluation-time-substituted-for-publication-time"
+current_behavior = "Feed scorer uses the local evaluation clock as InfluenceSignal published_at, which is then used to select the most recent reliability record."
+required_migration_proof = "Separate source publication, observed, received, evaluation, available, and revision clocks before a Dataset or Study publishes an InfluenceSignal-derived result."
+
 [[interfaces]]
 id = "root-trade-facade"
 source = "trade"
