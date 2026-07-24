@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import os
 import shutil
 import subprocess
@@ -24,6 +23,7 @@ from trade_py.devtools.architecture_guard import (
     PRODUCER_UNRESOLVED_LAYOUT,
     PRODUCER_UNSAFE_SOURCE,
     DiscoveryLimits,
+    _call_digest,
     validate_architecture_baseline,
 )
 
@@ -74,9 +74,7 @@ def _producer_identity(
             and isinstance(node.args[2], ast.Constant)
             and node.args[2].value == table
         ):
-            digest = hashlib.sha256(
-                ast.dump(node, annotate_fields=True, include_attributes=False).encode("utf-8")
-            ).hexdigest()
+            digest = _call_digest(node)
             return node.lineno, node.col_offset, ast.unparse(node), digest
     raise AssertionError(f"fixture has no {writer} producer for {layer}.{table}")
 
@@ -855,6 +853,20 @@ def test_repository_baseline_is_complete_and_source_only() -> None:
     }
 
 
+def test_producer_call_digest_ignores_ast_context_metadata() -> None:
+    tree = ast.parse(
+        'result = write_table(layout, "ods", "events", frame=None)\n',
+    )
+    call = next(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    expected_digest = _call_digest(call)
+    layout_argument = call.args[0]
+    assert isinstance(layout_argument, ast.Name)
+
+    layout_argument.ctx = ast.Store()
+
+    assert _call_digest(call) == expected_digest
+
+
 def test_repository_baseline_includes_review_required_provenance_and_interfaces() -> None:
     from trade_py.devtools.quality.toml_compat import tomllib
 
@@ -1028,6 +1040,10 @@ def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path)
                 'artifact_id = "warehouse-parquet"', 'artifact_id = "missing"'
             ),
             "architecture.baseline_missing_producer_artifact",
+        ),
+        (
+            lambda text: text.replace('artifact_id = "warehouse-parquet"', "artifact_id = []"),
+            "architecture.baseline_malformed",
         ),
         (
             lambda text: text.replace('role = "bootstrap"', 'role = "not-a-role"', 1),

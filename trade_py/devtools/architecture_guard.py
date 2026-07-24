@@ -966,6 +966,10 @@ def _validate_baseline_facts(
 
     for producer in baseline.producers:
         artifact_id = producer.get("artifact_id")
+        if not isinstance(artifact_id, str) or not artifact_id:
+            # _validate_baseline_facts already records the malformed declaration.
+            # Do not let an unhashable TOML value escape the fail-closed report path.
+            continue
         if artifact_id not in artifact_ids:
             findings.append(
                 ArchitectureFinding(
@@ -2230,8 +2234,31 @@ def _tracks_warehouse_namespace(target: str) -> bool:
 
 
 def _call_digest(node: ast.Call) -> str:
-    normalized = ast.dump(node, annotate_fields=True, include_attributes=False)
+    """Fingerprint the semantic call shape without interpreter-local AST context."""
+
+    normalized = repr(_ast_digest_value(node))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _ast_digest_value(value: Any) -> Any:
+    if isinstance(value, ast.AST):
+        return (
+            type(value).__name__,
+            tuple(
+                (name, _ast_digest_value(field_value))
+                for name, field_value in ast.iter_fields(value)
+                if name != "ctx" and _ast_digest_field_is_present(field_value)
+            ),
+        )
+    if isinstance(value, list):
+        return tuple(_ast_digest_value(item) for item in value)
+    return value
+
+
+def _ast_digest_field_is_present(value: Any) -> bool:
+    """Ignore absent optional fields added by a newer Python AST schema."""
+
+    return value is not None and value != []
 
 
 def _resolve_expression(node: ast.AST | None, aliases: Mapping[str, str]) -> str | None:
