@@ -18,7 +18,8 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
 
 ## What Changes
 
-- Add the `scripts/mutation-test changed|core|full` developer entrypoint.
+- Add canonical `trade dev mutation changed|core|full` developer commands, with
+  `scripts/mutation-test` retained as an argv/exit-compatible facade.
 - Add a typed Python controller under `trade_py/devtools/mutation_testing/` that:
   - pins Cosmic Ray 8.4.6 and uses only `get_operator` plus `mutate_code` for
     deterministic first-order
@@ -28,15 +29,20 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     proves pytest imported that tree;
   - selects only the closed v1 definition-to-test matrix and requires baseline line
     coverage from pinned coverage.py 7.10.7 before mutant execution;
-  - prioritizes changed lines, then changed definitions, then configured core paths;
+  - admits only exact changed-line candidates in PR mode and uses configured core
+    definitions for scheduled/manual modes without widening to an enclosing
+    definition;
   - enforces mutant, candidate-scan, worker, per-mutant, output, and wall-clock
     budgets across bootstrap, dependency preparation, execution, and publication;
-  - starts one standard-library supervisor before every `uv` child, makes it the
-    invocation subreaper/watchdog, and lets it terminate and reap the complete
-    descendant tree even when the controller is killed;
+  - selects an absolute Python 3.7+ supervisor interpreter and starts one
+    standard-library supervisor before every `uv` child, makes it the invocation
+    subreaper/watchdog and sole receipt/fallback writer, and lets it contain and
+    observe cleanup of the descendant tree even when the controller is killed;
   - denies network, process launch, and real-data paths with Linux Landlock/seccomp
-    containment, and requires controller-owned syscall audit plus authenticated guard
-    lifecycle evidence before a mutant can be killed or survived;
+    containment, transfers a seccomp listener over `SCM_RIGHTS`, brokers allowed
+    opens with `openat2` plus descriptor injection, and requires independent
+    controller-owned syscall audit and child guard evidence before a mutant can be
+    killed or survived;
   - distinguishes killed, survived, timeout, mapping/line no-coverage,
     baseline-unavailable, cancellation, invalid, and infrastructure-error outcomes;
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
@@ -44,10 +50,12 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     invocation receipt/current pointer, and an independent typed fallback if
     publication itself fails;
   - commits cache outcomes only after report publication and derives bounded trend
-    views from a compact immutable trend-source ledger rather than short-lived report
-    retention.
+    views from a sequence-reserved, hash-chained immutable trend-source ledger;
+  - validates and packages the exact receipt plus referenced generation/fallback as
+    one digest-bound `trade.mutation.bundle.v1` CI artifact.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
-  location-precise equivalent-mutant exception registry.
+  location-precise equivalent-mutant exception registry. Add an identity- and
+  freshness-bound capacity qualification contract for scheduled modes.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
   tests using temporary repositories and synthetic source.
 - Add optional locked mutation dependencies without changing the existing pytest
@@ -56,8 +64,11 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - pull requests plan and run `changed` only when eligible production code changed;
   - nightly and manual runs execute `core`;
   - weekly or explicit manual runs execute `full`;
-  - all mutation jobs are initially non-blocking and upload evidence for the exact
-    invocation rather than a global latest pointer;
+  - all mutation outcomes are initially report-only, while an independent evidence
+    validator fails on missing, malformed, unsafe, or receipt-unbound bundles;
+  - scheduled modes require a reviewed, unexpired capacity qualification and carry
+    trend history through validated immutable rolling aggregate artifacts rather than
+    treating result cache as evidence;
   - native GitHub concurrency prevents simultaneous long runs but may supersede an
     older pending request, which is reported honestly rather than described as a
     durable queue.
@@ -87,7 +98,8 @@ In scope:
 - Python core business unit-test mutation only.
 - Deterministic changed/core/full planning and execution.
 - Bounded concurrency, native thread pools, source/AST/dependency/private-tree/report
-  limits, supervisor-owned process-tree termination, kernel I/O containment,
+  limits, supervisor-owned process-tree containment and fallback, kernel I/O
+  containment,
   cancellation algebra, partial reporting, committed cache/trend artifacts, bounded
   report retention, and exact mutant exceptions.
 - GitHub Actions because the authoritative remote is GitHub.
@@ -107,13 +119,19 @@ Out of scope:
 The main risks are runaway test processes, excessive enumeration, incorrect
 test-to-source mapping, native I/O escaping Python guards, false kills from
 infrastructure failures, and score gaming through broad exclusions. An
-invocation-wide supervisor/deadline, subreaper-owned process containment,
-Landlock/seccomp plus syscall audit, source/AST/dependency/private-tree limits,
-bytecode-clean private source trees, target-filtered line coverage, closed
+invocation-wide supervisor/deadline, subreaper/cgroup process containment,
+Landlock plus brokered seccomp opens and independent syscall audit,
+source/AST/dependency/private-tree limits, bytecode-clean private source trees,
+target-filtered line coverage, closed
 operator/definition maps, generation-atomic output plus safe fallback, exact
 fresh/cache/plan/cancellation status algebra, authenticated guard lifecycle evidence,
-committed cache markers, invocation receipts, corrupt-pointer recovery, and
-mutant-ID exception validation address those risks.
+committed cache markers, sequence reservations/tombstones, coupled receipt retention,
+identity-bound capacity qualification, immutable CI bundles, corrupt-pointer
+recovery, and mutant-ID exception validation address those risks. Linux cannot
+guarantee userspace reaping of an indefinitely uninterruptible task or completion of
+a stuck filesystem `fsync`; those cases remain `cleanup_unconfirmed` or lack a
+claimed generation and are contained by the larger CI runner timeout, never counted
+as kills.
 
 Rollback removes the optional mutation dependency group, controller, wrapper,
 configuration, workflows, documentation, and tests. Generated reports and caches are

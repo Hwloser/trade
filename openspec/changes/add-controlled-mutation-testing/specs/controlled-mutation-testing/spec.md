@@ -4,9 +4,11 @@
 
 ### Requirement: Mutation execution SHALL be bounded by mode
 
-The repository SHALL expose `scripts/mutation-test changed|core|full`. Each mode SHALL
-use an explicit source selection, mutant limit, worker limit, per-mutant timeout, and
-wall-clock budget. No mode SHALL silently expand to a broader source or test scope.
+The repository SHALL expose canonical `trade dev mutation changed|core|full`
+commands. `scripts/mutation-test changed|core|full` SHALL be an argv/exit-compatible
+facade into the same supervisor-first process tree. Each mode SHALL use an explicit
+source selection, mutant limit, worker limit, per-mutant timeout, and wall-clock
+budget. No mode SHALL silently expand to a broader source or test scope.
 
 The normative budgets SHALL be:
 
@@ -25,16 +27,25 @@ mutant process SHALL set `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
 `VECLIB_MAXIMUM_THREADS` to `1`; those controls SHALL enter environment/cache
 identity.
 
-When a finite cgroup v1/v2 memory limit is available, worker admission SHALL also
-reserve controller memory, the mode renderer maximum, a safety margin, and
-`max(256 MiB, ceil(1.5 * measured baseline descendant peak RSS))` per active pytest.
-The lower CPU/memory bound SHALL win and every input SHALL be reported. A finite limit
-that cannot admit one worker SHALL fail preflight.
+Worker admission SHALL also use a finite enforceable cgroup v1/v2 memory limit when
+available. It SHALL reserve controller memory, the mode renderer maximum, a safety
+margin, and `max(256 MiB, ceil(1.5 * measured baseline descendant peak RSS))` for
+each active test tuple. Admission SHALL require `controller + safety + renderer +
+sum(active tuple reservations) <= effective_memory`; the lower CPU/memory bound
+SHALL win and every input/reservation SHALL be reported. A finite limit that cannot
+admit one worker SHALL fail preflight. Without a finite enforceable memory limit,
+local execution SHALL force exactly one worker and record `memory_bound_unenforced`,
+or MAY use `--plan-only`; CI execution, capacity qualification, and any request for
+more than one worker SHALL fail preflight.
 
-The wall clock SHALL start in a standard-library-only supervisor before bootstrap,
-dependency verification, or any `uv` child. `scripts/mutation-test` SHALL only resolve
-the repository and `exec` a known `python3 -I` supervisor; it SHALL NOT start `uv`
-itself. The supervisor SHALL create one run ID, atomic
+The wall clock SHALL start in a Python 3.7-compatible standard-library-only supervisor
+before bootstrap, dependency verification, or any `uv` child. The root `trade`
+dispatch and facade SHALL use Bash built-ins to capture command-entry `/proc/uptime`,
+resolve an absolute interpreter from an explicit `MUTATION_SUPERVISOR_PYTHON` or
+`command -v python3`, reject a non-absolute path or Python below 3.7, and `exec`
+`python -I` without starting `uv`. The supervisor and its shared bootstrap contract
+SHALL use no project imports, third-party modules, dataclasses, or Python 3.8+ syntax.
+The supervisor SHALL create one run ID, atomic
 `trade.mutation.invocation.v1` receipt, child-subreaper/watchdog, and absolute
 monotonic deadline passed unchanged through bootstrap and the full controller. It
 SHALL parent every `uv` handoff in an owned session and include
@@ -43,8 +54,8 @@ baselines, mutation execution, cancellation, and report publication. CI SHALL pr
 the frozen mutation environment before starting this bounded invocation; local
 missing dependencies SHALL fail with a preparation command rather than sync outside
 the budget. The controller SHALL reserve 30/60/120 seconds of the changed/core/full wall clock for
-cleanup and report publication inside, not after, the hard limit. The reserves SHALL
-split into TERM, KILL/reap, render/hash/fsync, and pointer-or-fallback sub-budgets of
+cleanup and report publication inside the controller budget. The reserves SHALL split
+into TERM, KILL/observable-reap, render/hash/fsync, and pointer-or-fallback sub-budgets of
 `5/5/15/5`, `10/10/30/10`, and `15/15/70/20` seconds. The execution deadline SHALL
 be command entry plus wall budget minus reserve. The controller SHALL reject a
 subprocess unless its timeout plus termination/reap allowance fits before that
@@ -57,6 +68,17 @@ cumulative parse/operator visits at 3/20/100 million. Each worker private tree S
 be at most 512 files, 8 MiB, and 10 seconds to materialize; aggregate private trees
 SHALL be at most 2048 files and 32 MiB, with at least 512 MiB free after reservation.
 Every discovery, copy, and parse loop SHALL check the same monotonic deadline.
+
+The supervisor SHALL use pidfds where available, cgroup kill, process-group
+TERM/KILL, bounded observable-reap polling, and an independent fallback writer.
+A task still present after its cleanup sub-budget SHALL be
+`cleanup_unconfirmed`, SHALL never be counted as killed or successful, and SHALL
+retain pidfd/cgroup evidence while the supervisor continues cleanup attempts until
+the outer CI timeout. An unreturning filesystem operation SHALL create no claimed
+generation. CI timeouts of 15/35/100 minutes SHALL be the final containment for
+uninterruptible kernel/filesystem stalls and SHALL exceed the 600/1800/5400-second
+controller budgets. Capacity qualification SHALL fail if ordinary cancellation,
+reap, render, hash, fsync, or fallback cannot complete within its sub-budget.
 
 CLI `--max-mutants`, `--max-seconds`, and `--workers` options SHALL only lower the
 selected mode's limits. Values above a mode or computed limit SHALL fail before
@@ -152,9 +174,9 @@ fixture/golden/test-data, DTO/data-only/serialization, logging and monitoring
 wrapper, startup/dependency-injection, DB/cache/batch entrypoint, config-mapping,
 devtool, and third-party client code.
 
-`changed` SHALL prefer exact changed lines. If no candidate exists on those lines, it
-MAY consider the enclosing changed definition in the same file. It SHALL NOT mutate
-unchanged files. `core` SHALL use only configured core domain modules. `full` SHALL use
+`changed` SHALL admit only candidates whose planned source span intersects an exact
+changed line. It SHALL NOT widen to an enclosing definition or mutate unchanged
+lines/files. `core` SHALL use only configured core domain modules. `full` SHALL use
 only the configured eligible Python production roots and SHALL still apply every
 exclusion.
 
@@ -218,23 +240,35 @@ starts mutant pytest.
 
 The controller SHALL never mutate the developer's source file in place. The
 standard-library supervisor SHALL enable Linux child-subreaper semantics before any
-child and launch every `uv` handoff in an owned session. When delegated cgroup v2 is
-writable it SHALL keep the supervisor outside, move every child into one invocation
-cgroup, set `memory.oom.group=1`, and verify `cgroup.procs` is empty before exit;
-otherwise it SHALL use subreaper reparenting plus bounded `/proc` descendant closure checks, and
-that fallback SHALL be admitted only while the worker kernel policy denies
-fork/vfork/exec and process-form clone after activation; reviewed thread-form clone
-SHALL remain inside the same worker process, session, and invocation cgroup when
-present. The supervisor SHALL terminate and reap the
-remaining hierarchy after a hung/crashed/SIGKILLed controller. Host, runner, or
-supervisor SIGKILL remains explicitly best effort.
+child and launch every `uv` handoff in an owned session. For each worker it SHALL
+create a stopped child and, when delegated cgroup v2 is available, the target worker
+cgroup. The child SHALL NOT enter the trusted launcher until the supervisor moves it
+into that cgroup when applicable, read-back verifies membership plus
+pidfd/process-group/watchdog ownership, and releases a one-shot start gate. The
+cgroup path SHALL set `memory.oom.group=1`, record `memory.events`, and verify
+`cgroup.procs` during cleanup. When delegated cgroup containment is unavailable, the
+supervisor SHALL still register the stopped child's pidfd/session/watchdog before
+release and execution SHALL use subreaper plus bounded `/proc` descendant closure
+checks only with the single-worker/no-finite-memory restrictions above. The trusted
+launcher SHALL activate Landlock/seccomp before application import and then deny
+fork/vfork/exec and process-form clone; any activation failure SHALL kill the group
+and fail closed. Reviewed thread-form clone SHALL remain inside the worker
+process/session and inside its cgroup when present. The
+supervisor SHALL contain the remaining hierarchy and write controller-loss fallback
+after a hung/crashed/SIGKILLed/OOM controller. Host, runner, supervisor SIGKILL, or
+indefinite uninterruptible kernel sleep remains explicitly best effort and SHALL
+never be reported as confirmed cleanup.
 
-The controller SHALL use a thread pool so it directly creates every pytest `Popen`
-and owns every process group ID in one synchronized active registry. Spawn,
-registration, cancellation, and natural-exit observation SHALL share one gate. Every
-mutant SHALL follow a locked
-`PLANNED -> STARTED -> EXIT_OBSERVED|CANCEL_REQUESTED -> TERMINAL` state machine.
-Whichever of `EXIT_OBSERVED` or `CANCEL_REQUESTED` wins SHALL own classification.
+The controller SHALL use a thread pool so it directly requests every pytest spawn and
+owns every pidfd, process-group ID and cgroup in one synchronized active registry.
+Spawn, registration, cancellation, mutation application, test-start observation,
+integrity failure, timeout and natural-exit observation SHALL share one typed event
+gate. Every mutant SHALL follow a locked phase machine that records
+`mutation_applied_current` immediately after position-verified write and
+`test_started_current` only after successful pytest spawn. The first admissible typed
+stop event at each phase SHALL own classification; later exit, signal, timeout,
+budget, or integrity events SHALL NOT overwrite it. Natural exit before cancellation
+keeps its result; cancellation before observed exit owns the cancelled terminal.
 Each thread SHALL own one bounded private source tree, restore and hash-check the
 target file between mutants, and remove the tree at shutdown.
 
@@ -283,14 +317,21 @@ unsupported platform MAY run deterministic `--plan-only` but SHALL fail executio
 preflight rather than weaken isolation.
 
 Before application code, the launcher SHALL install a seccomp user-notification
-filter and give its listener FD to the controller process supervisor. The listener
-SHALL record and validate `openat/openat2`, socket/connect, fork/vfork,
-execve/execveat, clone and clone3 attempts before deciding. Reviewed allowlisted file
-opens SHALL continue to Landlock; an out-of-allowlist path SHALL be recorded and
-denied. Network and process creation SHALL be recorded and denied. Thread-form clone
-SHALL be allowed only for reviewed thread flags; process-form clone SHALL be denied.
-The controller-owned notification channel SHALL make native I/O violations observable
-even when application/native code catches EPERM.
+filter and transfer its listener exactly once to the controller over a pre-created
+`SOCK_SEQPACKET` channel with `SCM_RIGHTS`. Controller and worker SHALL validate
+tracee/listener identity, use an ACK to close transfer endpoints at fixed handshake
+points, and kill the worker group if transfer or listener liveness fails. The
+listener SHALL record and validate `openat/openat2`, socket/connect, fork/vfork,
+execve/execveat, clone and clone3 attempts before deciding. For an allowed open, the
+controller SHALL open the object itself with `openat2` and
+`RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_SYMLINKS`, validate the resulting
+descriptor, and inject it using `SECCOMP_IOCTL_NOTIF_ADDFD`; it SHALL NOT continue a
+raw tracee pathname open. Landlock SHALL remain the kernel backstop for any
+non-brokered path and descriptor use after injection.
+Out-of-allowlist opens, network and process creation SHALL be recorded and denied.
+Thread-form clone SHALL be allowed only for reviewed flags; process-form clone SHALL
+be denied. This SHALL make native I/O violations observable without pathname TOCTOU,
+including when application/native code catches EPERM.
 
 The process SHALL use a temporary `TRADE_DATA_ROOT`, HOME, XDG and cache directories;
 scrub provider/API credentials and proxy variables; fix `TZ=UTC`, locale, and
@@ -301,23 +342,29 @@ tuple whose bounded import closure accesses an undeclared clock or entropy API. 
 trust tuple SHALL remain entropy-non-cacheable while its default path can call
 `uuid.uuid4()`.
 
-The controller SHALL create a mode-0600 sidecar and one-time random token. The
-launcher/plugin SHALL append a gap-free authenticated child sequence of
+The child SHALL receive one write-only guard pipe and a child-only MAC key. The
+launcher/plugin SHALL emit a gap-free authenticated child sequence of
 `guard_started`, `kernel_policy_active`, zero or more `guard_violation`, and
-`guard_completed`. The controller process supervisor SHALL append its own
+`guard_completed`. The controller SHALL keep its syscall audit and key in
+controller-private memory and emit its own
 `syscall_audit_started`, zero or more `syscall_violation`, and
-`syscall_audit_completed` sequence. Both SHALL bind run ID, worker PID/start token,
-target digest and policy digest. Before interpreting pytest exit, the controller SHALL
-drain pending notifications and require both complete handshakes. Missing, empty,
-truncated, duplicated, wrong-token, wrong-process or sequence-gap evidence SHALL be
-`infrastructure_error`. Any child or syscall violation SHALL also be
+`syscall_audit_completed` sequence. The child SHALL NOT possess the controller audit
+writer/key, and the controller SHALL NOT possess the child MAC key. Both SHALL bind
+run ID, worker PID/start token, target digest and policy digest. Before interpreting
+pytest exit, the controller SHALL drain pending notifications and require both
+complete independent handshakes. Missing, empty, truncated, duplicated, wrong-token,
+wrong-process or sequence-gap evidence SHALL be `infrastructure_error`. Any child or
+syscall violation SHALL also be
 `infrastructure_error`, including when application or native code catches an
 exception or pytest otherwise exits 0 or 1.
 
 Line coverage SHALL use exactly coverage.py 7.10.7 in statement/line mode. The
-adapter SHALL run `python -m coverage run --data-file <private-data> --source
+controller SHALL create and hash a minimal private rcfile that disables branch,
+plugins, patches, parallel mode and relative files; it SHALL clear every
+`COVERAGE_*` environment variable. The adapter SHALL run `python -m coverage run
+--rcfile <private-rc> --data-file <private-data> --source
 <private-package> -m pytest --import-mode=importlib <absolute-mapped-tests>` followed
-by `python -m coverage json --data-file <private-data> --include
+by `python -m coverage json --rcfile <private-rc> --data-file <private-data> --include
 <canonical-private-target> -o <private-json>`. Other closure modules MAY exist in the
 raw coverage database, but the filtered JSON SHALL contain exactly one canonical
 target. It SHALL map that target back to the repository-relative source, read bounded
@@ -333,10 +380,11 @@ SHALL be capped at 60 seconds. A tuple requiring more SHALL be unavailable in ch
 mode. Insufficient remaining time SHALL produce `not_run_budget`, not a late launch.
 
 On timeout, cancellation, or global deadline, the controller SHALL terminate the
-entire process group, wait a bounded grace period, escalate to kill, and reap the
-process before returning. A timeout SHALL be `timeout`, not `killed`. Failure to
-launch, copy, mutate, parse, collect, or execute infrastructure SHALL be
-`infrastructure_error`, not `killed`.
+worker cgroup/process group, wait a bounded observable grace period, escalate to
+kill, and request reap before returning. A timeout SHALL be `timeout`, not `killed`.
+Failure to confirm cleanup SHALL be `cleanup_unconfirmed` in the receipt and an
+infrastructure outcome, never a kill. Failure to launch, copy, mutate, parse, collect,
+or execute infrastructure SHALL be `infrastructure_error`, not `killed`.
 
 After a complete clean guard lifecycle, pytest exits SHALL map exactly:
 `0=survived`, `1=killed`, and `2/3/4/5` SHALL be `infrastructure_error` in mutant
@@ -385,7 +433,13 @@ mode, absolute deadline, supervisor identity, lifecycle/projection states, and e
 expected staging, final, and fallback paths. Bootstrap/controller SHALL send bounded
 authenticated transitions over one inherited supervisor pipe; the supervisor SHALL
 validate run ID, child PID/start token, sequence, schema and forward state before it
-alone atomically rewrites the receipt. CI SHALL consume the receipt path
+alone atomically rewrites the receipt. The receipt SHALL be a bounded phase journal
+that records plan digest, selected count, mutation/test phase facts, controller exit,
+cleanup evidence, last durable phase, expected report root/sequence and projection
+state. If the controller exits unexpectedly, is SIGKILLed, or is proven OOM-killed by
+cgroup `memory.events`, the surviving supervisor SHALL clean descendants, validate
+any already-published run-ID root, and bind that root or atomically write a
+`controller_lost` fallback. Unknown SIGKILL SHALL NOT be labelled OOM. CI SHALL consume the receipt path
 exported through `$GITHUB_OUTPUT`,
 validate the run ID and referenced evidence, and SHALL NOT infer this invocation from
 global `current.json`, timestamps, or newest-file globbing.
@@ -399,11 +453,17 @@ Every invocation SHALL stage one run-ID directory containing:
 
 JSON SHALL be authoritative and Markdown/HTML SHALL render from the persisted JSON.
 `manifest.json` SHALL NOT hash itself. After read-back verification and fsync of files
-and the staged directory, the controller SHALL hash the manifest and atomically replace
-one `current.json` pointer containing run ID, manifest SHA-256, and manifest byte size.
-The supervisor SHALL write the same root into the invocation receipt. Readers and CI
-SHALL validate the root before member hashes. A crash SHALL expose either the previous
-complete generation or the new complete generation, never mixed files.
+and the staged directory, the controller SHALL hash the manifest. Under the output
+lock, it SHALL reserve and fsync the next publication sequence in
+`publication-sequence.json`, binding run ID, previous committed sequence/digest and
+expected manifest digest, before atomically replacing one `current.json` pointer
+containing run ID, manifest SHA-256, manifest byte size and reserved sequence. The
+supervisor SHALL write the same root/sequence into the invocation receipt. Readers and
+CI SHALL validate the root before member hashes. A crash SHALL expose either the
+previous complete generation or the new complete generation, never mixed files. On
+the next locked operation an unresolved reservation SHALL be reconciled before any
+new sequence: a matching root commits its trend source; an absent/invalid root commits
+a content-addressed tombstone. Sequence values SHALL never be reused.
 Per-mutant cache outcomes SHALL stage under their run ID. A digest-bound completed-run
 commit marker SHALL be published only after `current.json` succeeds and the generation
 is complete/cache-eligible; cache reads SHALL require that marker. Partial, cancelled,
@@ -429,11 +489,16 @@ generation, or manifest/member digest mismatch SHALL be moved to a UUID quaranti
 record before a valid successor can publish. The successor manifest SHALL record the
 recovery code and quarantine path. If safe quarantine cannot complete, publication
 SHALL fail, leave the predecessor untouched, and emit exact read-only
-`scripts/mutation-test inspect --run-id <run_id>` plus idempotent
-`scripts/mutation-test repair --run-id <run_id> --expected-manifest-sha256 <digest>`
+`trade dev mutation inspect --run-id <run_id>` plus idempotent
+`trade dev mutation repair --run-id <run_id> --expected-manifest-sha256 <digest>`
 commands. `repair` SHALL default to dry-run, require `--apply` for mutation, take the
 same lock, verify ownership/root hash again, reject symlinks, and never touch an active
-lease.
+lease. `inspect` SHALL return schema `trade.mutation.inspect.v1` and closed states
+`healthy|first_run|repairable|active_lease|stale_expected_digest|unsafe|internal_error`
+with exits 0 for healthy/first-run, 1 for repairable and 2 for unsafe/internal error.
+`repair` SHALL return `trade.mutation.repair.v1`; dry-run SHALL exit 0 for no-op/valid
+plan, 1 for active lease/stale expected digest and 2 for unsafe/internal error, while
+`--apply` SHALL exit 0 only after read-back verification.
 
 One safe-error layer SHALL redact configured credential values,
 credential-looking environment values, URL userinfo, and controlled home/temp roots
@@ -522,13 +587,17 @@ invalidate an unchanged closure. Corrupt, partial, unbounded, undeclared-clock/e
 identity-mismatched, or entries without a valid completed-run commit marker SHALL be
 ignored. Changed mode MAY read a matching entry but SHALL remain correct without it.
 
-After report publication, core/full SHALL expose eligible cache markers, append one
-immutable compact `trend-sources/<publication_sequence>-<run_id>.json`, then
-reconcile `trend.jsonl`. Each source record SHALL bind report manifest root, mode,
-commit, exact comparison cohort, killed/survived numerator and denominator key-set
-digests, exception/no-coverage membership digests, score/counts,
-scope/config/environment digests, run ID, and a publication sequence allocated under
-the output lock. UTC is display/age metadata, not sole ordering truth.
+After report publication, core/full SHALL expose eligible cache markers, commit one
+content-addressed immutable compact
+`trend-sources/<publication_sequence>-<run_id>-<digest>.json`, advance the persistent
+high-water with its digest, then reconcile `trend.jsonl`. Each source or tombstone
+SHALL bind the previous retained digest, forming a validated hash chain anchored by
+the high-water and a retention checkpoint. Each source record SHALL bind report
+manifest root, mode, commit, exact comparison cohort, killed/survived numerator and
+denominator key-set digests, exception/no-coverage membership digests, score/counts,
+scope/config/environment digests, run ID, and its pre-reserved publication sequence.
+UTC is display/age metadata, not sole ordering truth. A stale restore below high-water
+or chain break SHALL fail closed.
 The trend-source ledger SHALL retain at most 365 records, 32 MiB, and 400 days;
 `trend.jsonl` SHALL be an idempotently rebuildable 8 MiB projection of that ledger.
 Result cache
@@ -536,11 +605,23 @@ retention SHALL be at most 20000 entries and 512 MiB. Under the output publicati
 lock, deterministic eviction SHALL remove oldest `created_at,key` records first and
 record evicted counts, bytes, and range. Immutable generations SHALL be at most 30
 entries, 2 GiB, and 30 days; fallback, quarantine, and failed-staging evidence SHALL
-be at most 50 entries, 512 MiB, and 14 days. Eviction SHALL protect `current`, active
-leases, and current failure evidence. CI SHALL restore only a
-schema/tool/config-compatible cache prefix, validate entries and commit markers,
-reconcile trend from the compact source ledger, and save one bounded cache archive
-under a new run-specific immutable key. Post-publication projection failure SHALL be
+be at most 50 entries, 512 MiB, and 14 days. Invocation receipts SHALL be at most 400
+entries, 64 MiB, and 400 days. Eviction SHALL protect `current`, active leases,
+current failure evidence, and each retained receipt until its retained report,
+fallback or trend anchor is no longer protected. CI SHALL restore only a
+schema/tool/config-compatible result-cache prefix, validate entries and commit
+markers, and save one bounded cache archive under a new run-specific immutable key.
+Cache SHALL remain disposable and SHALL NOT be treated as trend evidence.
+
+Scheduled/manual core and full SHALL restore trend from the newest valid immutable
+`mutation-aggregate-v1-<workflow_run_id>` artifact by numeric GitHub workflow run ID,
+not timestamp or a filename glob. The artifact SHALL contain and validate the bounded
+ledger, projection, high-water/checkpoint, complete retained hash chain,
+workflow/repository/configuration-epoch identity, and prior source bundle digest.
+After the run CI SHALL upload one new immutable rolling aggregate with 90-day
+retention. If no valid carrier remains, a new explicit trend epoch with
+`predecessor_unavailable` SHALL start; comparisons across that boundary SHALL be
+non-comparable. PR changed mode SHALL NOT write the aggregate. Post-publication projection failure SHALL be
 recorded as `projection_degraded` in the invocation receipt, leave the factual report
 valid, leave uncommitted cache unreadable, and expose a trend gap until reconciliation.
 Score regression is comparable only over identical complete unambiguous comparison
@@ -563,13 +644,28 @@ complete staged generation at 48/96/192 MiB, and peak report-renderer memory at
 detail rather than embed an unrestricted JSON copy. Worst-case escaped output SHALL be
 reserved before admission.
 
+For CI, a standard-library validator SHALL create exactly one immutable
+`trade.mutation.bundle.v1` directory from the exported receipt and its one referenced
+generation or fallback. It SHALL contain the exact receipt bytes, complete referenced
+evidence, `validation.json` using schema
+`trade.mutation.bundle-validation.v1`, and `bundle-manifest.json` with size/SHA-256
+for every preceding member. Validation SHALL bind workflow/run identity, controller
+exit, receipt digest, evidence kind/root digest, lifecycle/count/cleanup checks and
+closed failure codes. CI SHALL read-back and fsync the bundle and upload only the
+exported exact path/digest. A missing, malformed, unsafe, digest-mismatched or
+receipt-unbound bundle SHALL fail the evidence-validation job and SHALL NOT be
+relabelled as a mutation outcome.
+
 #### Scenario: Global time expires after partial execution
 
 - **WHEN** some mutants completed before the wall-clock budget
 - **THEN** their outcomes remain in all reports
 - **AND** unstarted selected mutants are marked `not_run_budget`
 - **AND** report generation completes within the in-budget 30/60/120-second reserve
-- **AND** the absolute 600/1800/5400-second hard deadline is never extended.
+- **AND** ordinary qualified-host execution does not admit work beyond the
+  600/1800/5400-second controller budget
+- **AND** any uninterruptible kernel/filesystem stall remains unconfirmed and is
+  contained by the larger outer runner timeout rather than reported as success.
 
 ### Requirement: Mutation quality policy SHALL be gradual and auditable
 
@@ -619,25 +715,29 @@ GitHub Actions SHALL:
 - pass the pull request base SHA explicitly and never infer a missing base by
   broadening scope;
 - cap the changed job at 15 minutes around the 600-second total script budget;
-- make changed/core/full controller steps advisory with `continue-on-error: true`,
-  capture exit 0/1/2 before the step returns, and preserve that original exit in the
-  invocation receipt and summary; the v1 job conclusion remains non-blocking, while a
-  malformed/missing invocation receipt or failed evidence-integrity validator SHALL
-  fail the workflow itself;
+- make changed/core/full mutation outcomes report-only by capturing exit 0/1/2,
+  receipt path and run ID through `$GITHUB_OUTPUT`, preserving the original exit in
+  the receipt/summary, then returning success from the execution step; score,
+  survivor, timeout, baseline or tool-status outcomes SHALL NOT become a merge gate
+  in this change;
+- run a separate `if: always()` evidence-validation job that SHALL fail on a missing,
+  malformed, unsafe, digest-mismatched or receipt-unbound
+  `trade.mutation.bundle.v1`;
 - use PR concurrency key
   `mutation-pr-${repository}-${pull_request.number}` with
   `cancel-in-progress: true`;
 - use `if: always()` to validate the exact invocation receipt exported through
-  `$GITHUB_OUTPUT`, append its success or typed fallback summary, and upload only its
-  run/staging/fallback path with 14-day retention for controller exits, internal
-  deadlines, and gracefully delivered signals while the job remains alive; global
-  `current.json` and newest-file globbing SHALL NOT select CI evidence;
+  `$GITHUB_OUTPUT`, append its success or typed fallback summary, construct the
+  immutable bundle above, and upload only the exported exact bundle path/digest with
+  14-day retention for controller exits, internal deadlines and gracefully delivered
+  signals while the job remains alive; global `current.json`, raw staging and
+  newest-file globbing SHALL NOT select CI evidence;
 - document upload after hard GitHub job cancellation, runner loss, or host loss as
   best effort rather than guaranteed;
 - run core on cron `17 18 * * 1-6` UTC and on manual request, with 1800-second script
-  budget, `continue-on-error: true`, and a 35-minute outer timeout;
+  budget and a 35-minute outer timeout;
 - run full only on cron `17 18 * * 0` UTC or explicit manual request, with
-  5400-second script budget, `continue-on-error: true`, and a 100-minute outer timeout;
+  5400-second script budget and a 100-minute outer timeout;
 - give scheduled/manual core and full one shared concurrency key
   `mutation-long-${repository}` with `cancel-in-progress: false`, which guarantees at
   most one running and one pending member but permits a newer dispatch to supersede an
@@ -645,14 +745,29 @@ GitHub Actions SHALL:
   a durable/lossless queue;
 - create no run ID or trend record for a pending dispatch superseded before command
   entry, and order committed trend records by publication sequence, not workflow
-  dispatch or adjustable UTC order.
+  dispatch or adjustable UTC order;
+- require reviewed `config/mutation-capacity.json` schema
+  `trade.mutation.capacity.v1` before core/full execution. Qualification SHALL bind
+  mode, config/matrix/cohort/import-closure/tool/lock/isolation-policy digests, Python
+  and dependency lock identities, runner image digest, effective CPU/quota, finite
+  enforceable memory/cgroup identity, filesystem type, qualification bundle/run
+  digests, and planning/copy/baseline/per-mutant p50/p95/render/fsync/cleanup
+  measurements. It SHALL expire within 30 days, record headroom and
+  `qualified: true|false`, and fail execution preflight on any missing, expired,
+  false, mismatched, non-finite-memory or insufficient-headroom field;
+- expose `trade dev mutation qualify --mode core|full
+  --runner-image-digest SHA256` as an explicit report-only one-effective-CPU
+  qualification proposal command that never edits the reviewed capacity file;
+- restore and validate the rolling trend aggregate by numeric workflow run ID before
+  core/full and upload its successor after the run, with explicit epoch gaps instead
+  of fabricated continuity.
 
 The ordinary pull-request workflow SHALL never invoke `core` or `full`. Documentation,
 test-only, fixture, generated, and excluded changes SHALL not execute mutant tests.
-Before scheduled routes are enabled, cold-cache core and full qualification runs SHALL
-execute on one effective CPU and a standard runner, record
-planning/copy/baseline/per-mutant p50/p95/render time, and complete with the configured
-cleanup/publication reserve.
+Before scheduled routes execute mutants, cold-cache core and full qualification runs
+SHALL execute on one effective CPU and the exact runner image, record
+planning/copy/baseline/per-mutant p50/p95/render/fsync/cleanup time, and satisfy the
+reviewed identity, 30-day freshness and configured reserve/headroom contract.
 
 #### Scenario: A documentation-only pull request runs CI
 
