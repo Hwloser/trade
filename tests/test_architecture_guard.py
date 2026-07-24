@@ -2518,6 +2518,66 @@ def test_approved_binding_rejects_read_only_transaction_proof(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
+    ("field", "new_sql"),
+    (
+        (
+            "writer_evidence",
+            "INSERT INTO approved_records (id) VALUES (?); DELETE FROM unrelated_records",
+        ),
+        (
+            "transaction_evidence",
+            "UPDATE approved_records SET id = id; INSERT INTO unrelated_records (id) VALUES (?)",
+        ),
+    ),
+)
+def test_approved_binding_rejects_compound_writer_or_transaction_proof(
+    tmp_path: Path,
+    field: str,
+    new_sql: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    original_callable = (
+        "def persist_approved(session):\n"
+        "    with session.transaction():\n"
+        '        session.execute("INSERT INTO approved_records (id) VALUES (?)")'
+    )
+    if field == "writer_evidence":
+        replacement_callable = (
+            "def persist_approved(session):\n"
+            f"    session.executescript({new_sql!r})\n"
+            "    with session.transaction():\n"
+            '        session.execute("INSERT INTO approved_records (id) VALUES (?)")'
+        )
+    else:
+        replacement_callable = (
+            "def persist_approved(session):\n"
+            '    session.execute("INSERT INTO approved_records (id) VALUES (?)")\n'
+            "    with session.transaction():\n"
+            f"        session.executescript({new_sql!r})"
+        )
+    source.write_text(
+        _approved_adapter_source().replace(original_callable, replacement_callable, 1),
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    declaration = _approved_binding_declaration()
+    original = (
+        f'{field} = {{ source = "src/trade/datasets/adapters/persistence/warehouse.py", '
+        'literal = "INSERT INTO approved_records (id) VALUES (?)", '
+        'callable = "persist_approved" }'
+    )
+    replacement = (
+        f'{field} = {{ source = "src/trade/datasets/adapters/persistence/warehouse.py", '
+        f'literal = {new_sql!r}, callable = "persist_approved" }}'
+    )
+    _write_baseline(repo, baseline + "\n" + declaration.replace(original, replacement, 1))
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), field
+
+
+@pytest.mark.parametrize(
     ("field", "old", "new"),
     (
         (
@@ -2823,6 +2883,79 @@ def test_approved_binding_rejects_callable_namespace_mutation(
     _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
 
     assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
+
+
+@pytest.mark.parametrize(
+    ("import_statement", "description"),
+    (
+        ("import rebound\n", "plain import"),
+        ("import rebound as alias\n", "aliased import"),
+        ("from rebound import unrelated\n", "from import"),
+    ),
+)
+def test_approved_binding_rejects_module_imports(
+    tmp_path: Path,
+    import_statement: str,
+    description: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source() + "\n\n" + import_statement, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
+
+
+@pytest.mark.parametrize(
+    ("statement", "description"),
+    (
+        (
+            'unused = lambda value=globals().pop("persist_approved"): None\n',
+            "lambda positional default",
+        ),
+        (
+            'unused = lambda *, value=globals().pop("persist_approved"): None\n',
+            "lambda keyword default",
+        ),
+        ("Binding.non_proof_attribute = None\n", "attribute store"),
+        ("with resource:\n    pass\n", "with protocol"),
+        ("if condition:\n    pass\n", "truthiness protocol"),
+        ("for item in iterable:\n    pass\n", "iteration protocol"),
+    ),
+)
+def test_approved_binding_rejects_non_inert_module_statement(
+    tmp_path: Path,
+    statement: str,
+    description: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source() + "\n\n" + statement, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
+
+
+@pytest.mark.skipif(
+    not hasattr(ast, "TypeAlias"),
+    reason="PEP 695 type aliases require a Python parser that supports them",
+)
+def test_approved_binding_rejects_type_alias_rebinding(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        _approved_adapter_source() + "\n\ntype persist_approved = int\n",
+        encoding="utf-8",
+    )
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo)
 
 
 @pytest.mark.parametrize(

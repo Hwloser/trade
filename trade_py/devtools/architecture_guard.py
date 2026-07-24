@@ -3079,72 +3079,45 @@ def _adapter_callable(tree: ast.Module, name: str) -> ast.FunctionDef | ast.Asyn
     if _function_has_definition_time_metadata(candidate):
         return None
     if any(
-        statement is not candidate and _module_statement_binds_name(statement, name)
-        for statement in tree.body
+        not _module_statement_is_admitted(statement, name, is_first=index == 0)
+        for index, statement in enumerate(tree.body)
     ):
         return None
     return candidate
 
 
-def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
-    """Return whether executable module code can bind or delete ``name``."""
+def _module_statement_is_admitted(
+    statement: ast.stmt,
+    proof_name: str,
+    *,
+    is_first: bool,
+) -> bool:
+    """Admit only inert module declarations beside approved proof callables."""
 
-    pending: list[ast.AST] = [statement]
-    while pending:
-        node = pending.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name == name:
-                return True
-            if _function_has_definition_time_metadata(node):
-                return True
-            continue
-        if isinstance(node, ast.ClassDef):
-            return True
-        if isinstance(node, ast.Lambda):
-            continue
-        if _module_call_may_bind_name(node, name):
-            return True
-        if isinstance(node, ast.Assign) and any(
-            _assignment_target_binds_name(target, name) for target in node.targets
-        ):
-            return True
-        if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and _assignment_target_binds_name(
-            node.target, name
-        ):
-            return True
-        if isinstance(node, ast.Delete) and any(
-            _assignment_target_binds_name(target, name) for target in node.targets
-        ):
-            return True
-        if isinstance(node, (ast.For, ast.AsyncFor)) and _assignment_target_binds_name(
-            node.target, name
-        ):
-            return True
-        if (
-            isinstance(node, ast.withitem)
-            and node.optional_vars is not None
-            and _assignment_target_binds_name(node.optional_vars, name)
-        ):
-            return True
-        if isinstance(node, ast.ExceptHandler) and node.name == name:
-            return True
-        if isinstance(node, ast.NamedExpr) and _assignment_target_binds_name(node.target, name):
-            return True
-        if isinstance(node, ast.MatchAs) and node.name == name:
-            return True
-        if isinstance(node, ast.MatchStar) and node.name == name:
-            return True
-        if isinstance(node, ast.MatchMapping) and node.rest == name:
-            return True
-        if isinstance(node, ast.Import) and any(
-            (alias.asname or alias.name.split(".", 1)[0]) == name for alias in node.names
-        ):
-            return True
-        if isinstance(node, ast.ImportFrom) and any(
-            alias.name == "*" or (alias.asname or alias.name) == name for alias in node.names
-        ):
-            return True
-        pending.extend(ast.iter_child_nodes(node))
+    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return not _function_has_definition_time_metadata(statement)
+    if isinstance(statement, ast.Assign):
+        return all(
+            isinstance(target, ast.Name) and target.id != proof_name for target in statement.targets
+        ) and _is_inert_module_constant(statement.value)
+    return (
+        is_first
+        and isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
+
+
+def _is_inert_module_constant(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_inert_module_constant(element) for element in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            key is not None and _is_inert_module_constant(key) and _is_inert_module_constant(value)
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
     return False
 
 
@@ -3168,12 +3141,6 @@ def _function_has_definition_time_metadata(
     )
 
 
-def _module_call_may_bind_name(node: ast.AST, _name: str) -> bool:
-    """Fail closed on module-level calls outside the admitted proof definition."""
-
-    return isinstance(node, ast.Call)
-
-
 def _is_module_namespace(node: ast.AST) -> bool:
     return (
         isinstance(node, ast.Call)
@@ -3184,31 +3151,6 @@ def _is_module_namespace(node: ast.AST) -> bool:
             "vars",
         }
     )
-
-
-def _string_expression_may_equal_name(node: ast.AST, name: str) -> bool:
-    return (
-        not isinstance(node, ast.Constant) or not isinstance(node.value, str) or node.value == name
-    )
-
-
-def _assignment_target_binds_name(target: ast.expr, name: str) -> bool:
-    pending: list[ast.expr] = [target]
-    while pending:
-        candidate = pending.pop()
-        if isinstance(candidate, ast.Name) and candidate.id == name:
-            return True
-        if isinstance(candidate, ast.Attribute) and candidate.attr == name:
-            return True
-        if isinstance(candidate, ast.Subscript) and _is_module_namespace(candidate.value):
-            if _string_expression_may_equal_name(candidate.slice, name):
-                return True
-            continue
-        if isinstance(candidate, ast.Starred):
-            pending.append(candidate.value)
-        elif isinstance(candidate, (ast.Tuple, ast.List)):
-            pending.extend(candidate.elts)
-    return False
 
 
 def _summarize_callable_proof(
@@ -3540,6 +3482,8 @@ def _sql_targets_table(sql: str, table_name: str, field: str) -> bool:
             for identifier in _sql_read_table_identifiers(sql)
         )
     if field in {"writer_evidence", "transaction_evidence"}:
+        if not _is_single_write_statement(statement):
+            return False
         write_match = next(
             (
                 match
@@ -3567,6 +3511,13 @@ def _is_single_read_statement(statement: str) -> bool:
         and ";" not in stripped
         and not any(pattern.search(stripped) for pattern in _SQL_TABLE_OPERATION_PATTERNS)
     )
+
+
+def _is_single_write_statement(statement: str) -> bool:
+    stripped = statement.strip()
+    if stripped.endswith(";"):
+        stripped = stripped[:-1].rstrip()
+    return bool(stripped) and ";" not in stripped
 
 
 def _sql_identifier_matches(identifier: str, table_name: str) -> bool:

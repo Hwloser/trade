@@ -119,20 +119,24 @@ facts, Capture risks, dynamic limitations, interface records, and native
 bindings cannot carry classification, adapter, or proof fields. The static SQL
 must be the first positional argument of the recognized persistence call;
 writer and transaction proof must be table-specific writes, while reader and
-compatibility proof must be one read-only `SELECT` statement. The declared proof
-literal must exactly equal that direct SQL argument, not merely occur elsewhere
-in the adapter. A transaction receiver or explicit alias remains valid only
-until a direct-scope binding mutation or unmodelled dynamic call. A proof is
-admitted only from its straight-line callable prefix and a direct transaction
-`with` block in that prefix; nested `with` blocks, branches, loops, exception
+compatibility proof must be one read-only `SELECT` statement; writer and
+transaction proof must be one write statement. The declared proof literal must
+exactly equal that direct SQL argument, not merely occur elsewhere in the
+adapter. A transaction receiver or explicit alias remains valid only until a
+direct-scope binding mutation or unmodelled dynamic call. A proof is admitted
+only from its straight-line callable prefix and a direct transaction `with`
+block in that prefix; nested `with` blocks, branches, loops, exception
 handlers, assertions, matches, and deferred comprehensions never authorize
-persistence. Any additional module-scope executable call is a competing
-callable-binding risk. A class declaration is also rejected because its body,
-bases, decorators, and metaclass expressions execute at module definition time;
-an unrelated function declaration is admitted only without definition-time
-metadata such as decorators, defaults, annotations, or type parameters. SQL
-read matching recognizes `FROM` and `JOIN` tokens outside comments, strings,
-and quoted alias text. The proof is bounded by
+persistence. Any module-scope import or executable call is a competing
+callable-binding risk. A class declaration or PEP 695 type alias is also
+rejected because its body, bases, decorators, metaclass, or type metadata can
+execute or rebind at module definition time; an unrelated function declaration
+is admitted only without definition-time metadata such as decorators, defaults,
+annotations, or type parameters. The only other admitted top-level declarations
+are plain literal constants and a module docstring; assignments with lambdas,
+attribute/subscript targets, control flow, context managers, and every other
+module execution form are rejected. SQL read matching recognizes `FROM` and
+`JOIN` tokens outside comments, strings, and quoted alias text. The proof is bounded by
 persistence-operation, retained-SQL-byte, AST-node, and AST-depth limits, and
 every rejected relationship has a focused failing fixture.
 
@@ -200,18 +204,22 @@ Transaction proof must be a static table-specific write inside one direct
 transaction `with` block using the same receiver or that context manager's
 explicit `as` alias, and that receiver identity must remain unmodified from
 transaction entry to the call. Any unmodelled direct-scope call invalidates
-transaction receiver proof rather than being interpreted dynamically. SQL table
-identifiers match at supported statement positions with identifier boundaries,
-not by substring; read proof tokenization ignores comments, strings, and quoted
-alias text before recognizing `FROM` or `JOIN`. Proof collection accepts only a
+transaction receiver proof rather than being interpreted dynamically. Writer
+and transaction proof reject a semicolon-separated second statement after
+comments and values are masked. SQL table identifiers match at supported
+statement positions with identifier boundaries, not by substring; read proof
+tokenization ignores comments, strings, and quoted alias text before
+recognizing `FROM` or `JOIN`. Proof collection accepts only a
 straight-line callable prefix and a direct transaction `with` block, stopping
 before a nested `with`, conditional, loop, exception, assertion, match, or
 deferred comprehension. It rejects a decorated, duplicate, deleted, assigned,
-imported, wildcard-imported, namespace-mutated, dynamically executed, or
-otherwise rebound callable name; an approved-proof adapter also rejects
-additional module-scope executable calls because their namespace effects cannot
-be proven safely, including definition-time expressions in unrelated
-declarations. It fails closed above its callable operation,
+imported, wildcard-imported, type-aliased, namespace-mutated, dynamically
+executed, or otherwise rebound callable name; an approved-proof adapter rejects
+every module-scope import and executable call because their namespace effects
+cannot be proven safely, including definition-time expressions in unrelated
+declarations. Its module body is an explicit admission whitelist: plain
+functions without definition-time metadata, inert literal constant declarations,
+and a docstring only. It fails closed above its callable operation,
 retained-SQL-byte, AST-node, or AST-depth budget. Thus a valid but unrelated
 legacy literal, parameter value, suffix-named table, quoted alias,
 cross-adapter proof, uncalled nested helper, top-level constant, dead proof,
@@ -727,6 +735,17 @@ source-protection guarantee and avoids duplicate Git traversal.
   captured from its named direct-scope operation. A mismatch reports the
   adapter callable line; later source-fact audit records remain intentionally
   separate non-authorizing lexical evidence.
+- **A compound SQL script is mistaken for a table-local write proof** -> Writer
+  and transaction evidence admit only one statement after comments and values
+  are masked. A second statement, including one passed to `executescript`, is
+  non-authorizing.
+- **An import or newer binding form mutates an approved callable at module
+  initialization** -> Approved-proof adapters reject every module-scope import,
+  every executable call, class declaration, PEP 695 type alias, lambda,
+  attribute/subscript store, and protocol-triggering control-flow statement.
+  Their module body admits only plain functions, inert literal declarations,
+  and a docstring. A later child must define a reviewed import-purity or richer
+  callable-provenance contract before relaxing this rule.
 - **A table SQL binding cannot authorize heterogeneous resources** -> Schema v1
   rejects unknown top-level resource declarations and classification/proof
   fields on every unclassifiable source-only record. Artifact, provider,

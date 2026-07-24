@@ -79,9 +79,15 @@ additional module-scope executable call because its namespace effect cannot be
 proven safely. It SHALL also reject every class declaration and every function
 declaration with definition-time metadata, including decorators, defaults,
 annotations, or type parameters, because those forms can execute before the
-module binding is admitted. Writer evidence SHALL occur as a static table-specific write
-statement passed as the first positional argument to a persistence call; reader
-and compatibility evidence SHALL occur as one static read-only `SELECT`
+module binding is admitted. It SHALL reject every PEP 695 type-alias declaration
+and every module-scope import until a reviewed import-purity or callable-provenance
+contract exists. The module body SHALL otherwise admit only plain functions
+without definition-time metadata, inert literal constant declarations, and a
+module docstring; lambdas, attribute or subscript assignments, context managers,
+control-flow statements, and every other executable declaration SHALL be
+rejected. Writer and transaction evidence SHALL each occur as one static
+table-specific write statement passed as the first positional argument to a
+persistence call; reader and compatibility evidence SHALL occur as one static read-only `SELECT`
 statement in that same position. A string only in a persistence parameter or
 keyword SHALL NOT authorize a proof. Transaction evidence SHALL occur inside a
 direct transaction `with` block containing a static table-specific write on that
@@ -162,10 +168,12 @@ runtime-behavior claim.
   SQL only in a persistence parameter or keyword, mutable or multi-statement
   reader/compatibility SQL, a quoted alias or comment/string pseudo-table
   reference, a transaction-only read, a wildcard/dynamic proof-callable rebind,
-  any additional module-scope executable call, a rebound or dynamically
-  mutated transaction receiver or alias, a class or definition-time metadata
-  that can execute while defining an unrelated module-level declaration, a literal that is present only
-  elsewhere in the adapter or differs from the named operation's first SQL
+  compound writer or transaction SQL, any module-scope import or executable
+  call, a PEP 695 type alias, lambda or non-inert module declaration, a rebound
+  or dynamically mutated transaction receiver or alias, a class or
+  definition-time metadata that can execute while defining an unrelated
+  module-level declaration, a literal that is present only elsewhere in the
+  adapter or differs from the named operation's first SQL
   argument, a nested `with` proof, or a transaction context with an unrelated
   receiver
 - **THEN** baseline validation fails and the declaration does not authorize
