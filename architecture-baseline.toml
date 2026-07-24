@@ -185,6 +185,102 @@ provenance = [
 ]
 
 [[tables]]
+logical_name = "source_health_daily"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-source-health-quality-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Source health is a Datasets quality input, but the current daily projection is mutable and lacks DatasetVersion lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS source_health_daily", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "source_eval_daily"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-source-evaluation-quality-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Source evaluation is a Datasets quality input, but the current daily projection does not bind immutable Dataset inputs."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS source_eval_daily", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "event_eval_runs"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-event-study-evaluation-record"
+classification = "candidate"
+target_context = "studies"
+reason = "Event evaluation resembles a Study validation run, but its current mutable database inputs need StudySpec and DatasetSnapshotRef evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_eval_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "dataset_snapshots"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-snapshot-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "The legacy snapshot row is a migration input for DatasetSnapshot ownership, but is not an immutable point-in-time reference."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS dataset_snapshots", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "daily_quality_gate"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-quality-gate"
+classification = "candidate"
+target_context = "datasets"
+reason = "The daily gate is a migration input for Datasets quality and release policy, not a formal DatasetRelease decision."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS daily_quality_gate", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "event_templates"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-event-template-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Event template ownership depends on whether the reusable schema becomes a Dataset product or a Study-local transform."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_templates", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "market_events"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-market-event-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Market events currently mix extraction, canonicalization, and decision inputs without immutable Dataset lineage."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS market_events", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "event_propagations"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-event-propagation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Propagation records combine graph transformation, realized-return backfill, and feature use pending independent ownership evidence."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_propagations", role = "bootstrap" },
+]
+
+[[tables]]
 logical_name = "causal_decision_snapshots"
 current_owner = "trade_py.db"
 semantic_kind = "legacy-causal-decision-record"
@@ -303,6 +399,102 @@ reason = "Model evaluation needs Study validation and point-in-time input eviden
 required_child = "study-boundary"
 provenance = [
   { source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS model_eval_runs", role = "bootstrap" },
+]
+
+[[tables]]
+logical_name = "ArticleEvent"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-canonical-article-event-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Canonical article-event rows are a Dataset migration input, but current records lack immutable lineage and point-in-time release semantics."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS ArticleEvent", role = "migration" },
+]
+
+[[tables]]
+logical_name = "InfluenceSignal"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-source-influence-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Influence records blend source reliability and research-derived scoring, so target ownership needs separate Capture, Datasets, and Studies evidence."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS InfluenceSignal", role = "migration" },
+]
+
+[[tables]]
+logical_name = "Evidence"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-derived-evidence-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Legacy evidence rows combine dataset-derived facts and decision inputs and cannot create an independent Evidence context."
+required_child = "study-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Evidence", role = "migration" },
+]
+
+[[tables]]
+logical_name = "BeliefState"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-belief-state"
+classification = "deferred"
+target_context = "deferred"
+reason = "Belief state needs Decision Support audit and Study-result provenance before a target aggregate is assigned."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS BeliefState", role = "migration" },
+]
+
+[[tables]]
+logical_name = "AttentionScore"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-attention-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Attention scores need Decision Support audit and Study-result provenance before a target aggregate is assigned."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS AttentionScore", role = "migration" },
+]
+
+[[tables]]
+logical_name = "BeliefTransition"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-decision-belief-transition"
+classification = "deferred"
+target_context = "deferred"
+reason = "Belief transitions need Decision Support audit and Study-result provenance before a target aggregate is assigned."
+required_child = "decision-support-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS BeliefTransition", role = "migration" },
+]
+
+[[tables]]
+logical_name = "QualityReport"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-quality-report"
+classification = "candidate"
+target_context = "datasets"
+reason = "Quality reports are Datasets quality migration inputs, but current reports combine mutable operational and research evaluation summaries."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS QualityReport", role = "migration" },
+]
+
+[[tables]]
+logical_name = "FreshnessStatus"
+current_owner = "trade_py.db"
+semantic_kind = "legacy-dataset-freshness-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Freshness status is a Datasets availability input, but current rows do not prove immutable DatasetVersion or Snapshot references."
+required_child = "dataset-product-boundary"
+provenance = [
+  { source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS FreshnessStatus", role = "migration" },
 ]
 
 [[tables]]

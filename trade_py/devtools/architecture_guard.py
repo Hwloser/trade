@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
+import re
 import select
 import signal
 import stat
@@ -63,6 +64,9 @@ _RESULT_TRUNCATED = "architecture.guard_result_truncated"
 
 _PROVENANCE_ROLES = frozenset({"bootstrap", "migration", "alter", "data_transform"})
 _CLASSIFICATIONS = frozenset({"candidate", "deferred", "approved_binding"})
+_CREATE_TABLE_LITERAL = re.compile(
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[A-Za-z_][A-Za-z0-9_]*"
+)
 _EXCLUDED_SOURCE_SEGMENTS = frozenset(
     {"vendor", "third_party", "generated", "cache", "__pycache__"}
 )
@@ -124,54 +128,202 @@ _REQUIRED_CAPTURE_RISK_BINDINGS = {
         'load_catalog_payload("catalog.feeds.gdelt", "config/feeds/gdelt.json")',
     ),
 }
-_REQUIRED_DEFERRED_TABLE_BINDINGS = {
+_REQUIRED_TABLE_BINDINGS = {
+    "source_health_daily": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS source_health_daily",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "source_eval_daily": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS source_eval_daily",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "event_eval_runs": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS event_eval_runs",
+        "candidate",
+        "studies",
+        "study-boundary",
+    ),
+    "dataset_snapshots": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS dataset_snapshots",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "daily_quality_gate": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS daily_quality_gate",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "event_templates": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS event_templates",
+        "deferred",
+        "deferred",
+        "dataset-product-boundary",
+    ),
+    "market_events": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS market_events",
+        "deferred",
+        "deferred",
+        "dataset-product-boundary",
+    ),
+    "event_propagations": (
+        "trade_py/db/trade_db.py",
+        "CREATE TABLE IF NOT EXISTS event_propagations",
+        "deferred",
+        "deferred",
+        "dataset-product-boundary",
+    ),
     "causal_decision_snapshots": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS causal_decision_snapshots",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "causal_validation_outcomes": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS causal_validation_outcomes",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "causal_reward_punishment": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS causal_reward_punishment",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "factors": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS factors",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "factor_registry": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS factor_registry",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "model_registry": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS model_registry",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "model_eval_runs": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS model_eval_runs",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "kg_nodes": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS kg_nodes",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "kg_relations": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS kg_relations",
+        "deferred",
+        "deferred",
+        "study-boundary",
     ),
     "kg_edge_candidates": (
         "trade_py/db/trade_db.py",
         "CREATE TABLE IF NOT EXISTS kg_edge_candidates",
+        "deferred",
+        "deferred",
+        "study-boundary",
+    ),
+    "ArticleEvent": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS ArticleEvent",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "InfluenceSignal": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS InfluenceSignal",
+        "deferred",
+        "deferred",
+        "study-boundary",
+    ),
+    "Evidence": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS Evidence",
+        "deferred",
+        "deferred",
+        "study-boundary",
+    ),
+    "BeliefState": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS BeliefState",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
+    ),
+    "AttentionScore": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS AttentionScore",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
+    ),
+    "BeliefTransition": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS BeliefTransition",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
+    ),
+    "QualityReport": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS QualityReport",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
+    ),
+    "FreshnessStatus": (
+        "trade_py/db/migrations.py",
+        "CREATE TABLE IF NOT EXISTS FreshnessStatus",
+        "candidate",
+        "datasets",
+        "dataset-product-boundary",
     ),
     "Recommendation": (
         "trade_py/db/migrations.py",
         "CREATE TABLE IF NOT EXISTS Recommendation",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
     ),
     "RecommendationTrace": (
         "trade_py/db/migrations.py",
         "CREATE TABLE IF NOT EXISTS RecommendationTrace",
+        "deferred",
+        "deferred",
+        "decision-support-boundary",
     ),
 }
 _REQUIRED_ARTIFACT_SOURCES = {
@@ -326,21 +478,29 @@ class _EvidenceReader:
                 relative,
                 "declared source-evidence file count exceeds the configured aggregate budget",
             )
-        signature = _safe_verify_relative(
-            self.root,
-            relative,
-            max_bytes=self.limits.max_evidence_bytes,
-        )
-        if self._aggregate_bytes + signature.size > self.limits.max_aggregate_evidence_bytes:
+        remaining_bytes = self.limits.max_aggregate_evidence_bytes - self._aggregate_bytes
+        read_limit = min(self.limits.max_evidence_bytes, remaining_bytes)
+        try:
+            payload = _safe_read_relative(
+                self.root,
+                relative,
+                max_bytes=read_limit,
+            )
+        except _GuardError as exc:
+            if (
+                exc.finding.rule_id != PRODUCER_SOURCE_BUDGET
+                or read_limit == self.limits.max_evidence_bytes
+            ):
+                raise
+            raise _baseline_evidence_budget_error(
+                relative,
+                "declared source-evidence bytes exceed the configured aggregate budget",
+            ) from exc
+        if len(payload) > remaining_bytes:
             raise _baseline_evidence_budget_error(
                 relative,
                 "declared source-evidence bytes exceed the configured aggregate budget",
             )
-        payload = _safe_read_relative(
-            self.root,
-            relative,
-            max_bytes=self.limits.max_evidence_bytes,
-        )
         self._payloads[relative] = payload
         self._aggregate_bytes += len(payload)
         return payload
@@ -742,32 +902,39 @@ def _validate_baseline_facts(
         except _GuardError as exc:
             findings.append(exc.finding)
 
-    missing_table_names = sorted(set(_REQUIRED_DEFERRED_TABLE_BINDINGS) - set(tables_by_name))
-    invalid_deferred_tables = [
+    missing_table_names = sorted(set(_REQUIRED_TABLE_BINDINGS) - set(tables_by_name))
+    invalid_table_bindings = [
         name
-        for name, (source, literal) in _REQUIRED_DEFERRED_TABLE_BINDINGS.items()
+        for name, (
+            source,
+            literal,
+            classification,
+            target_context,
+            required_child,
+        ) in _REQUIRED_TABLE_BINDINGS.items()
         if name in tables_by_name
         and (
-            tables_by_name[name].get("classification") != "deferred"
-            or tables_by_name[name].get("target_context") != "deferred"
+            tables_by_name[name].get("classification") != classification
+            or tables_by_name[name].get("target_context") != target_context
+            or tables_by_name[name].get("required_child") != required_child
             or not _has_provenance_literal(tables_by_name[name], source, literal)
         )
     ]
-    if missing_table_names or invalid_deferred_tables:
+    if missing_table_names or invalid_table_bindings:
         details = []
         if missing_table_names:
             details.append("missing " + ", ".join(missing_table_names))
-        if invalid_deferred_tables:
-            details.append("misbound or non-deferred " + ", ".join(sorted(invalid_deferred_tables)))
+        if invalid_table_bindings:
+            details.append("misbound or misclassified " + ", ".join(sorted(invalid_table_bindings)))
         findings.append(
             ArchitectureFinding(
                 _BASELINE_MALFORMED,
                 BASELINE_FILENAME,
                 None,
-                "baseline omits or misclassifies required deferred central-schema declarations: "
+                "baseline omits or misclassifies required central-schema declarations: "
                 + "; ".join(details),
-                "Record each audited KG, causal, factor, and historical recommendation table "
-                "as deferred with its reviewed source literal.",
+                "Record each audited legacy table with its reviewed source literal, current "
+                "classification, target Context, and responsible child change.",
             )
         )
 
@@ -1019,8 +1186,7 @@ def _validate_source_literal(
             "declared evidence source is not valid UTF-8",
             "Keep declared evidence as stable UTF-8 source inside the repository.",
         ) from exc
-    offset = text.find(literal)
-    if offset < 0:
+    if not _source_literal_is_present(text, literal):
         raise _GuardError(
             _BASELINE_LITERAL_MISMATCH,
             source,
@@ -1028,6 +1194,15 @@ def _validate_source_literal(
             + _bounded_text(literal, evidence.limits.max_diagnostic_field_bytes),
             "Update the baseline fact and its migration evidence with the changed source literal.",
         )
+
+
+def _source_literal_is_present(text: str, literal: str) -> bool:
+    """Match table DDL literals as complete identifiers, not name prefixes."""
+
+    match = _CREATE_TABLE_LITERAL.fullmatch(literal)
+    if match is None:
+        return literal in text
+    return any(candidate.group(0) == literal for candidate in _CREATE_TABLE_LITERAL.finditer(text))
 
 
 def _is_allowed_evidence_source(source: str) -> bool:
@@ -1213,7 +1388,6 @@ def _iter_git_index(
         limits.max_raw_path_bytes + 512,
     )
     buffer = b""
-    completed = False
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -1272,19 +1446,16 @@ def _iter_git_index(
                 + _bounded_text(detail, limits.max_diagnostic_field_bytes),
                 "Repair Git availability or the repository index before running source-only discovery.",
             )
-        completed = True
     finally:
-        _terminate_process_group(process, force=not completed)
+        _terminate_process_group(process)
         stdout.close()
         stderr_stream.close()
         stderr_thread.join(timeout=1)
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes], *, force: bool) -> None:
-    """Stop a substituted Git command and any children that retain its pipes."""
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Stop a substituted Git command and any residual process-group children."""
 
-    if process.poll() is not None and not force:
-        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -1293,8 +1464,6 @@ def _terminate_process_group(process: subprocess.Popen[bytes], *, force: bool) -
         process.wait(timeout=1)
     except subprocess.TimeoutExpired:
         pass
-    if not force:
-        return
 
     deadline = time.monotonic() + 1
     while _process_group_exists(process.pid) and time.monotonic() < deadline:
@@ -1363,15 +1532,16 @@ def _safe_verify_relative(root: Path, relative: str, *, max_bytes: int) -> _Sour
         )
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory_flag = getattr(os, "O_DIRECTORY", 0)
-    if not nofollow or not directory_flag:
+    nonblocking_flag = getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not directory_flag or not nonblocking_flag:
         raise _GuardError(
             PRODUCER_UNSAFE_SOURCE,
             relative,
-            "the platform does not expose required no-follow descriptor primitives",
-            "Run the check on a platform that supports no-follow regular-file reads.",
+            "the platform does not expose required safe nonblocking descriptor primitives",
+            "Run the check on a platform that supports no-follow nonblocking regular-file reads.",
         )
     directory_flags = os.O_RDONLY | os.O_CLOEXEC | directory_flag | nofollow
-    file_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow
+    file_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow | nonblocking_flag
     try:
         root_fd = os.open(root, directory_flags)
     except OSError as exc:
@@ -1415,15 +1585,16 @@ def _safe_read_relative(root: Path, relative: str, *, max_bytes: int) -> bytes:
         )
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory_flag = getattr(os, "O_DIRECTORY", 0)
-    if not nofollow or not directory_flag:
+    nonblocking_flag = getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not directory_flag or not nonblocking_flag:
         raise _GuardError(
             PRODUCER_UNSAFE_SOURCE,
             relative,
-            "the platform does not expose required no-follow descriptor primitives",
-            "Run the check on a platform that supports no-follow regular-file reads.",
+            "the platform does not expose required safe nonblocking descriptor primitives",
+            "Run the check on a platform that supports no-follow nonblocking regular-file reads.",
         )
     directory_flags = os.O_RDONLY | os.O_CLOEXEC | directory_flag | nofollow
-    file_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow
+    file_flags = os.O_RDONLY | os.O_CLOEXEC | nofollow | nonblocking_flag
     try:
         root_fd = os.open(root, directory_flags)
     except OSError as exc:
@@ -1887,6 +2058,15 @@ def _discover_in_source(
             for statement in node.body:
                 self.visit(statement)
 
+        def visit_Match(self, node: ast.Match) -> None:
+            self.visit(node.subject)
+            for case in node.cases:
+                self._invalidate_names(_pattern_binding_names(case.pattern))
+                if case.guard is not None:
+                    self.visit(case.guard)
+                for statement in case.body:
+                    self.visit(statement)
+
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             for decorator in node.decorator_list:
                 self.visit(decorator)
@@ -2110,6 +2290,34 @@ def _assignment_names(targets: Sequence[ast.AST]) -> set[str]:
     return names
 
 
+def _pattern_binding_names(pattern: ast.pattern) -> set[str]:
+    if isinstance(pattern, ast.MatchAs):
+        names = _pattern_binding_names(pattern.pattern) if pattern.pattern is not None else set()
+        if pattern.name is not None:
+            names.add(pattern.name)
+        return names
+    if isinstance(pattern, ast.MatchStar):
+        return {pattern.name} if pattern.name is not None else set()
+    if isinstance(pattern, ast.MatchMapping):
+        names = set()
+        for nested in pattern.patterns:
+            names.update(_pattern_binding_names(nested))
+        if pattern.rest is not None:
+            names.add(pattern.rest)
+        return names
+    if isinstance(pattern, ast.MatchClass):
+        names = set()
+        for nested in (*pattern.patterns, *pattern.kwd_patterns):
+            names.update(_pattern_binding_names(nested))
+        return names
+    if isinstance(pattern, (ast.MatchSequence, ast.MatchOr)):
+        names = set()
+        for nested in pattern.patterns:
+            names.update(_pattern_binding_names(nested))
+        return names
+    return set()
+
+
 def _function_local_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     """Return lexical locals that shadow imports throughout a function scope."""
 
@@ -2185,6 +2393,15 @@ def _function_local_bindings(node: ast.FunctionDef | ast.AsyncFunctionDef) -> se
                 self.visit(node.type)
             for statement in node.body:
                 self.visit(statement)
+
+        def visit_Match(self, node: ast.Match) -> None:
+            self.visit(node.subject)
+            for case in node.cases:
+                locals_.update(_pattern_binding_names(case.pattern))
+                if case.guard is not None:
+                    self.visit(case.guard)
+                for statement in case.body:
+                    self.visit(statement)
 
         def visit_Import(self, node: ast.Import) -> None:
             locals_.update(alias.asname or alias.name.split(".", 1)[0] for alias in node.names)

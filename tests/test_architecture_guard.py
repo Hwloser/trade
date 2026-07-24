@@ -275,6 +275,198 @@ provenance = [
   {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS RecommendationTrace", role = "migration" }},
 ]
 
+[[tables]]
+logical_name = "source_health_daily"
+current_owner = "legacy"
+semantic_kind = "source-health-quality-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires immutable Dataset quality lineage before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS source_health_daily", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "source_eval_daily"
+current_owner = "legacy"
+semantic_kind = "source-evaluation-quality-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires immutable Dataset quality lineage before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS source_eval_daily", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "event_eval_runs"
+current_owner = "legacy"
+semantic_kind = "event-study-evaluation-record"
+classification = "candidate"
+target_context = "studies"
+reason = "Requires registered Study and immutable Dataset inputs before ownership transfer."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_eval_runs", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "dataset_snapshots"
+current_owner = "legacy"
+semantic_kind = "dataset-snapshot-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires immutable DatasetSnapshot references before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS dataset_snapshots", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "daily_quality_gate"
+current_owner = "legacy"
+semantic_kind = "dataset-quality-gate"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires Dataset release policy evidence before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS daily_quality_gate", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "event_templates"
+current_owner = "legacy"
+semantic_kind = "event-template-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires feature classification evidence before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_templates", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "market_events"
+current_owner = "legacy"
+semantic_kind = "market-event-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires immutable Dataset lineage before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS market_events", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "event_propagations"
+current_owner = "legacy"
+semantic_kind = "event-propagation-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires feature and validation ownership evidence before transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/trade_db.py", literal = "CREATE TABLE IF NOT EXISTS event_propagations", role = "bootstrap" }},
+]
+
+[[tables]]
+logical_name = "ArticleEvent"
+current_owner = "legacy"
+semantic_kind = "canonical-article-event-record"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires immutable Dataset lineage before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS ArticleEvent", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "InfluenceSignal"
+current_owner = "legacy"
+semantic_kind = "source-influence-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires source and Study ownership evidence before transfer."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS InfluenceSignal", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "Evidence"
+current_owner = "legacy"
+semantic_kind = "derived-evidence-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires Dataset and Study boundary evidence before transfer."
+required_child = "study-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS Evidence", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "BeliefState"
+current_owner = "legacy"
+semantic_kind = "decision-belief-state"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires Decision Support audit and Study provenance before transfer."
+required_child = "decision-support-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS BeliefState", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "AttentionScore"
+current_owner = "legacy"
+semantic_kind = "decision-attention-record"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires Decision Support audit and Study provenance before transfer."
+required_child = "decision-support-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS AttentionScore", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "BeliefTransition"
+current_owner = "legacy"
+semantic_kind = "decision-belief-transition"
+classification = "deferred"
+target_context = "deferred"
+reason = "Requires Decision Support audit and Study provenance before transfer."
+required_child = "decision-support-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS BeliefTransition", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "QualityReport"
+current_owner = "legacy"
+semantic_kind = "dataset-quality-report"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires Dataset quality lifecycle evidence before ownership transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS QualityReport", role = "migration" }},
+]
+
+[[tables]]
+logical_name = "FreshnessStatus"
+current_owner = "legacy"
+semantic_kind = "dataset-freshness-projection"
+classification = "candidate"
+target_context = "datasets"
+reason = "Requires immutable Dataset availability evidence before transfer."
+required_child = "dataset-product-boundary"
+provenance = [
+  {{ source = "trade_py/db/migrations.py", literal = "CREATE TABLE IF NOT EXISTS FreshnessStatus", role = "migration" }},
+]
+
 [[artifacts]]
 id = "warehouse-parquet"
 source = "trade_py/warehouse.py"
@@ -562,6 +754,14 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
         "trade_py/migrations.py": ('SQL = "ALTER TABLE legacy_records ADD COLUMN value"\n'),
         "trade_py/db/__init__.py": "",
         "trade_py/db/trade_db.py": (
+            'SOURCE_HEALTH_SQL = "CREATE TABLE IF NOT EXISTS source_health_daily"\n'
+            'SOURCE_EVAL_SQL = "CREATE TABLE IF NOT EXISTS source_eval_daily"\n'
+            'EVENT_EVAL_SQL = "CREATE TABLE IF NOT EXISTS event_eval_runs"\n'
+            'DATASET_SNAPSHOT_SQL = "CREATE TABLE IF NOT EXISTS dataset_snapshots"\n'
+            'QUALITY_GATE_SQL = "CREATE TABLE IF NOT EXISTS daily_quality_gate"\n'
+            'EVENT_TEMPLATE_SQL = "CREATE TABLE IF NOT EXISTS event_templates"\n'
+            'MARKET_EVENT_SQL = "CREATE TABLE IF NOT EXISTS market_events"\n'
+            'EVENT_PROPAGATION_SQL = "CREATE TABLE IF NOT EXISTS event_propagations"\n'
             'CAUSAL_SQL = "CREATE TABLE IF NOT EXISTS causal_decision_snapshots"\n'
             'CAUSAL_VALIDATION_SQL = "CREATE TABLE IF NOT EXISTS causal_validation_outcomes"\n'
             'CAUSAL_FEEDBACK_SQL = "CREATE TABLE IF NOT EXISTS causal_reward_punishment"\n'
@@ -574,6 +774,14 @@ def _sources(app: str | None = None, *, baseline_app: str = DEFAULT_APP) -> dict
             'MODEL_EVAL_SQL = "CREATE TABLE IF NOT EXISTS model_eval_runs"\n'
         ),
         "trade_py/db/migrations.py": (
+            'ARTICLE_EVENT_SQL = "CREATE TABLE IF NOT EXISTS ArticleEvent"\n'
+            'INFLUENCE_SIGNAL_SQL = "CREATE TABLE IF NOT EXISTS InfluenceSignal"\n'
+            'EVIDENCE_SQL = "CREATE TABLE IF NOT EXISTS Evidence"\n'
+            'BELIEF_STATE_SQL = "CREATE TABLE IF NOT EXISTS BeliefState"\n'
+            'ATTENTION_SCORE_SQL = "CREATE TABLE IF NOT EXISTS AttentionScore"\n'
+            'BELIEF_TRANSITION_SQL = "CREATE TABLE IF NOT EXISTS BeliefTransition"\n'
+            'QUALITY_REPORT_SQL = "CREATE TABLE IF NOT EXISTS QualityReport"\n'
+            'FRESHNESS_STATUS_SQL = "CREATE TABLE IF NOT EXISTS FreshnessStatus"\n'
             'RECOMMENDATION_SQL = "CREATE TABLE IF NOT EXISTS Recommendation"\n'
             'RECOMMENDATION_TRACE_SQL = "CREATE TABLE IF NOT EXISTS RecommendationTrace"\n'
         ),
@@ -669,6 +877,22 @@ def test_repository_baseline_includes_review_required_provenance_and_interfaces(
         "kg_edge_candidates",
         "model_registry",
         "model_eval_runs",
+        "source_health_daily",
+        "source_eval_daily",
+        "event_eval_runs",
+        "dataset_snapshots",
+        "daily_quality_gate",
+        "event_templates",
+        "market_events",
+        "event_propagations",
+        "ArticleEvent",
+        "InfluenceSignal",
+        "Evidence",
+        "BeliefState",
+        "AttentionScore",
+        "BeliefTransition",
+        "QualityReport",
+        "FreshnessStatus",
         "Recommendation",
         "RecommendationTrace",
     } <= table_names
@@ -696,6 +920,26 @@ def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path
         baseline.replace(
             'source = "trade_py/data/operations/checks.py"',
             'source = "trade_py/utils/data_inspector.py"',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        baseline.replace(
+            'logical_name = "event_eval_runs"\ncurrent_owner = "legacy"\nsemantic_kind = "event-study-evaluation-record"\nclassification = "candidate"\ntarget_context = "studies"',
+            'logical_name = "event_eval_runs"\ncurrent_owner = "legacy"\nsemantic_kind = "event-study-evaluation-record"\nclassification = "candidate"\ntarget_context = "datasets"',
+            1,
+        ),
+    )
+    assert "architecture.baseline_malformed" in _rule_ids(repo)
+
+    _write_baseline(
+        repo,
+        baseline.replace(
+            'logical_name = "InfluenceSignal"\ncurrent_owner = "legacy"\nsemantic_kind = "source-influence-record"\nclassification = "deferred"\ntarget_context = "deferred"\nreason = "Requires source and Study ownership evidence before transfer."\nrequired_child = "study-boundary"',
+            'logical_name = "InfluenceSignal"\ncurrent_owner = "legacy"\nsemantic_kind = "source-influence-record"\nclassification = "candidate"\ntarget_context = "datasets"\nreason = "Requires source and Study ownership evidence before transfer."\nrequired_child = "study-boundary"',
             1,
         ),
     )
@@ -738,6 +982,21 @@ def test_required_facts_and_target_context_vocabulary_fail_closed(tmp_path: Path
         'path = root / "market" / "kline" / "reconciliation" / "retired.json"\n',
         encoding="utf-8",
     )
+    assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
+
+
+def test_required_table_bindings_reject_prefix_only_ddl_evidence(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    migration_source = repo / "trade_py/db/migrations.py"
+    migration_source.write_text(
+        migration_source.read_text(encoding="utf-8").replace(
+            'RECOMMENDATION_SQL = "CREATE TABLE IF NOT EXISTS Recommendation"\n',
+            "",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
     assert "architecture.baseline_literal_mismatch" in _rule_ids(repo)
 
 
@@ -960,6 +1219,23 @@ def test_symlink_and_replaced_source_are_rejected(
 
     monkeypatch.setattr(guard, "_read_descriptor", replace_then_read)
     assert PRODUCER_UNSAFE_SOURCE in _rule_ids(repo)
+
+
+def test_fifo_source_is_rejected_without_blocking(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO support is unavailable")
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "trade_py/app.py"
+    source.unlink()
+    os.mkfifo(source)
+
+    started = time.monotonic()
+    report = validate_architecture_baseline(repo)
+    elapsed_seconds = time.monotonic() - started
+
+    assert {finding.rule_id for finding in report.findings} == {PRODUCER_UNSAFE_SOURCE}
+    assert report.producers == ()
+    assert elapsed_seconds < 1.0
 
 
 def test_validator_does_not_use_data_or_runtime_io(
@@ -1279,6 +1555,36 @@ def test_uncertain_lexical_bindings_do_not_register_producers(tmp_path: Path, ap
             "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
             "layout = WarehouseLayout.from_data_root('data')\n"
             "def helper():\n"
+            "    del write_table\n"
+            '    write_table(layout, "ods", "deleted_writer", frame=None)\n'
+        ),
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "def helper(value):\n"
+            "    match value:\n"
+            "        case write_table:\n"
+            "            pass\n"
+            '    write_table(layout, "ods", "match_capture", frame=None)\n'
+        ),
+    ),
+)
+def test_delete_and_match_capture_do_not_register_producers(tmp_path: Path, app: str) -> None:
+    repo = _init_repo(tmp_path, _sources(app, baseline_app=DEFAULT_APP))
+
+    report = validate_architecture_baseline(repo)
+
+    assert PRODUCER_UNRESOLVED_IMPORT in {finding.rule_id for finding in report.findings}
+    assert report.producers == ()
+
+
+@pytest.mark.parametrize(
+    "app",
+    (
+        (
+            "from trade_py.data.warehouse import WarehouseLayout, write_table\n"
+            "layout = WarehouseLayout.from_data_root('data')\n"
+            "def helper():\n"
             "    global write_table\n"
             '    write_table(layout, "ods", "events", frame=None)\n'
             "    write_table = lambda *args, **kwargs: None\n"
@@ -1470,6 +1776,40 @@ def test_git_discovery_timeout_cleans_background_stdout_holder(
         time.sleep(0.01)
     else:
         pytest.fail("timed-out Git descendant still exists after process-group cleanup")
+
+
+def test_git_discovery_success_cleans_detached_pipe_descendant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    child_pid_path = tmp_path / "successful-child.pid"
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "sleep 30 </dev/null >/dev/null 2>&1 &\n"
+        'printf "%s\n" "$!" > "$ARCH_GUARD_CHILD_PID_FILE"\n'
+        "printf '100644 deadbeef 0\ttrade_py/app.py\\000'\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("ARCH_GUARD_CHILD_PID_FILE", str(child_pid_path))
+
+    report = validate_architecture_baseline(repo)
+
+    assert report.ok, report.findings
+    child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+    for _ in range(100):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("successful Git descendant still exists after process-group cleanup")
 
 
 def test_git_discovery_bounds_unterminated_stdout_and_nonzero_stderr(
