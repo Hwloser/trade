@@ -2825,6 +2825,50 @@ def test_approved_binding_rejects_callable_namespace_mutation(
     assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
 
 
+@pytest.mark.parametrize(
+    ("definition", "description"),
+    (
+        (
+            '\n\nclass SideEffect:\n    globals().pop("persist_approved")\n',
+            "class body mutation",
+        ),
+        (
+            '\n\n@globals().pop("persist_approved")\nclass SideEffect:\n    pass\n',
+            "class decorator mutation",
+        ),
+        (
+            '\n\nclass SideEffect(globals().pop("persist_approved")):\n    pass\n',
+            "class base mutation",
+        ),
+        (
+            '\n\nclass SideEffect(metaclass=globals().pop("persist_approved")):\n    pass\n',
+            "class metaclass mutation",
+        ),
+        (
+            '\n\ndef unrelated(value=globals().pop("persist_approved")):\n    return value\n',
+            "function default mutation",
+        ),
+        (
+            '\n\n@globals().pop("persist_approved")\ndef unrelated():\n    return None\n',
+            "function decorator mutation",
+        ),
+    ),
+)
+def test_approved_binding_rejects_definition_time_namespace_mutation(
+    tmp_path: Path,
+    definition: str,
+    description: str,
+) -> None:
+    repo = _init_repo(tmp_path, _sources())
+    source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(_approved_adapter_source() + definition, encoding="utf-8")
+    baseline = (repo / BASELINE_FILENAME).read_text(encoding="utf-8")
+    _write_baseline(repo, baseline + "\n" + _approved_binding_declaration())
+
+    assert "architecture.baseline_invalid_classification" in _rule_ids(repo), description
+
+
 def test_approved_binding_rejects_decorated_proof_callable(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, _sources())
     source = repo / "src/trade/datasets/adapters/persistence/warehouse.py"

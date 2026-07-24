@@ -76,7 +76,10 @@ including a duplicate definition, assignment, deletion, import, or nested
 control-flow rebind, wildcard import, module-namespace mutation, or dynamic
 execution. An adapter containing an approved proof SHALL reject every
 additional module-scope executable call because its namespace effect cannot be
-proven safely. Writer evidence SHALL occur as a static table-specific write
+proven safely. It SHALL also reject every class declaration and every function
+declaration with definition-time metadata, including decorators, defaults,
+annotations, or type parameters, because those forms can execute before the
+module binding is admitted. Writer evidence SHALL occur as a static table-specific write
 statement passed as the first positional argument to a persistence call; reader
 and compatibility evidence SHALL occur as one static read-only `SELECT`
 statement in that same position. A string only in a persistence parameter or
@@ -160,7 +163,8 @@ runtime-behavior claim.
   reader/compatibility SQL, a quoted alias or comment/string pseudo-table
   reference, a transaction-only read, a wildcard/dynamic proof-callable rebind,
   any additional module-scope executable call, a rebound or dynamically
-  mutated transaction receiver or alias, a literal that is present only
+  mutated transaction receiver or alias, a class or definition-time metadata
+  that can execute while defining an unrelated module-level declaration, a literal that is present only
   elsewhere in the adapter or differs from the named operation's first SQL
   argument, a nested `with` proof, or a transaction context with an unrelated
   receiver

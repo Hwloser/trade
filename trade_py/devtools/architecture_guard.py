@@ -3076,7 +3076,7 @@ def _adapter_callable(tree: ast.Module, name: str) -> ast.FunctionDef | ast.Asyn
     if len(candidates) != 1:
         return None
     candidate = candidates[0]
-    if candidate.decorator_list:
+    if _function_has_definition_time_metadata(candidate):
         return None
     if any(
         statement is not candidate and _module_statement_binds_name(statement, name)
@@ -3092,10 +3092,14 @@ def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
     pending: list[ast.AST] = [statement]
     while pending:
         node = pending.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.name == name:
                 return True
+            if _function_has_definition_time_metadata(node):
+                return True
             continue
+        if isinstance(node, ast.ClassDef):
+            return True
         if isinstance(node, ast.Lambda):
             continue
         if _module_call_may_bind_name(node, name):
@@ -3142,6 +3146,26 @@ def _module_statement_binds_name(statement: ast.stmt, name: str) -> bool:
             return True
         pending.extend(ast.iter_child_nodes(node))
     return False
+
+
+def _function_has_definition_time_metadata(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    arguments = node.args
+    annotations = (
+        *(argument.annotation for argument in (*arguments.posonlyargs, *arguments.args)),
+        arguments.vararg.annotation if arguments.vararg is not None else None,
+        *(argument.annotation for argument in arguments.kwonlyargs),
+        arguments.kwarg.annotation if arguments.kwarg is not None else None,
+        node.returns,
+    )
+    return bool(
+        node.decorator_list
+        or arguments.defaults
+        or any(default is not None for default in arguments.kw_defaults)
+        or any(annotation is not None for annotation in annotations)
+        or getattr(node, "type_params", ())
+    )
 
 
 def _module_call_may_bind_name(node: ast.AST, _name: str) -> bool:

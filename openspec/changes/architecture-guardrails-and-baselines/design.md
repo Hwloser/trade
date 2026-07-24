@@ -127,8 +127,12 @@ admitted only from its straight-line callable prefix and a direct transaction
 `with` block in that prefix; nested `with` blocks, branches, loops, exception
 handlers, assertions, matches, and deferred comprehensions never authorize
 persistence. Any additional module-scope executable call is a competing
-callable-binding risk. SQL read matching recognizes `FROM` and `JOIN` tokens
-outside comments, strings, and quoted alias text. The proof is bounded by
+callable-binding risk. A class declaration is also rejected because its body,
+bases, decorators, and metaclass expressions execute at module definition time;
+an unrelated function declaration is admitted only without definition-time
+metadata such as decorators, defaults, annotations, or type parameters. SQL
+read matching recognizes `FROM` and `JOIN` tokens outside comments, strings,
+and quoted alias text. The proof is bounded by
 persistence-operation, retained-SQL-byte, AST-node, and AST-depth limits, and
 every rejected relationship has a focused failing fixture.
 
@@ -206,7 +210,8 @@ deferred comprehension. It rejects a decorated, duplicate, deleted, assigned,
 imported, wildcard-imported, namespace-mutated, dynamically executed, or
 otherwise rebound callable name; an approved-proof adapter also rejects
 additional module-scope executable calls because their namespace effects cannot
-be proven safely. It fails closed above its callable operation,
+be proven safely, including definition-time expressions in unrelated
+declarations. It fails closed above its callable operation,
 retained-SQL-byte, AST-node, or AST-depth budget. Thus a valid but unrelated
 legacy literal, parameter value, suffix-named table, quoted alias,
 cross-adapter proof, uncalled nested helper, top-level constant, dead proof,
