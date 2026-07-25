@@ -47,18 +47,32 @@ SHALL be `hmac-sha256-v1`; domains SHALL be distinct
 remain behind a Platform ingress secret-store port and be absent from every
 wire/log value.
 
-The key set SHALL have exactly one active write version and at most three
-retained read-only versions. In one owner-local admission transaction, ingress
-SHALL derive and query candidate idempotency fingerprints for every active or
-retained key before creating a claim. One existing match SHALL return the
-original operation/receipt; no match SHALL create with the active version; and
-multiple matches that identify inconsistent claims SHALL fail closed without
-creating an operation. Existing receipts SHALL retain their original version
-and SHALL NOT be rewritten during rotation. Each key SHALL be retained for at
-least the owner operation-retention horizon; retirement SHALL fail if safe
-retention cannot fit the four-version bound. A retired unknown version SHALL
-report unavailable rather than recompute with the current key. An unkeyed
-digest SHALL NOT be published for low-entropy idempotency keys or commands.
+The key set SHALL have exactly one active write version, at most three retained
+read-only versions and a monotonically increasing `key_set_generation` in the
+range 1-9,223,372,036,854,775,807. Rotation and admission SHALL use the same
+owner-local CAS/lock; rotation SHALL atomically advance generation with the key
+set.
+
+In one owner-local admission transaction, ingress SHALL read generation, derive
+and query candidate idempotency fingerprints for every active or retained key
+before creating a claim, and apply this exact result product: zero matches
+revalidates unchanged generation then creates one active-version claim; one
+match validates the command identity then returns the original receipt; more
+than one match always reports corruption/unavailable and creates nothing, even
+if rows point to one operation. A one-match claim SHALL bind `command_name`,
+`operation_kind` and its original canonical command fingerprint. Ingress SHALL
+recompute the current command fingerprint with that claim's recorded key
+version. Any mismatch SHALL return stable `IDEMPOTENCY_COMMAND_CONFLICT`,
+without returning the old receipt or creating a new operation.
+
+If generation changes before zero-match insertion, admission SHALL roll back and
+re-derive every candidate from the new key set. Existing receipts SHALL retain
+their original version and SHALL NOT be rewritten during rotation. Each key
+SHALL be retained for at least the owner operation-retention horizon; retirement
+SHALL fail if safe retention cannot fit the four-version bound. A retired
+unknown version SHALL report unavailable rather than recompute with the current
+key. An unkeyed digest SHALL NOT be published for low-entropy idempotency keys
+or commands.
 
 #### Scenario: A command is retried after transport timeout
 - **WHEN** the same actor scope, canonical command and idempotency identity are resubmitted
@@ -66,11 +80,19 @@ digest SHALL NOT be published for low-entropy idempotency keys or commands.
 
 #### Scenario: A retry crosses an HMAC key rotation
 - **WHEN** a raw idempotency identity was admitted with a retained key and is retried after a new write key becomes active
-- **THEN** the same transaction finds the retained-version claim and returns the original receipt rather than creating an active-version duplicate
+- **THEN** the same transaction finds the retained-version claim, verifies the same command identity and returns the original receipt rather than creating an active-version duplicate
 
-#### Scenario: Retained versions resolve inconsistent claims
-- **WHEN** candidate fingerprints for one raw identity match more than one non-identical durable claim
+#### Scenario: An idempotency identity is reused for a different command
+- **WHEN** one claim matches but command name, operation kind or the recomputed canonical command fingerprint differs
+- **THEN** ingress returns `IDEMPOTENCY_COMMAND_CONFLICT` without the old receipt and creates no operation
+
+#### Scenario: Retained versions resolve multiple claims
+- **WHEN** candidate fingerprints for one raw identity match more than one durable claim, including duplicate rows linked to one operation
 - **THEN** ingress reports corruption/unavailable and creates no new operation
+
+#### Scenario: Rotation races a paused zero-match admission
+- **WHEN** an admission reads generation N and pauses before insert while rotation and another admission commit generation N+1
+- **THEN** the paused admission fails generation revalidation, rolls back and re-derives candidates so exactly one durable claim exists
 
 #### Scenario: A framework object enters a command
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object

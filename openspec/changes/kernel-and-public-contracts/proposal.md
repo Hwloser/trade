@@ -37,8 +37,9 @@ reported as successful cancellation.
   per-container limits. Public DTOs contain no FastAPI/Pydantic/ORM/DataFrame,
   connection, filesystem path, live exception, callback, or service object.
 - Define versioned, domain-separated keyed public fingerprints for command and
-  idempotency identity, cross-retained-key duplicate lookup and fail-closed
-  rotation so receipts do not expose raw values or enumerable unkeyed hashes.
+  idempotency identity, exact zero/one/multi-match admission, command-conflict
+  rejection and generation-serialized rotation so receipts do not expose raw
+  values or enumerable unkeyed hashes.
 - Define Platform codec descriptors and registry invariants; the later Platform
   foundation child implements static Bootstrap assembly. Codecs validate one
   owner/schema/purpose shape but grant no authority or external-content rights;

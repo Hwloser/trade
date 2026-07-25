@@ -434,24 +434,44 @@ least 256 bits from a CSPRNG, is held through a secret-store port owned by
 Platform persistence/ingress, is never serialized, and is distinct from
 `ContentDigest`.
 
-The key set contains exactly one active write version and at most three
-retained read-only versions. On every admission, one owner-local transaction
-derives candidate idempotency fingerprints for the active and all retained
-versions and queries all corresponding claim identities before creating
-anything. One match returns that original operation and receipt even after key
-rotation. No match creates the claim with the active version. Multiple matches
-that do not identify the same immutable claim are corruption and fail closed
-with no new operation. Receipts retain the version used at original admission.
-Rotation keeps versions for at least the owning operation retention horizon,
-never rewrites receipts, and fails before retirement if the horizon cannot fit
-the four-version bound. Unsupported retired versions return unavailable rather
-than recomputing a stored receipt with the current key. Public logs and APIs may
-expose only `FingerprintV1`, never an unkeyed hash that permits offline
-verification of low-entropy keys or commands.
+The key set contains exactly one active write version, at most three retained
+read-only versions and a monotonically increasing `key_set_generation` in the
+range 1-9,223,372,036,854,775,807. Rotation and admission use the same
+owner-local CAS/lock. Rotation atomically advances generation with the key-set
+change.
 
-The raw idempotency key and command payload are not exposed. A duplicate
-returns the existing receipt. A failed durable claim returns an
-`ErrorEnvelope`; it must not fabricate an operation ID.
+On every admission, one owner-local transaction reads the generation, derives
+candidate idempotency fingerprints for the active and all retained versions and
+queries all corresponding claim identities before creating anything. The
+result product is exact:
+
+| Candidate claim matches | Required outcome |
+|---:|---|
+| `0` | revalidate unchanged generation, then create one claim with the active version |
+| `1` | validate the current command against the claim, then return its original operation and receipt |
+| `>1` | report corruption/unavailable and create nothing, even if all rows point to one operation |
+
+A one-match claim binds `command_name`, `operation_kind` and the original
+canonical command fingerprint. Ingress recomputes the current command
+fingerprint using that claim's recorded key version. Any field mismatch returns
+stable `IDEMPOTENCY_COMMAND_CONFLICT`; it neither returns the old receipt nor
+creates a new operation. If generation changes before the zero-match insert,
+the transaction rolls back and re-derives all candidates from the new key set.
+A paused old-generation admission can therefore never insert after a newer
+rotation/admission has won.
+
+Receipts retain the version used at original admission. Rotation keeps versions
+for at least the owning operation retention horizon, never rewrites receipts,
+and fails before retirement if the horizon cannot fit the four-version bound.
+Unsupported retired versions return unavailable rather than recomputing a
+stored receipt with the current key. Public logs and APIs may expose only
+`FingerprintV1`, never an unkeyed hash that permits offline verification of
+low-entropy keys or commands.
+
+The raw idempotency key and command payload are not exposed. Only an identity-
+and-command-equivalent duplicate returns the existing receipt. A conflict,
+corrupt multi-match or failed durable claim returns an `ErrorEnvelope`; it must
+not fabricate a new operation ID.
 
 `ProcessView` contains the parent-required process identity fields plus:
 
