@@ -40,8 +40,12 @@ def iter_progress(items: Iterable[T], desc: str = "", unit: str = "item") -> Ite
         yield from items
         return
 
+    # Disable the animated bar when stderr is not a TTY (dagu/cron/ssh/pipe):
+    # tqdm can't rewrite a line there, so every refresh becomes a new log line.
+    not_a_tty = not getattr(sys.stderr, "isatty", lambda: False)()
+
     with logging_redirect_tqdm():
-        with tqdm(items, desc=desc, unit=unit, dynamic_ncols=True) as bar:
+        with tqdm(items, desc=desc, unit=unit, dynamic_ncols=True, disable=not_a_tty) as bar:
             for item in bar:
                 if isinstance(item, str):
                     bar.set_postfix_str(item[:30], refresh=False)

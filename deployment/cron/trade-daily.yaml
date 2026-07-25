@@ -24,19 +24,15 @@ steps:
       type: ssh2
       config:
         host: server
-    command: bash -lc 'cd $PROJ && ./trade py data kline sync --mode incremental --adjust hfq --provider sina'
+    command: cd $PROJ && ./trade py data kline sync --mode incremental --adjust hfq --provider sina
 
   - name: sentiment
     executor:
       type: ssh2
       config:
         host: server
-    # ANTHROPIC_API_KEY 从专用 env 文件读（非交互 ssh 读不到 .zshrc）
     command: |
-      bash -lc '
-        cd $PROJ && 
-        ./trade py data sentiment
-      '
+        cd $PROJ && ./trade py data sentiment
 
   # ── 信念层（等 sentiment 写完 Gold）─────────────────────────
   - name: belief
@@ -44,7 +40,7 @@ steps:
       type: ssh2
       config:
         host: server
-    command: bash -lc 'cd $PROJ && ./trade py daily belief'
+    command: cd $PROJ && ./trade py daily belief
     depends:
       - sentiment
 
@@ -54,7 +50,7 @@ steps:
       type: ssh2
       config:
         host: server
-    command: bash -lc 'cd $PROJ && ./trade py daily recommend'
+    command: cd $PROJ && ./trade py daily recommend
     depends:
       - belief
       - kline-sync
