@@ -294,17 +294,26 @@ transition to or from `accepted`. `terminal_at` is absent for non-terminal
 states, required for a terminal state, set once, and cannot precede
 `accepted_at`/`started_at` or follow `updated_at`.
 
-`QueryStatus` is a tagged union, not two independent nullable fields:
+`QueryStatus` is a tagged union, not two independent nullable fields. Its v1
+state product is exact; the error's `observation_state` must equal the status
+observation:
 
-| Observation | Required condition | Error rule |
+| Observation | Condition | Error |
 |---|---|---|
-| `observed` | exactly one of `present`, `empty`, `partial`, `stale`, `quarantined`, `blocked` | optional safe error only for the non-healthy conditions defined by the owner |
-| `not_observed` | forbidden | required timeout/not-observed error |
-| `unavailable` | forbidden | required unavailable error |
-| `unknown` | forbidden | required unknown/mapping error |
+| `observed` | `present` or `empty` | forbidden |
+| `observed` | `partial` | required; category `unavailable` |
+| `observed` | `stale` | required; category `stale` |
+| `observed` | `quarantined` | required; category `quarantined` |
+| `observed` | `blocked` | required; category `blocked` |
+| `not_observed` | forbidden | required; category `timeout` |
+| `unavailable` | forbidden | required; category `unavailable` |
+| `unknown` | forbidden | required; category `internal` |
 
-Consequently `observed` without a condition and every non-observed value with a
-condition are invalid wire and object states.
+An owner-specific reason code refines a permitted row but cannot change its
+category. Consequently `observed` without a condition, a healthy condition with
+an error, an unhealthy condition without its required error, a mismatched error
+observation/category, and every non-observed value with a condition are invalid
+wire and object states.
 
 ### 5. Establish actor trust at the transport boundary
 
@@ -369,14 +378,19 @@ maximum canonical bytes (1-65,536), content policy
 (`inline_contract` or `immutable_ref_only`) and deterministic codec identity
 as `ContentDigest` over the reviewed codec/schema manifest. Schema version is
 an integer 1-2,147,483,647.
-Only Bootstrap may assemble the static registry before ingress starts. The
-registry freezes after assembly and rejects duplicate owner/schema/version/
-purpose keys or non-deterministic codec identities. A codec validates wire
-shape only: registration grants no authority, publication, source rights,
-quality or PIT evidence. Provider responses, news bodies, L2 frames, stream
-segments and other external/raw content must first be committed by Capture and
-carried as owner-controlled immutable references; they cannot be inlined merely
-because they fit under 64 KiB.
+This child supplies only the descriptor value, descriptor validator and pure
+collision/freeze invariants. It does not supply a production registry builder.
+The later `platform-persistence-events-and-bootstrap-foundation` child makes
+Bootstrap assemble and freeze the static registry before ingress. Assembly
+rejects duplicate owner/schema/version/purpose keys or non-deterministic codec
+identities. A codec validates wire shape only: registration grants no
+authority, publication, source rights, quality or PIT evidence. The
+`immutable_ref_only` rule applies to cross-Context and canonical Platform
+envelopes. A Capture inbound adapter may boundedly receive and stage push,
+stream, import or provider bytes inside Capture, but raw content must be
+committed before it crosses that boundary. Provider responses, news bodies, L2
+frames and stream segments therefore cannot be inlined in a canonical Platform
+envelope merely because they fit under 64 KiB.
 
 `OperationReceipt` contains:
 
@@ -396,23 +410,44 @@ reason_code
 accepted_at
 updated_at
 terminal_at
-process_id
+process_id: OpaqueId | None
 ```
 
-Public fingerprints use `hmac-sha256-v1` with explicit `key_version` and
-domain. Command fingerprints use domain `trade.command.v1`; idempotency
-fingerprints use `trade.idempotency.v1` and length-prefixed canonical actor
-scope, idempotency scope and raw key bytes. The secret key is owned by Platform
-persistence/ingress, is never serialized, and is distinct from
-`ContentDigest`. The wire value is lower-case 64-character hexadecimal and
-`key_version` is an integer 1-2,147,483,647. Receipts retain the key version
-used at admission. A Bootstrap registry contains at most four active/read-only
-key versions; rotation keeps versions for at least the owning operation
-retention horizon, never rewrites receipts, and fails admission if that horizon
-cannot be met within the four-version bound. Unsupported retired versions
-return unavailable rather than recomputing with the current key. Public logs
-and APIs may expose only the domain-separated fingerprint, never an unkeyed
-hash that permits offline verification of low-entropy keys or commands.
+`process_id` is a Platform-owned non-semantic opaque link. Platform must not
+import the Processes-owned `ProcessId`; Processes may wrap the same wire
+identity in its own contract.
+
+Every public fingerprint is an exact `FingerprintV1` value:
+
+```text
+algorithm = "hmac-sha256-v1"
+domain
+key_version
+value
+```
+
+Command fingerprints use domain `trade.command.v1`; idempotency fingerprints
+use `trade.idempotency.v1` and length-prefixed canonical actor scope,
+idempotency scope and raw key bytes. `value` is lower-case 64-character
+hexadecimal and `key_version` is an integer 1-2,147,483,647. The secret is at
+least 256 bits from a CSPRNG, is held through a secret-store port owned by
+Platform persistence/ingress, is never serialized, and is distinct from
+`ContentDigest`.
+
+The key set contains exactly one active write version and at most three
+retained read-only versions. On every admission, one owner-local transaction
+derives candidate idempotency fingerprints for the active and all retained
+versions and queries all corresponding claim identities before creating
+anything. One match returns that original operation and receipt even after key
+rotation. No match creates the claim with the active version. Multiple matches
+that do not identify the same immutable claim are corruption and fail closed
+with no new operation. Receipts retain the version used at original admission.
+Rotation keeps versions for at least the owning operation retention horizon,
+never rewrites receipts, and fails before retirement if the horizon cannot fit
+the four-version bound. Unsupported retired versions return unavailable rather
+than recomputing a stored receipt with the current key. Public logs and APIs may
+expose only `FingerprintV1`, never an unkeyed hash that permits offline
+verification of low-entropy keys or commands.
 
 The raw idempotency key and command payload are not exposed. A duplicate
 returns the existing receipt. A failed durable claim returns an
@@ -422,6 +457,7 @@ returns the existing receipt. A failed durable claim returns an
 
 ```text
 observation_state
+reason_code
 retry_limit
 next_attempt_at
 deadline
@@ -432,6 +468,13 @@ bounded_history
 permitted_recovery_actions
 updated_at
 ```
+
+`reason_code` is required for `blocked`, `retry_scheduled`, `failed`,
+`cancelled` and `deadline_exceeded`; optional for `compensation_pending`; and
+forbidden for `requested`, `running`, `waiting`, `completed` and `compensated`.
+It reports the process-level reason even when no `last_error` exists. A safe
+error, when present, must agree with the process reason/state but cannot replace
+this field.
 
 History is the latest at most 50 transitions ordered by strictly increasing
 owner sequence, then stable transition ID as a corruption-detection tie-break.
@@ -484,7 +527,7 @@ retryable
 retry_after_ms
 correlation_id
 operation_id
-process_id
+process_id: OpaqueId | None
 occurred_at
 safe_message
 recovery_hint
@@ -515,7 +558,9 @@ projection. No decoder silently drops unknown fields.
 
 Canonical JSON is UTF-8, sorted by key, compact separators, `allow_nan=False`,
 RFC3339 UTC `Z`, enum values as strings, integers only for durations/counts,
-and no binary or floating point values. Limits are:
+and no binary or floating point values. Platform error links use
+`process_id: OpaqueId | None` and never import Processes-owned `ProcessId`.
+Limits are:
 
 | Dimension | v1 limit |
 |---|---:|
@@ -523,6 +568,7 @@ and no binary or floating point values. Limits are:
 | Canonical UTF-8 output | 65,536 bytes |
 | Nested container depth | 8 |
 | One decoded string/key | 2,048 UTF-8 bytes |
+| One integer token | canonical non-negative form, at most 19 decimal digits |
 | Items/members in one container | 100 |
 | Aggregate array items + object members | 1,024 |
 | Total value nodes | 2,048 |
@@ -532,18 +578,32 @@ and no binary or floating point values. Limits are:
 | Recovery descriptors | 16 |
 | Safe error message/hint | 1,024 UTF-8 bytes each |
 
-Raw length is checked before JSON parsing. Decoding uses strict UTF-8, rejects a
-BOM, duplicate object keys, non-finite/floating values and decoded surrogate
-code points. Root scalar depth is zero; a root array/object has depth one; each
-array/object nested as a value increments depth by one. A value node is the
-root or any object value/array element; object keys consume string and member
-budgets but are not additional value nodes. Collection limits apply to every
-container, while aggregate and node limits apply to the whole tree. Validation
-uses an explicit bounded stack/queue rather than unbounded recursion. It occurs
-before DTO construction and public fingerprint calculation. Command
-fingerprints use canonical bytes of the typed command DTO and exclude transport
-retry metadata. Serialization failure is a contract error, never a fallback to
-`str(object)` or `default=str`.
+Before the standard-library JSON decoder materializes any value, a deterministic
+single-pass lexical/structural scanner validates strict UTF-8, rejects a BOM,
+checks JSON grammar, tracks string escape state, container depth, each string/
+key token's decoded UTF-8 budget, each integer token's lexical budget, per-
+container items, aggregate members and total value nodes. The scanner rejects
+floating/exponent tokens, non-finite spellings, duplicate keys and decoded
+surrogate code points; object-key uniqueness uses only the already bounded key
+set for the current container. Integers use canonical non-negative decimal form:
+`0` or `[1-9][0-9]{0,18}`. A bounded `parse_int` hook repeats the 19-digit
+check before integer construction so interpreter-wide `int_max_str_digits`
+settings cannot change behavior.
+
+Only bytes accepted by the scanner reach JSON materialization. The decoded tree
+is then checked again with an explicit bounded stack/queue before DTO
+construction and public fingerprint calculation. Root scalar depth is zero; a
+root array/object has depth one; each array/object nested as a value increments
+depth by one. A value node is the root or any object value/array element; object
+keys consume string and member budgets but are not additional value nodes.
+Collection limits apply to every container, while aggregate and node limits
+apply to the whole tree. Python 3.10 and the highest supported Python version
+must return the same structural error code for depth 9, depth 1,500, overlong
+integer and duplicate-key fixtures rather than exposing `RecursionError` or
+interpreter-specific conversion errors. Command fingerprints use canonical
+bytes of the typed command DTO and exclude transport retry metadata.
+Serialization failure is a contract error, never a fallback to `str(object)` or
+`default=str`.
 
 ### 9. Bound observation, cancellation and shutdown truthfully
 
@@ -558,6 +618,11 @@ An observation timeout changes no owner state. It returns
 link. A cancellation request returning `accepted` means intent was durably
 accepted, not that work is cancelled. `OperationState.cancelled` requires the
 owner's terminal receipt. Signal delivery alone is not terminal evidence.
+Likewise, `OperationState.deadline_exceeded` or
+`ProcessState.deadline_exceeded` is an owner terminal fact only after every
+owned worker has exited, or after a durable generation fence prevents every
+residual worker from writing and the residual ownership is recorded. A caller
+observation deadline never creates that terminal fact.
 
 `ShutdownReceipt` is a closed v1 record:
 
@@ -570,7 +635,8 @@ control_id
 correlation_id
 causation_id
 operation_id?
-process_id?
+process_id: OpaqueId | None
+initiator
 requested_at
 deadline
 finished_at
@@ -583,6 +649,15 @@ residual_owners
 shutdown_recovery_actions
 safe_error?
 ```
+
+`initiator` is the trusted bounded `ActorContext` that requested the control.
+It contains no credential or raw claim. `control_id` must resolve for the full
+receipt retention period to the immutable actor-bearing `ControlReceipt` with
+the same initiator, correlation and causation; a mismatch is corruption. The
+direct initiator copy keeps shutdown audit attribution available without a
+second read, while the linked control receipt proves the admission lifecycle.
+The optional Platform `process_id` remains a non-semantic `OpaqueId` and does
+not import Processes contracts.
 
 `owner_instance_id` identifies one runtime incarnation. `fence_generation` is
 an integer 1-9,223,372,036,854,775,807 durably claimed before admission;
@@ -606,13 +681,22 @@ Processes. At most 16 entries use only `inspect_residual`,
 `operator_intervention`, plus an opaque target, reason, expiry and required
 scope. It is informational and authorization-neutral.
 
-Every returned attempt has `finished_at`. `completed` requires stage `done`,
-zero residual owners,
-durable terminal audit, released non-reentrant resources and release of only
-the matching generation fence. `deadline_exceeded`, `incomplete` or `failed`
-requires a non-`done` stage, stable reason code and residual/recovery evidence
-when ownership remains. Such a receipt must not release an owner fence that
-could admit a second writer.
+Every returned attempt has `finished_at`. The v1 state product is exact:
+
+| State | Stage | Reason/error | Residual and recovery | Fence |
+|---|---|---|---|---|
+| `completed` | `done` | reason `SHUTDOWN_COMPLETED`; `safe_error` forbidden | both empty; durable terminal audit and all non-reentrant releases proven | release only matching generation |
+| `deadline_exceeded` | non-`done` | reason `SHUTDOWN_DEADLINE_EXCEEDED`; timeout error required | at least one residual and one applicable recovery action | retained |
+| `incomplete` | non-`done` | stable non-deadline reason; blocked or unavailable error required | at least one residual and one applicable recovery action | retained |
+| `failed` | non-`done` | stable failure reason; internal or unavailable error required | at least one residual, including writer/audit ownership when no worker remains, and one applicable recovery action | retained |
+
+Every error's observation is `observed` because the shutdown attempt itself was
+observed; its category follows the row. Residual and recovery selectors must
+refer to the same owner instance and fence generation. No non-completed receipt
+may use `done`, omit its reason/error evidence, claim zero residual ownership,
+or release the fence. A worker that remains alive without a recorded residual
+and an effective write fence keeps the attempt non-terminal; it cannot be
+relabelled `deadline_exceeded`.
 
 Every public wait/control API requires a finite deadline. A bounded method must
 not perform `Thread.join()`, `Future.result()`, executor shutdown, subprocess
@@ -675,15 +759,12 @@ Web/FastAPI types.
 
 | Legacy surface | Canonical interpretation | Preserved legacy behavior | Refusal/fallback |
 |---|---|---|---|
-| EventBus `accepted` | Durable legacy event identity; command admission `accepted`; handler dispatch observed as admitted | Existing event ID/topic/output | Live `bus`, handler exception and untyped payload are excluded; no handler completion inferred |
-| EventBus `saturated` | Durable event remains accepted; handler-dispatch observation is `observed/blocked` with `BUS_HANDLER_CAPACITY` | Existing deferred output/tempfail mapping | No retry schedule or process completion inferred |
-| EventBus `shutting_down` | Durable event remains accepted; handler-dispatch observation is `observed/blocked` with `BUS_OWNER_STOPPING` | Existing deferred/shutdown output | No cancellation, retry schedule or process completion inferred |
-| EventBus `submission_failed` | Durable event remains accepted; handler-dispatch observation is `observed/blocked` with safe `BUS_HANDLER_SUBMISSION_FAILED` | Existing admission-failure persistence/output | Live cause/detail are excluded; no event-persistence failure or process completion inferred |
+| EventBus publish result | Durable legacy event observation plus bounded handler-admission summary/counts | Existing aggregate outcome, event ID/topic/output and handler behavior | Aggregate spelling alone never erases mixed accepted/saturated/stopping/failed admissions or implies handler completion |
 | `job_runs.running` | Running only when observed row is current | Existing row/status | Stale/owner-lost remains explicit |
 | `job_runs.ok` | Completed | Existing `ok` | No inferred business result |
 | `job_runs.error` | Failed | Existing `error` | Raw result summary is not public error text |
 | `job_runs.terminated` | Cancelled only with durable cancel intent; otherwise failed/unknown terminal observation | Existing `terminated` | Never infer user cancellation from signal/exit alone |
-| `/api/run` accepted | Operation receipt only when `run_id` was durably created | Exact current 200 payload including PID | PID remains legacy payload, not canonical receipt |
+| `/api/run` accepted | Legacy run-admission observation only; `run_id` is durable legacy identity | Exact current 200 payload including PID | No formal OperationReceipt until the same admission has trusted actor, correlation/causation and versioned command/idempotency fingerprints; PID remains legacy-only |
 | `/api/run` `saturated` | Admission `saturated` plus `COMMAND_CAPACITY_EXHAUSTED` | Exact 503 body and `Retry-After: 1` | Capacity rejection precedes `run_id`; no receipt or operation ID |
 | `/api/run` `stopping` without `run_id` | Admission `unavailable` plus `COMMAND_RUNTIME_STOPPING` | Exact 503 body and `Retry-After: 5` | No receipt, operation ID or cancellation |
 | `/api/run` `stopping` with `run_id` | Existing durable operation mapped from separately observed job row; stopping result alone is blocked/unknown, never cancelled | Exact 503 body, `run_id` and `Retry-After: 5` | PID is legacy-only; terminal state requires job-row evidence |
@@ -703,14 +784,53 @@ never map to success.
 Mappings are implemented only in the four owner-specific modules named in
 Decision 1. Package `__init__` modules must not aggregate or re-export them.
 
+The EventBus mapper preserves `accepted_count`, `saturated_count`,
+`shutting_down_count` and `submission_failed_count`, total handler count, and a
+deterministic latest-at-most-50 summary ordered by existing handler tuple order.
+Each summary contains only bounded handler name, channel and outcome; `detail`,
+`cause`, callback and live bus are excluded. Counts cover all handlers even when
+the bounded summary is truncated, and include returned/omitted metadata. A
+mixed result remains `mixed`; it is never flattened to the aggregate
+precedence outcome. If the target schema cannot represent every count and
+truncation invariant, the mapper refuses the canonical projection and retains
+only the unchanged legacy result.
+
+The runtime mapper exposes an owner-local `LegacyRunAdmissionObservation` for
+current `/api/run`. It may carry the durable `run_id`, target, closed start
+outcome and safe observation status, but not canonical actor, fingerprint,
+operation identity or receipt. A formal `OperationReceipt` can be constructed
+only from same-transaction trusted ingress evidence after a future adoption
+child. Joining a later job row may refine the observed run state, but cannot
+retroactively invent the missing admission actor or fingerprints.
+
 `LegacyArtifactObservation` is a legacy-only DTO with owner/run/artifact
 identity, declared digest, relative-location token, `resolution_state`
 (`unresolved`, `resolved`, `unavailable`, `unsafe_path`) and
-`content_verification` (`not_checked`, `matched`, `mismatched`). A successful
-decode or path normalization proves none of existence, authorization,
-publication, quality or PIT correctness. Absolute paths, traversal segments,
-credential-bearing URIs and a single-byte digest mismatch yield explicit
-unsafe/mismatched state and can never be promoted to a formal reference.
+`content_verification` (`not_checked`, `matched`, `mismatched`). Its exact state
+product is:
+
+| Resolution | Verification |
+|---|---|
+| `unresolved`, `unavailable`, `unsafe_path` | `not_checked` only |
+| `resolved` | `matched` or `mismatched` only |
+
+The pure mapper can produce only `not_checked`. `matched` or `mismatched`
+requires owner-local `LegacyArtifactVerificationEvidence` containing verifier
+namespace/version, verified time, declared and actual `ContentDigest`, legacy
+artifact identity, owner generation, root identity and stable file identity
+captured before and after hashing. `matched` proves only that the bytes read by
+that verifier at that time matched the declaration; it proves no authorization,
+publication, quality, PIT or later-file state.
+
+The owner verifier accepts an already-authorized root descriptor, traverses
+root-relative path components with no-follow semantics, rejects absolute paths,
+`.`/`..`, empty components, credential-bearing URIs and symlinks, opens only a
+regular file, and checks root containment plus pre/post file identity, size and
+owner generation. A replaced link/file, changed identity/size, unsupported
+filesystem proof or generation change fails closed as `unavailable` or
+`unsafe_path`; no matched evidence is emitted. Verification tests use only
+temporary roots. Absolute paths, traversal, symlink replacement, TOCTOU and a
+single-byte digest mismatch can never be promoted to a formal reference.
 
 ### 11. This child has no durable state
 
@@ -756,6 +876,25 @@ flowchart TD
   PC -. forbidden .-> LEG
   PRC -. forbidden .-> LEG
 ```
+
+The existing architecture guard is extended in this child rather than deferred
+to directory migration. Its target-graph fixture enforces:
+
+1. `trade.kernel` contains/imports only the six approved modules and standard
+   library;
+2. Platform contracts do not import Processes or any legacy package;
+3. Processes contracts may import Kernel and Platform public contracts only;
+4. no target package imports `trade_py` or `trade_web`;
+5. each compatibility mapper imports only its reviewed target contracts and
+   legacy owner; and
+6. no compatibility package, `__init__` or alias re-exports an aggregate mapper
+   facade.
+
+The guard reports the importing file, imported symbol and violated edge. Its
+fixtures include a direct import, relative import, alias/re-export and
+Platform-to-Processes `ProcessId` dependency. The current guard source and
+architecture tests are therefore explicit affected paths, while changing the
+parent dependency graph or moving packages remains out of scope.
 
 ## Design Quality Brief
 

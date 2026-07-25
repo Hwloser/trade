@@ -96,14 +96,18 @@ dictionaries.
 
 Platform message contracts SHALL describe an owner codec with an immutable
 descriptor binding owner namespace, schema name/version, payload purpose,
-maximum canonical bytes, content policy and deterministic codec identity. Only
-Bootstrap SHALL assemble the static registry before ingress; registry keys
-SHALL be unique and the registry SHALL freeze after assembly. Kernel supplies
-only envelope composition and SHALL NOT own the descriptor or registry. A codec
-validates wire shape only and SHALL NOT confer authority, rights, publication,
-quality or PIT proof. External/raw provider, news, L2 or stream content SHALL
-be represented by an owner-controlled Capture artifact reference, not inlined
-merely because it is within the envelope byte budget.
+maximum canonical bytes, content policy and deterministic codec identity. This
+child SHALL supply only the Platform-owned descriptor value/validator and pure
+registry collision/freeze invariants; the later Platform foundation child SHALL
+implement the Bootstrap registry builder. Bootstrap SHALL assemble and freeze
+that registry before ingress, with unique keys. Kernel supplies only envelope
+composition and SHALL NOT own the descriptor or registry. A codec validates
+wire shape only and SHALL NOT confer authority, rights, publication, quality or
+PIT proof. The immutable-ref-only rule applies to cross-Context/canonical
+Platform envelopes. A Capture inbound adapter MAY boundedly receive/stage raw
+push, stream, import or provider input inside Capture, but external/raw provider,
+news, L2 or stream content SHALL cross the canonical boundary only as a
+committed owner-controlled Capture artifact reference.
 
 #### Scenario: An EventBus event is mapped
 - **WHEN** compatibility code maps a durable legacy event

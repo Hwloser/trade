@@ -72,6 +72,20 @@ content-verification state. It SHALL NOT implement or inherit a formal
 immutable-reference contract. Resolution states SHALL be `unresolved`,
 `resolved`, `unavailable` or `unsafe_path`; verification states SHALL be
 `not_checked`, `matched` or `mismatched`.
+The exact state product SHALL allow `unresolved`, `unavailable` and
+`unsafe_path` only with `not_checked`, and `resolved` only with `matched` or
+`mismatched`. A pure mapper SHALL NOT produce `matched` or `mismatched`.
+
+Matched/mismatched state SHALL require owner-local
+`LegacyArtifactVerificationEvidence` with verifier namespace/version, verified
+time, declared and actual content digests, legacy artifact identity, owner
+generation, authorized root identity and stable pre/post file identity. The
+owner verifier SHALL use root-relative no-follow traversal, reject symlinks and
+non-regular files, prove root containment, and compare pre/post identity, size
+and generation around hashing. Symlink replacement, TOCTOU change, unsupported
+filesystem proof or generation change SHALL fail closed without matched
+evidence. `matched` proves only that the bytes read at the specified time match
+the declaration; it proves no authorization, publication, quality or PIT state.
 
 #### Scenario: A legacy path attempts traversal
 - **WHEN** a legacy artifact contains an absolute path, traversal segment or credential-bearing URI
@@ -80,3 +94,11 @@ immutable-reference contract. Resolution states SHALL be `unresolved`,
 #### Scenario: Legacy content differs from its declaration
 - **WHEN** an owner fixture verifies bytes that differ by one byte from the declared digest
 - **THEN** the observation reports `mismatched` and cannot be promoted to a Capture or Dataset reference
+
+#### Scenario: A pure mapper sees a syntactically safe relative path
+- **WHEN** no owner verifier has opened and hashed the artifact
+- **THEN** the observation remains unresolved/not-checked and cannot claim matched content
+
+#### Scenario: A path changes while content is hashed
+- **WHEN** a symlink, file identity, size or owner generation changes between the verifier's pre/post checks
+- **THEN** verification fails closed as unavailable or unsafe-path and emits no matched evidence

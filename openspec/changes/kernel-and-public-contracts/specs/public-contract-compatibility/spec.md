@@ -14,15 +14,21 @@ to 65,536 bytes; one string/key to 2,048 UTF-8 bytes; every container to 100
 items/members; aggregate array items plus object members to 1,024; total value
 nodes to 2,048; nested-container depth to 8; actor scopes to 32; delegation hops
 to 8; process history to 50; recovery descriptors to 16; and each safe error
-message/hint to 1,024 UTF-8 bytes.
+message/hint to 1,024 UTF-8 bytes. Integer tokens SHALL be canonical
+non-negative decimal `0` or `[1-9][0-9]{0,18}` before field-specific limits.
 
-Raw length SHALL be checked before parsing. Decoding SHALL use strict UTF-8 and
-reject a BOM, duplicate keys, non-finite/floating values and surrogate code
-points. Root scalar depth is zero, root container depth is one, and each nested
-container increments depth by one. A value node is the root or an object
-value/array element; keys consume string/member budgets but are not extra value
-nodes. Traversal SHALL use a bounded explicit worklist rather than unbounded
-recursion.
+Before JSON materialization, a deterministic single-pass lexical/structural
+scanner SHALL validate strict UTF-8/JSON grammar and enforce BOM, duplicate-key,
+surrogate, float/non-finite, depth, decoded string/key, integer-token,
+per-container, aggregate-member and value-node limits. Only accepted input MAY
+reach the JSON decoder. A bounded `parse_int` hook SHALL repeat the 19-digit
+limit before integer construction. Root scalar depth is zero, root container
+depth is one, and each nested container increments depth by one. A value node
+is the root or an object value/array element; keys consume string/member budgets
+but are not extra value nodes. Post-materialization traversal SHALL use a
+bounded explicit worklist rather than unbounded recursion. Python 3.10 and the
+highest supported version SHALL emit the same structural error for the reviewed
+deep, integer and duplicate-key fixtures.
 
 #### Scenario: The same DTO is serialized twice
 - **WHEN** code, contract version and values are identical
@@ -39,6 +45,10 @@ recursion.
 #### Scenario: Input expands or aliases during parsing
 - **WHEN** raw input is 65,537 bytes, repeats an object key, contains an invalid surrogate or exceeds the aggregate node/member budget while each local container is valid
 - **THEN** decoding fails deterministically before DTO construction or fingerprint calculation
+
+#### Scenario: Parser materialization would amplify input
+- **WHEN** a payload contains depth 9, depth 1,500 or a within-byte-budget overlong integer token
+- **THEN** the pre-materialization scanner rejects it with the same bounded structural error on Python 3.10 and the highest supported version, without `RecursionError` or large-integer construction
 
 ### Requirement: Source, editable and wheel installations SHALL expose compatible packages
 
@@ -90,6 +100,18 @@ operation ID; post-persistence `stopping` and `spawn_failed` may carry a legacy
 state. Outcome spelling, process exit, PID or exception text alone SHALL NOT
 prove cancellation or completion.
 
+The EventBus mapper SHALL retain total, accepted, saturated, shutting-down and
+submission-failed handler counts plus a deterministic latest-at-most-50
+bounded summary with returned/omitted metadata. A mixed handler set SHALL remain
+explicitly mixed and SHALL NOT be flattened to the aggregate precedence value.
+If the target schema cannot preserve these facts, the canonical mapping SHALL
+be refused while the unchanged legacy result remains available.
+
+Current `/api/run` accepted output SHALL map only to an owner-local legacy run
+admission observation. A durable `run_id` alone SHALL NOT fabricate a formal
+`OperationReceipt`: trusted actor, correlation/causation and versioned command/
+idempotency fingerprints must come from the same future admission boundary.
+
 #### Scenario: A legacy value is lossy
 - **WHEN** a legacy event, artifact, error or status contains fields that are unsafe or have no target semantics
 - **THEN** the mapper records the loss, excludes those fields and never broadens authority or certainty
@@ -106,6 +128,10 @@ prove cancellation or completion.
 - **WHEN** two `stopping` results differ because one has no `run_id` and one has a durably created `run_id`
 - **THEN** the mapper produces no receipt for the first and requires separately observed durable state for the second rather than treating both as cancelled
 
+#### Scenario: Event handlers have mixed admission outcomes
+- **WHEN** one durable event has accepted, saturated and submission-failed handler results
+- **THEN** the canonical observation retains each count and bounded summary or refuses mapping; it does not report all handlers as the aggregate precedence outcome
+
 ### Requirement: Current mutation and status surfaces SHALL retain snapshots until owning migration
 
 This child SHALL preserve current EventBus admission behavior, `job_runs`
@@ -117,7 +143,7 @@ snapshot parity and rollback before delegation.
 
 #### Scenario: Web run is accepted
 - **WHEN** the existing `/api/run` route accepts a command
-- **THEN** its current 200 payload including accepted, target, limit, PID, run ID and running status remains byte/field compatible while any target receipt exists only in mapper tests
+- **THEN** its current 200 payload including accepted, target, limit, PID, run ID and running status remains byte/field compatible while the mapper yields only a legacy admission observation and no fabricated formal receipt
 
 #### Scenario: Web run is saturated
 - **WHEN** current command admission returns saturated

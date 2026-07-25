@@ -32,22 +32,27 @@ reported as successful cancellation.
   contracts. Those concrete references remain owned by their later Context
   children.
 - Define deterministic, bounded JSON serialization and schema-version
-  negotiation with pre-parse bytes, duplicate-key, depth, aggregate-node and
+  negotiation with a pre-materialization lexical/structural scan for bytes,
+  duplicate keys, depth, string/integer tokens, aggregate nodes and
   per-container limits. Public DTOs contain no FastAPI/Pydantic/ORM/DataFrame,
   connection, filesystem path, live exception, callback, or service object.
 - Define versioned, domain-separated keyed public fingerprints for command and
-  idempotency identity so receipts do not expose raw values or enumerable
-  unkeyed hashes.
-- Define static Bootstrap-owned codec registration. Codecs validate one
+  idempotency identity, cross-retained-key duplicate lookup and fail-closed
+  rotation so receipts do not expose raw values or enumerable unkeyed hashes.
+- Define Platform codec descriptors and registry invariants; the later Platform
+  foundation child implements static Bootstrap assembly. Codecs validate one
   owner/schema/purpose shape but grant no authority or external-content rights;
-  provider/news/L2/stream content must first become a Capture-owned immutable
-  artifact reference.
+  cross-Context provider/news/L2/stream content must first become a
+  Capture-owned immutable artifact reference.
 - Define an explicit legacy compatibility mapping inventory for current
   EventBus admission, `job_runs`, Web `/api/run`, data-operation,
   Observatory error/artifact, CLI wait, and runtime shutdown surfaces. This
   child adds owner-specific mappers and snapshot fixtures only; it creates no
   global mapper facade and does not reroute a CLI, HTTP route, scheduler, event
   handler, or runtime owner.
+- Preserve mixed EventBus handler admission facts and map current `/api/run`
+  acceptance only as a legacy observation; no mapper fabricates trusted actor,
+  fingerprints or a formal operation receipt from `run_id`.
 - Require every synchronous wait/cancel/shutdown contract to have a finite
   deadline, distinguish caller observation timeout from owner deadline, report
   closed residual ownership, fence stale writers, support crash takeover, and
@@ -59,6 +64,9 @@ reported as successful cancellation.
   while preserving existing interface snapshots.
 - Add contract, round-trip, forbidden-import, actor-provenance, status-mapping,
   size/depth-budget, legacy-snapshot, and bounded-control fixtures.
+- Extend the existing architecture guard for the six-module Kernel,
+  Platform-not-to-Processes, target-not-to-legacy, owner-specific compatibility
+  imports and no aggregate re-export.
 - Apply the `public_contract` and `runtime_concurrency` design-quality profiles,
   six-role digest-bound review, and current-date strict approval before code.
 
@@ -97,6 +105,9 @@ package-layout ADR rather than adding a shim. It does not create Platform
 implementations, Process Managers, Context repositories, business DTOs,
 database tables, outbox delivery, provider access, Web routing, native bindings,
 or a global `common`, `shared`, `utils`, `services`, or DTO facade.
+It also includes the narrow target-graph rules in
+`trade_py/devtools/architecture_guard.py` and their architecture fixtures; it
+does not implement Bootstrap registry assembly.
 
 Current contract owners remain authoritative during the compatibility window:
 `trade_py.bus`, `trade_py.data.operations`, `trade_py.observatory`,

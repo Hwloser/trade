@@ -38,21 +38,39 @@ Command and query envelopes SHALL compose Kernel metadata, trusted
 canonical payload fingerprint but SHALL NOT expose raw idempotency secrets,
 live callbacks, framework request objects or arbitrary payload dictionaries.
 
-Public command and idempotency fingerprints SHALL use versioned HMAC-SHA-256
-with distinct `trade.command.v1` and `trade.idempotency.v1` domains and SHALL
-carry the key version used at admission. The secret key SHALL remain owned by
-Platform ingress and absent from every wire/log value. Existing receipts SHALL
-not be rewritten during rotation. Fingerprint values SHALL be lower-case
-64-character hexadecimal and key versions SHALL be integers
-1-2,147,483,647. A Bootstrap registry SHALL hold at most four key versions and
-retain each for at least the owner operation-retention horizon; admission SHALL
-fail if safe retention cannot fit that bound. A retired unknown version SHALL
+Public command and idempotency fingerprints SHALL use exact
+`FingerprintV1 {algorithm, domain, key_version, value}` values. `algorithm`
+SHALL be `hmac-sha256-v1`; domains SHALL be distinct
+`trade.command.v1` and `trade.idempotency.v1`; value SHALL be lower-case
+64-character hexadecimal; and key version SHALL be an integer
+1-2,147,483,647. The secret SHALL contain at least 256 CSPRNG-generated bits,
+remain behind a Platform ingress secret-store port and be absent from every
+wire/log value.
+
+The key set SHALL have exactly one active write version and at most three
+retained read-only versions. In one owner-local admission transaction, ingress
+SHALL derive and query candidate idempotency fingerprints for every active or
+retained key before creating a claim. One existing match SHALL return the
+original operation/receipt; no match SHALL create with the active version; and
+multiple matches that identify inconsistent claims SHALL fail closed without
+creating an operation. Existing receipts SHALL retain their original version
+and SHALL NOT be rewritten during rotation. Each key SHALL be retained for at
+least the owner operation-retention horizon; retirement SHALL fail if safe
+retention cannot fit the four-version bound. A retired unknown version SHALL
 report unavailable rather than recompute with the current key. An unkeyed
 digest SHALL NOT be published for low-entropy idempotency keys or commands.
 
 #### Scenario: A command is retried after transport timeout
 - **WHEN** the same actor scope, canonical command and idempotency identity are resubmitted
 - **THEN** command ingress can resolve the same digest and existing operation without depending on transport retry metadata
+
+#### Scenario: A retry crosses an HMAC key rotation
+- **WHEN** a raw idempotency identity was admitted with a retained key and is retried after a new write key becomes active
+- **THEN** the same transaction finds the retained-version claim and returns the original receipt rather than creating an active-version duplicate
+
+#### Scenario: Retained versions resolve inconsistent claims
+- **WHEN** candidate fingerprints for one raw identity match more than one non-identical durable claim
+- **THEN** ingress reports corruption/unavailable and creates no new operation
 
 #### Scenario: A framework object enters a command
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object
@@ -70,6 +88,8 @@ idempotency fingerprint, closed operation state, safe reason, timestamps and
 optional process linkage. A receipt SHALL exist only after durable admission
 identity is created. Duplicate admission SHALL return the existing receipt.
 Raw payloads and raw idempotency keys SHALL NOT be exposed.
+The Platform-owned optional process link SHALL be `OpaqueId | None`; Platform
+SHALL NOT import the Processes-owned `ProcessId`.
 
 The exact allowed state transitions SHALL be:
 `requested -> accepted|failed|cancelled|deadline_exceeded`;
@@ -88,6 +108,10 @@ non-terminal relation is the corresponding Operation relation above with no
 edge to/from `accepted`. `terminal_at` SHALL be absent for non-terminal states,
 required exactly once for terminal states and ordered after start/acceptance
 and no later than `updated_at`.
+An owner `deadline_exceeded` terminal state SHALL require either exit of every
+owned worker or durable fencing that prevents every recorded residual worker
+from writing. A caller observation timeout SHALL NOT transition an operation or
+process to owner `deadline_exceeded`.
 
 #### Scenario: Persistence fails before operation identity is committed
 - **WHEN** command ingress cannot durably claim an operation
@@ -101,15 +125,25 @@ and no later than `updated_at`.
 - **WHEN** an operation becomes completed, compensated, failed, cancelled or deadline-exceeded
 - **THEN** its terminal timestamp is set once and no later transition returns it to running or waiting
 
+#### Scenario: Caller observation expires while the owner still runs
+- **WHEN** the observation deadline expires before a newer owner state and the worker has neither exited nor been durably write-fenced
+- **THEN** the query reports `not_observed` while owner state remains non-terminal
+
 ### Requirement: Process views SHALL be bounded read-only recovery projections
 
 A `ProcessView` SHALL expose process identity/type, correlation/causation,
 idempotency fingerprint, closed process and observation states, current step,
-retry/limit/next-attempt, deadline, last safe error, compensation and
+top-level reason code, retry/limit/next-attempt, deadline, last safe error, compensation and
 dead-letter states, no more than 50 ordered transitions, permitted recovery
 actions and timestamps. It SHALL NOT expose raw command/event payload, SQL,
 credentials, business-table rows, artifact bytes or traceback. Querying the
 view SHALL NOT execute a recovery action.
+
+The top-level reason code SHALL be required for `blocked`, `retry_scheduled`,
+`failed`, `cancelled` and `deadline_exceeded`; optional for
+`compensation_pending`; and forbidden for `requested`, `running`, `waiting`,
+`completed` and `compensated`. A matching safe error may add details but SHALL
+NOT replace the process-level reason.
 
 Process history SHALL return the latest at most 50 transitions ordered by
 strictly increasing owner sequence and SHALL include `total_count`,
@@ -148,10 +182,15 @@ query-condition, control and shutdown states as separate closed enums.
 `quarantined`, `blocked`, success and terminal error. Adding an enum value SHALL
 require a new wire-schema version and compatibility review.
 
-`QueryStatus` SHALL be a tagged union. `observed` SHALL require exactly one
-condition. `not_observed`, `unavailable` and `unknown` SHALL forbid a condition
-and require a matching safe error. `observed` without a condition and every
-non-observed state with a condition SHALL be rejected.
+`QueryStatus` SHALL be a tagged union with this exact state product:
+`observed/present` and `observed/empty` forbid an error;
+`observed/partial`, `observed/stale`, `observed/quarantined` and
+`observed/blocked` require errors categorized respectively as `unavailable`,
+`stale`, `quarantined` and `blocked`; `not_observed`, `unavailable` and
+`unknown` forbid a condition and require errors categorized respectively as
+`timeout`, `unavailable` and `internal`. Every error's observation state SHALL
+match the QueryStatus observation. Every unlisted combination SHALL be
+rejected.
 
 #### Scenario: A query returns no business rows
 - **WHEN** the owner successfully observes a valid empty result
@@ -207,7 +246,7 @@ disconnect or observation timeout alone SHALL NOT prove cancellation.
 
 A shutdown API SHALL close admission and return a `ShutdownReceipt` containing
 owner namespace/instance identity, fence generation, control/correlation/
-causation identities, optional operation/process links, request/deadline/
+causation identities, trusted initiator, optional operation/process links, request/deadline/
 finished time, closed shutdown state/current stage/reason, graceful/forced
 termination counts, bounded residual owners, owner-scoped recovery descriptors
 and a safe error. `completed` SHALL require stage `done`, zero live owned work,
@@ -215,6 +254,13 @@ durable terminal audit, released non-reentrant resources and release of only
 the matching generation fence. Deadline-exceeded, incomplete or failed
 shutdown SHALL retain owner fencing and report stage/reason/residual/recovery
 facts.
+
+The trusted initiator SHALL be the bounded credential-free `ActorContext` that
+requested shutdown. `control_id` SHALL resolve for the receipt retention period
+to an immutable actor-bearing `ControlReceipt` with the same initiator,
+correlation and causation. A mismatch SHALL be corruption. The optional Platform
+process link SHALL be `OpaqueId | None` and SHALL NOT require a Platform import
+of Processes contracts.
 
 Fence generation SHALL be an integer 1-9,223,372,036,854,775,807 durably
 claimed before admission. Every write or terminal receipt from an older
@@ -234,6 +280,20 @@ informational and SHALL NOT depend on Processes contracts. Shutdown stages
 SHALL be `close_admission`, `request_graceful`, `force_process_tree`,
 `drain_delivery`, `commit_terminal_audit`, `release_resources`,
 `release_fence` or `done`.
+
+The shutdown state product SHALL be exact. `completed` requires `done`,
+`SHUTDOWN_COMPLETED`, no safe error, zero residual/recovery entries, durable
+terminal audit, released resources and release of only the matching fence.
+`deadline_exceeded` requires a non-`done` stage,
+`SHUTDOWN_DEADLINE_EXCEEDED`, an observed timeout error, at least one residual
+and applicable recovery action, and a retained fence. `incomplete` requires a
+non-`done` stage, a stable non-deadline reason, an observed blocked or
+unavailable error, at least one residual and applicable recovery action, and a
+retained fence. `failed` requires a non-`done` stage, a stable failure reason,
+an observed internal or unavailable error, at least one residual (including
+writer/audit ownership when appropriate), an applicable recovery action and a
+retained fence. Every unlisted state/stage/reason/error/residual/recovery/fence
+combination SHALL be rejected.
 
 Every potentially blocking shutdown stage, including lock acquisition,
 persistence retry, queue drain, thread/future/executor/subprocess wait and
