@@ -17,30 +17,46 @@ reported as successful cancellation.
 
 ## What Changes
 
-- Add only the justified target Kernel primitives under `src/trade/kernel`:
-  opaque identifiers, UTC instants/deadlines, content digests, bounded contract
-  errors/results, envelope metadata, and immutable reference identity.
+- Add only the parent-approved six target Kernel modules under
+  `src/trade/kernel`: opaque identifiers, UTC instants/deadlines, content
+  digests, bounded contract errors/results and envelope metadata. Formal
+  immutable and policy reference DTOs remain in their owning Context contracts.
 - Add framework-free Platform public DTOs for trusted `ActorContext`,
   `OperationReceipt`, versioned `ErrorEnvelope`, cancellation/control results,
   and a truthful bounded `ShutdownReceipt`.
 - Add a framework-free Processes `ProcessView` contract with a closed state
   taxonomy, bounded transition history, deadlines, retry/compensation state,
-  dead-letter visibility, and authorized recovery actions.
+  dead-letter visibility, and owner-scoped recovery descriptors.
 - Define owner-specific immutable-reference construction rules without
   prematurely publishing formal DatasetSnapshot, revision, Capture, or Study
   contracts. Those concrete references remain owned by their later Context
   children.
 - Define deterministic, bounded JSON serialization and schema-version
-  negotiation. Public DTOs contain no FastAPI/Pydantic/ORM/DataFrame,
+  negotiation with pre-parse bytes, duplicate-key, depth, aggregate-node and
+  per-container limits. Public DTOs contain no FastAPI/Pydantic/ORM/DataFrame,
   connection, filesystem path, live exception, callback, or service object.
+- Define versioned, domain-separated keyed public fingerprints for command and
+  idempotency identity so receipts do not expose raw values or enumerable
+  unkeyed hashes.
+- Define static Bootstrap-owned codec registration. Codecs validate one
+  owner/schema/purpose shape but grant no authority or external-content rights;
+  provider/news/L2/stream content must first become a Capture-owned immutable
+  artifact reference.
 - Define an explicit legacy compatibility mapping inventory for current
   EventBus admission, `job_runs`, Web `/api/run`, data-operation,
   Observatory error/artifact, CLI wait, and runtime shutdown surfaces. This
-  child adds mappers and snapshot fixtures only; it does not reroute a CLI,
-  HTTP route, scheduler, event handler, or runtime owner.
+  child adds owner-specific mappers and snapshot fixtures only; it creates no
+  global mapper facade and does not reroute a CLI, HTTP route, scheduler, event
+  handler, or runtime owner.
 - Require every synchronous wait/cancel/shutdown contract to have a finite
   deadline, distinguish caller observation timeout from owner deadline, report
-  residual work, and avoid an unbounded join after the declared deadline.
+  closed residual ownership, fence stale writers, support crash takeover, and
+  avoid an unbounded join after the declared deadline.
+- Make `runtime-owner-shutdown-and-recovery-hardening-v1` a hard gate before
+  current EventBus/Web/FastAPI/CLI runtime adoption. It must cover the audited
+  terminal-persistence retry, monotonic wait, concurrent stop, startup cleanup,
+  executor tail, generation takeover and real signal-to-process-tree-reap paths
+  while preserving existing interface snapshots.
 - Add contract, round-trip, forbidden-import, actor-provenance, status-mapping,
   size/depth-budget, legacy-snapshot, and bounded-control fixtures.
 - Apply the `public_contract` and `runtime_concurrency` design-quality profiles,
@@ -54,8 +70,10 @@ topics, C++ ABI, long-wait defaults, and process behavior remain unchanged.
 
 ### New Capabilities
 
-- `kernel-primitives`: Minimal framework-free identity, time, digest, result,
-  envelope, and immutable-reference primitives with deterministic validation.
+- `kernel-primitives`: Minimal framework-free identity, time, digest, error,
+  result and envelope primitives with deterministic validation; typed
+  owner-codec descriptors and static registration remain Platform/Bootstrap
+  responsibilities.
 - `operation-control-contracts`: Trusted actor, operation, process,
   error, cancellation, and shutdown DTOs with closed truthful state machines.
 - `immutable-reference-policy`: Owner-preserving rules for versioned immutable
@@ -70,19 +88,24 @@ topics, C++ ABI, long-wait defaults, and process behavior remain unchanged.
 
 ## Impact
 
-The later implementation is limited to new `src/trade/kernel`,
-`src/trade/platform/contracts`, `src/trade/processes/contracts`, and narrow
-compatibility/contract-test paths, plus the minimum additive package discovery
-needed to import those modules. It does not create Platform implementations,
-Process Managers, Context repositories, business DTOs, database tables,
-outbox delivery, provider access, Web routing, native bindings, or a global
-`common`, `shared`, `utils`, `services`, or DTO facade.
+The later implementation is limited to the six approved `src/trade/kernel`
+modules, `src/trade/platform/contracts`, `src/trade/processes/contracts`, and narrow
+owner-specific compatibility/contract-test paths, plus the minimum explicit
+additive package discovery needed to import those modules. The package proof
+builds one wheel and installs it offline/no-deps; failure promotes the later
+package-layout ADR rather than adding a shim. It does not create Platform
+implementations, Process Managers, Context repositories, business DTOs,
+database tables, outbox delivery, provider access, Web routing, native bindings,
+or a global `common`, `shared`, `utils`, `services`, or DTO facade.
 
 Current contract owners remain authoritative during the compatibility window:
 `trade_py.bus`, `trade_py.data.operations`, `trade_py.observatory`,
 `trade_web.backend.runtime`, `trade_web.backend.app`, and `TradeDB.job_runs`.
 New contract adapters may observe and map those shapes but may not write their
 tables, repair state, or claim cancellation without durable evidence.
+Existence of the DTOs does not authorize runtime adoption before the named
+shutdown/recovery hardening child passes strict approval and implementation
+review.
 
 No real data, database, parquet, manifest, pointer, provider, or network access
 is required. Tests use in-memory values and temporary roots. Rollback removes

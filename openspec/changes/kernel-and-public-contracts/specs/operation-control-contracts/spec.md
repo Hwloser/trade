@@ -10,6 +10,15 @@ Bootstrap system evidence. Caller payload fields SHALL NOT establish identity
 or authority. A decoded wire actor SHALL remain unverified until re-established
 against trusted local evidence.
 
+Provenance SHALL be a bounded `ActorProvenanceRef`, not an arbitrary mapping.
+It SHALL contain a closed provenance type, bounded verifier namespace, opaque
+evidence ID, establishment time, optional expiry and stable reason code, and
+its canonical form SHALL be at most 1,024 bytes. It SHALL contain no credential,
+raw claim set, environment dump or parent payload.
+Authority scopes SHALL be 1-96 ASCII lower-case letters/digits plus `._:-`,
+sorted and unique, with at most 32 entries. Delegation SHALL contain at most
+eight provenance references.
+
 #### Scenario: A payload claims an administrator actor
 - **WHEN** a command body contains actor, user, principal or authority fields that are not established by the adapter
 - **THEN** those fields confer no authority and the mutation is denied or attributed to the separately established actor
@@ -26,8 +35,20 @@ against trusted local evidence.
 
 Command and query envelopes SHALL compose Kernel metadata, trusted
 `ActorContext`, a finite deadline and one typed owner DTO. They SHALL expose a
-canonical payload digest but SHALL NOT expose raw idempotency secrets, live
-callbacks, framework request objects or arbitrary payload dictionaries.
+canonical payload fingerprint but SHALL NOT expose raw idempotency secrets,
+live callbacks, framework request objects or arbitrary payload dictionaries.
+
+Public command and idempotency fingerprints SHALL use versioned HMAC-SHA-256
+with distinct `trade.command.v1` and `trade.idempotency.v1` domains and SHALL
+carry the key version used at admission. The secret key SHALL remain owned by
+Platform ingress and absent from every wire/log value. Existing receipts SHALL
+not be rewritten during rotation. Fingerprint values SHALL be lower-case
+64-character hexadecimal and key versions SHALL be integers
+1-2,147,483,647. A Bootstrap registry SHALL hold at most four key versions and
+retain each for at least the owner operation-retention horizon; admission SHALL
+fail if safe retention cannot fit that bound. A retired unknown version SHALL
+report unavailable rather than recompute with the current key. An unkeyed
+digest SHALL NOT be published for low-entropy idempotency keys or commands.
 
 #### Scenario: A command is retried after transport timeout
 - **WHEN** the same actor scope, canonical command and idempotency identity are resubmitted
@@ -37,14 +58,36 @@ callbacks, framework request objects or arbitrary payload dictionaries.
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object
 - **THEN** contract validation or the architecture guard rejects it before serialization
 
+#### Scenario: A public observer guesses a low-entropy key
+- **WHEN** an observer has a receipt fingerprint and guesses a likely raw idempotency key
+- **THEN** the receipt exposes no unkeyed digest with which that guess can be verified offline
+
 ### Requirement: Operation receipts SHALL report durable admission and terminal state truthfully
 
 An `OperationReceipt` SHALL contain version, operation identity and kind,
-command name/digest, trusted actor, correlation/causation identities, scoped
-idempotency digest, closed operation state, safe reason, timestamps and optional
-process linkage. A receipt SHALL exist only after durable admission identity is
-created. Duplicate admission SHALL return the existing receipt. Raw payloads
-and raw idempotency keys SHALL NOT be exposed.
+command fingerprint, trusted actor, correlation/causation identities, scoped
+idempotency fingerprint, closed operation state, safe reason, timestamps and
+optional process linkage. A receipt SHALL exist only after durable admission
+identity is created. Duplicate admission SHALL return the existing receipt.
+Raw payloads and raw idempotency keys SHALL NOT be exposed.
+
+The exact allowed state transitions SHALL be:
+`requested -> accepted|failed|cancelled|deadline_exceeded`;
+`accepted -> running|waiting|retry_scheduled|blocked|completed|failed|cancelled|deadline_exceeded`;
+`running -> waiting|retry_scheduled|compensation_pending|blocked|completed|failed|cancelled|deadline_exceeded`;
+`waiting -> running|retry_scheduled|blocked|failed|cancelled|deadline_exceeded`;
+`retry_scheduled -> running|waiting|blocked|failed|cancelled|deadline_exceeded`;
+`compensation_pending -> compensated|blocked|failed|deadline_exceeded`;
+`blocked -> running|retry_scheduled|compensation_pending|failed|cancelled|deadline_exceeded`.
+Terminal states SHALL have no outgoing transition. An identical state may be
+re-observed only without changing terminal facts.
+
+The exact Process state relation SHALL omit `accepted`:
+`requested -> running|waiting|failed|cancelled|deadline_exceeded`; every other
+non-terminal relation is the corresponding Operation relation above with no
+edge to/from `accepted`. `terminal_at` SHALL be absent for non-terminal states,
+required exactly once for terminal states and ordered after start/acceptance
+and no later than `updated_at`.
 
 #### Scenario: Persistence fails before operation identity is committed
 - **WHEN** command ingress cannot durably claim an operation
@@ -61,12 +104,28 @@ and raw idempotency keys SHALL NOT be exposed.
 ### Requirement: Process views SHALL be bounded read-only recovery projections
 
 A `ProcessView` SHALL expose process identity/type, correlation/causation,
-idempotency digest, closed process and observation states, current step,
+idempotency fingerprint, closed process and observation states, current step,
 retry/limit/next-attempt, deadline, last safe error, compensation and
 dead-letter states, no more than 50 ordered transitions, permitted recovery
 actions and timestamps. It SHALL NOT expose raw command/event payload, SQL,
 credentials, business-table rows, artifact bytes or traceback. Querying the
 view SHALL NOT execute a recovery action.
+
+Process history SHALL return the latest at most 50 transitions ordered by
+strictly increasing owner sequence and SHALL include `total_count`,
+`returned_count`, `first_sequence`, `last_sequence` and
+`omitted_before_count`. Counts SHALL be integers 0-2,147,483,647 and sequences
+0-9,223,372,036,854,775,807. Empty and non-empty window invariants SHALL be
+validated exactly; duplicate/decreasing sequences SHALL be rejected.
+
+Recovery capability SHALL use at most 16 Processes-owned
+`RecoveryActionDescriptor` values containing owner, closed action, opaque
+target, policy namespace/version, reason, expiry and required actor scope.
+Closed generic actions SHALL distinguish `redeliver_message`,
+`replay_immutable_input` and `request_new_external_interaction`; the generic
+word `redrive` SHALL NOT combine these semantics. Owner namespace and later
+owner commands supply Capture/event business meaning. A descriptor SHALL
+neither authorize nor execute its action.
 
 #### Scenario: A process is blocked
 - **WHEN** an operator queries a blocked process
@@ -89,6 +148,11 @@ query-condition, control and shutdown states as separate closed enums.
 `quarantined`, `blocked`, success and terminal error. Adding an enum value SHALL
 require a new wire-schema version and compatibility review.
 
+`QueryStatus` SHALL be a tagged union. `observed` SHALL require exactly one
+condition. `not_observed`, `unavailable` and `unknown` SHALL forbid a condition
+and require a matching safe error. `observed` without a condition and every
+non-observed state with a condition SHALL be rejected.
+
 #### Scenario: A query returns no business rows
 - **WHEN** the owner successfully observes a valid empty result
 - **THEN** it reports observation `observed` and condition `empty`, not `unknown` or `unavailable`
@@ -109,6 +173,10 @@ retry-after, correlation/operation/process links, occurrence time, safe message
 and safe recovery hint. It SHALL NOT contain arbitrary extra fields, raw
 exception text, traceback, credential, SQL, path or raw payload. HTTP status,
 CLI exit code and SSE framing SHALL remain interface-adapter mappings.
+
+Reason codes SHALL be 1-96 ASCII upper-case letters/digits plus `._-`;
+`retry_after_ms` SHALL be absent or an integer 0-86,400,000; safe message and
+recovery hint SHALL each be at most 1,024 UTF-8 bytes.
 
 #### Scenario: An Observatory error is mapped
 - **WHEN** a legacy `ObservatoryError` contains reason, message, evidence refs and arbitrary extra fields
@@ -138,11 +206,34 @@ disconnect or observation timeout alone SHALL NOT prove cancellation.
 ### Requirement: Shutdown SHALL have one finite deadline and explicit residual ownership
 
 A shutdown API SHALL close admission and return a `ShutdownReceipt` containing
-owner/control identity, request/deadline/completion times, closed shutdown
-state, graceful/forced termination counts, bounded residual-owner counts and a
-safe error. `completed` SHALL require zero live owned work and released
-non-reentrant resources. Deadline-exceeded or incomplete shutdown SHALL retain
-owner fencing and report residual work.
+owner namespace/instance identity, fence generation, control/correlation/
+causation identities, optional operation/process links, request/deadline/
+finished time, closed shutdown state/current stage/reason, graceful/forced
+termination counts, bounded residual owners, owner-scoped recovery descriptors
+and a safe error. `completed` SHALL require stage `done`, zero live owned work,
+durable terminal audit, released non-reentrant resources and release of only
+the matching generation fence. Deadline-exceeded, incomplete or failed
+shutdown SHALL retain owner fencing and report stage/reason/residual/recovery
+facts.
+
+Fence generation SHALL be an integer 1-9,223,372,036,854,775,807 durably
+claimed before admission. Every write or terminal receipt from an older
+generation SHALL be rejected. Crash takeover may claim only the next generation
+after durable proof that the prior lease expired or was revoked, and SHALL
+record takeover causation; restart SHALL NOT reuse owner instance or generation.
+
+Residual ownership SHALL use only `process_group`, `executor_task`,
+`python_thread`, `persistence_audit`, `writer_lease` and `inflight_start`, with
+at most 16 entries. Each entry SHALL contain count 1-2,147,483,647 and a
+non-secret `OpaqueId` inspection selector. Platform-owned
+`ShutdownRecoveryAction` SHALL use at most 16 entries and only
+`inspect_residual`, `retry_terminal_audit`, `terminate_process_group`,
+`retry_shutdown_with_deadline`, `revoke_expired_writer_lease` or
+`operator_intervention`, plus target/reason/expiry/scope. It SHALL be
+informational and SHALL NOT depend on Processes contracts. Shutdown stages
+SHALL be `close_admission`, `request_graceful`, `force_process_tree`,
+`drain_delivery`, `commit_terminal_audit`, `release_resources`,
+`release_fence` or `done`.
 
 Every potentially blocking shutdown stage, including lock acquisition,
 persistence retry, queue drain, thread/future/executor/subprocess wait and
@@ -164,3 +255,11 @@ bounded public API SHALL NOT perform an unbounded join after its deadline.
 #### Scenario: Shutdown completes
 - **WHEN** all owned work is terminal, durable receipts are committed and non-reentrant resources are released before the deadline
 - **THEN** exactly one completed shutdown receipt reports zero residual owners
+
+#### Scenario: A stale owner writes after takeover
+- **WHEN** generation N+1 has durably taken over and generation N attempts a state or terminal-audit write
+- **THEN** the repository rejects the stale writer and the N+1 receipt retains takeover causation
+
+#### Scenario: A runtime adopts the control contract
+- **WHEN** EventBus, Web resources, RuntimeCommandRunner or FastAPI lifespan would route through these contracts
+- **THEN** adoption is blocked until `runtime-owner-shutdown-and-recovery-hardening-v1` has strict approval and passing persistence-retry, concurrent-stop, startup-cleanup, executor-tail, monotonic-wait, crash-takeover and real signal-to-reap fixtures

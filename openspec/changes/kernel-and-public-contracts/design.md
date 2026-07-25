@@ -22,7 +22,7 @@ were treated as intent, not as current implementation.
 | `trade_py.observatory.domain.models.ArtifactRef` | Frozen reference includes `relative_path` and Observatory run identity | Filesystem location and product-surface ownership are not a cross-context immutable reference | Preserve legacy shape; never expose its path through the new reference identity |
 | `trade_py.observatory.domain.vocab.ObservatoryError` | Stable reason enum exists, but error payload accepts arbitrary `extra` and messages | A direct global promotion could leak unsafe fields and Observatory vocabulary | Use a whitelist mapper into a framework-free `ErrorEnvelope` |
 | `trade_web.backend.runtime.commands` | Command admission has a useful bounded owner, process-group termination and persistent run audit | Start/result IDs are legacy integers, state names are local, and cleanup still contains `ThreadPoolExecutor.shutdown(wait=True)` | Preserve behavior; specify truthful control receipts and prohibit post-deadline unbounded joins for later adoption |
-| `trade_web.backend.runtime.resources` | Web shutdown has a shared 10-second deadline and reports an incomplete stage | A timed-out daemon shutdown thread may remain; there is no public residual-work receipt | Define `ShutdownReceipt`; runtime adoption belongs to the Platform child |
+| `trade_web.backend.runtime.resources` | Web shutdown has a shared 10-second deadline and reports an incomplete stage | A timed-out daemon shutdown thread may remain; there is no public residual-work receipt | Define `ShutdownReceipt`; adoption is gated by `runtime-owner-shutdown-and-recovery-hardening-v1` |
 | `trade_py.cli.event` and `trade_py.cli.run` | Existing waits include 300, 3600 and 7200 seconds; event wait timeout can retain legacy exit code zero | Long synchronous observation owns the caller and conflates command admission with completion | Freeze compatibility; new interfaces return receipt quickly and observe through `ProcessView` |
 | `trade_web.backend.app:/api/run` | Stable success/failure payloads, 503 mapping and `Retry-After` are covered by tests | Shape differs from the target operation/error contracts | Add pure mapper fixtures; do not reroute the endpoint in this child |
 | `TradeDB.job_runs` | Shared rows expose running/ok/error/terminated and recovery reconciliation | Status is not enough to prove user cancellation or process completion | Map conservatively; never infer `cancelled` without cancellation evidence |
@@ -111,8 +111,7 @@ src/trade/
 │   ├── digest.py
 │   ├── errors.py
 │   ├── result.py
-│   ├── envelope.py
-│   └── refs.py
+│   └── envelope.py
 ├── platform/
 │   └── contracts/
 │       ├── actor.py
@@ -126,21 +125,42 @@ src/trade/
 
 trade_py/
 └── compat/
-    └── public_contracts.py
+    ├── bus_contracts.py
+    ├── job_run_contracts.py
+    ├── observatory_contracts.py
+    └── runtime_contracts.py
 ```
 
 The `trade` package imports no `trade_py` or `trade_web` module. The legacy
 compatibility adapter points from `trade_py` to `trade`, never in the reverse
 direction. Package `__init__` files export only reviewed stable symbols and do
-not perform initialization.
+not perform initialization. There is no aggregate compatibility re-export:
+each mapper is named for one legacy owner, imports only the target contracts it
+maps, and cannot be imported from `trade`, `trade.platform`, or
+`trade.processes`.
 
-Implementation first proves, in a disposable worktree, an additive package
-discovery configuration that retains distribution name `trade-py`, root
-`./trade`, console entry `trade-py`, all `trade_py` imports and adds installed
-`trade` imports. It must pass source/editable/wheel smoke tests. If current
-packaging cannot support both roots without a broader transition, implementation
-stops and the `python-package-and-web-layout` ADR is promoted; a root shim,
-symlink or `sys.path` mutation is forbidden.
+This child is a narrow prerequisite exception to the parent migration order,
+not the canonical Python-layout migration. Implementation first proves in a
+disposable worktree that the existing setuptools backend can discover the root
+`trade_py*` packages and `src/trade*` packages through explicit, deterministic
+package-dir/discovery configuration while retaining distribution name
+`trade-py`, root executable `./trade`, console entry `trade-py`, and all
+installed `trade_py` imports. The proof builds one wheel only. It inventories
+wheel members, installs that exact artifact in an isolated temporary
+environment with dependencies disabled and network access denied, and imports
+only modules whose declared dependencies are standard-library or already
+provided by the locked test environment. Editable and source checks reuse the
+locked repository environment; they do not reinstall the heavy dependency
+set. The proof also checks that repository cwd is absent from the clean-wheel
+interpreter path.
+
+If explicit dual-root discovery cannot pass without backend replacement,
+ambiguous package ownership, duplicated modules, or broad package movement,
+implementation stops before adding `src/trade`. The
+`python-package-and-web-layout` ADR is then promoted and this child is blocked.
+A root shim, symlink, import hook, generated package mirror or `sys.path`
+mutation is forbidden. The later layout child remains responsible for moving
+legacy Python/Web code and declaring the canonical distribution layout.
 
 Alternative: place contracts under `trade_py`. This avoids packaging work but
 would establish the wrong dependency direction and require a second public
@@ -163,22 +183,24 @@ The admitted primitives are:
 
 | Module | Primitive | Invariant |
 |---|---|---|
-| `ids` | `OpaqueId`, `IdNamespace` | Non-empty bounded ASCII namespace/value; generated values use UUID4; ordering is never inferred |
-| `time` | `UtcInstant`, `DurationMs`, `Deadline` | RFC3339 UTC `Z` on wire; aware datetime only; positive bounded duration; wall-clock deadline is evidence, monotonic time owns local waits |
+| `ids` | `OpaqueId`, `IdNamespace` | Namespace is 1-64 ASCII lower-case letters/digits plus `._-`; value is 1-128 printable ASCII characters excluding whitespace/control; generated values use UUID4; ordering is never inferred |
+| `time` | `UtcInstant`, `DurationMs`, `Deadline` | RFC3339 UTC `Z` on wire; aware datetime only; duration is integer 1-86,400,000 ms; wall-clock deadline is evidence, monotonic time owns local waits |
 | `digest` | `ContentDigest` | Algorithm is explicit; v1 permits SHA-256 lower hex only |
-| `errors` | `ContractViolation`, `ContractErrorCode` | Safe structural validation errors only; no live cause or traceback on wire |
+| `errors` | `ContractViolation`, `ContractErrorCode` | Closed code plus UTF-8 detail of at most 1,024 bytes; no live cause or traceback on wire |
 | `result` | `Result[T, E]` | Exactly one of value/error; no implicit truthiness or exception swallowing |
 | `envelope` | `EnvelopeMeta`, `Envelope[T]` | Message/schema/correlation/causation/time metadata plus typed owner payload |
-| `refs` | `ImmutableRefIdentity`, `PolicyRef` | Owner namespace, opaque object/version identity and digest; never path/current/latest |
 
 Specific `OperationId`, `ProcessId`, `CaptureArtifactRef` and other named types
 remain aliases or wrappers in their owning contracts. `OpaqueId` serializes as
 `{"namespace": "...", "value": "..."}` so a legacy integer can be represented
 without pretending it was generated globally.
 
-### 3. Separate logical identity, content identity and location
+### 3. Keep immutable references and policy identities owner-local
 
-`ImmutableRefIdentity` has:
+The parent-approved Kernel does not contain a generic reference module. Each
+business owner defines its named immutable reference in its own `contracts/`
+package. Every such DTO must carry the following semantic fields, but there is
+no shared `ImmutableRefIdentity` implementation:
 
 ```text
 owner
@@ -189,15 +211,18 @@ content_digest
 ```
 
 The owner contract may add clocks, schema identity, lineage or policy fields.
-The identity never contains a filesystem path, URI with credentials, DataFrame,
-database key whose meaning requires a private table, or mutable alias.
+The owner DTO never contains a filesystem path, URI with credentials,
+DataFrame, database key whose meaning requires a private table, or mutable alias.
 `current`, `latest` and Web pointers remain projection selectors, never formal
 inputs.
 
-`PolicyRef` contains policy name, semantic version and content digest. It is an
-identity, not the policy body. A later owner must prove that a reference is
-committed before accepting it. This child does not certify an existing
-Observatory artifact as a formal Dataset or Capture reference.
+Likewise, a future `PolicyRef` is declared by the consuming owner and contains
+policy namespace/name, semantic version and content digest. It identifies
+content but does not prove existence, approval, authorization, compatibility,
+publication, quality or PIT validity. This child specifies the policy and
+negative contract fixtures only; it implements no shared reference type and
+does not certify an existing Observatory artifact as a formal Dataset or
+Capture reference.
 
 Alternative: content digest alone. It loses owner/type/version semantics and
 cannot distinguish two interpretations of identical bytes. Alternative:
@@ -248,6 +273,39 @@ and `deadline_exceeded`; `blocked` is non-terminal unless an owning policy
 explicitly closes it. The closed v1 taxonomy requires a new schema version to
 add a value.
 
+The v1 transition relation is exact. Re-emitting the same state is allowed only
+as an idempotent observation with no changed terminal fact; every other pair is
+rejected:
+
+| State | Allowed next operation states |
+|---|---|
+| `requested` | `accepted`, `failed`, `cancelled`, `deadline_exceeded` |
+| `accepted` | `running`, `waiting`, `retry_scheduled`, `blocked`, `completed`, `failed`, `cancelled`, `deadline_exceeded` |
+| `running` | `waiting`, `retry_scheduled`, `compensation_pending`, `blocked`, `completed`, `failed`, `cancelled`, `deadline_exceeded` |
+| `waiting` | `running`, `retry_scheduled`, `blocked`, `failed`, `cancelled`, `deadline_exceeded` |
+| `retry_scheduled` | `running`, `waiting`, `blocked`, `failed`, `cancelled`, `deadline_exceeded` |
+| `compensation_pending` | `compensated`, `blocked`, `failed`, `deadline_exceeded` |
+| `blocked` | `running`, `retry_scheduled`, `compensation_pending`, `failed`, `cancelled`, `deadline_exceeded` |
+| terminal state | none |
+
+`ProcessState` omits `accepted`; its exact relation is the same table with
+`requested -> running|waiting|failed|cancelled|deadline_exceeded` and no
+transition to or from `accepted`. `terminal_at` is absent for non-terminal
+states, required for a terminal state, set once, and cannot precede
+`accepted_at`/`started_at` or follow `updated_at`.
+
+`QueryStatus` is a tagged union, not two independent nullable fields:
+
+| Observation | Required condition | Error rule |
+|---|---|---|
+| `observed` | exactly one of `present`, `empty`, `partial`, `stale`, `quarantined`, `blocked` | optional safe error only for the non-healthy conditions defined by the owner |
+| `not_observed` | forbidden | required timeout/not-observed error |
+| `unavailable` | forbidden | required unavailable error |
+| `unknown` | forbidden | required unknown/mapping error |
+
+Consequently `observed` without a condition and every non-observed value with a
+condition are invalid wire and object states.
+
 ### 5. Establish actor trust at the transport boundary
 
 `ActorContext` contains:
@@ -268,7 +326,19 @@ Origins are `cli`, `http`, `sdk`, `notebook`, `scheduler`, `event`, `import`,
 and `system`. Principal kinds are `authenticated`, `system`, `anonymous`, and
 `unknown`. Assurance is `verified`, `anonymous_allowed`, or `unverified`.
 Delegation is bounded to eight immutable hops and scopes to 32 sorted unique
-tokens.
+tokens. Each scope is 1-96 ASCII lower-case letters/digits plus `._:-`.
+Principal and evidence identities use `OpaqueId`; delegation entries are
+`ActorProvenanceRef` values and the encoded chain remains subject to the global
+node/byte budgets.
+
+`provenance` is a bounded `ActorProvenanceRef`, never a mapping. It contains
+`provenance_type` (one of `cli_process`, `http_session`, `sdk_credential`,
+`notebook_session`, `schedule_lease`, `parent_envelope`, `import_session`, or
+`bootstrap_identity`), verifier namespace, opaque evidence ID, establishment
+time, optional expiry, and a reason code. Verifier namespace and reason code
+obey the 64/96-byte token limits below; the encoded provenance reference is at
+most 1,024 bytes. It contains no credential, claim set, IP-derived authority,
+environment dump or raw parent payload.
 
 An actor is established only from adapter-controlled evidence: authenticated
 HTTP/session claims, local CLI process identity, registered schedule identity,
@@ -291,6 +361,23 @@ the boundary framework-free and auditable.
 are not defined here. Serialization requires the owner codec; arbitrary
 `dict[str, Any]` payload admission is forbidden.
 
+Owner codecs are registered through immutable `OwnerCodecDescriptor` values.
+A descriptor is owned by `trade.platform.contracts.messages` and binds owner
+namespace, schema name, positive schema version,
+payload purpose (`command`, `query`, `event`, `reference` or `projection`),
+maximum canonical bytes (1-65,536), content policy
+(`inline_contract` or `immutable_ref_only`) and deterministic codec identity
+as `ContentDigest` over the reviewed codec/schema manifest. Schema version is
+an integer 1-2,147,483,647.
+Only Bootstrap may assemble the static registry before ingress starts. The
+registry freezes after assembly and rejects duplicate owner/schema/version/
+purpose keys or non-deterministic codec identities. A codec validates wire
+shape only: registration grants no authority, publication, source rights,
+quality or PIT evidence. Provider responses, news bodies, L2 frames, stream
+segments and other external/raw content must first be committed by Capture and
+carried as owner-controlled immutable references; they cannot be inlined merely
+because they fit under 64 KiB.
+
 `OperationReceipt` contains:
 
 ```text
@@ -298,12 +385,12 @@ schema_version
 operation_id
 operation_kind
 command_name
-command_digest
+command_fingerprint
 actor
 correlation_id
 causation_id
 idempotency_scope
-idempotency_key_digest
+idempotency_fingerprint
 state
 reason_code
 accepted_at
@@ -312,9 +399,24 @@ terminal_at
 process_id
 ```
 
-The raw idempotency key and command payload are not exposed. A duplicate returns
-the existing receipt. A failed durable claim returns an `ErrorEnvelope`; it
-must not fabricate an operation ID.
+Public fingerprints use `hmac-sha256-v1` with explicit `key_version` and
+domain. Command fingerprints use domain `trade.command.v1`; idempotency
+fingerprints use `trade.idempotency.v1` and length-prefixed canonical actor
+scope, idempotency scope and raw key bytes. The secret key is owned by Platform
+persistence/ingress, is never serialized, and is distinct from
+`ContentDigest`. The wire value is lower-case 64-character hexadecimal and
+`key_version` is an integer 1-2,147,483,647. Receipts retain the key version
+used at admission. A Bootstrap registry contains at most four active/read-only
+key versions; rotation keeps versions for at least the owning operation
+retention horizon, never rewrites receipts, and fails admission if that horizon
+cannot be met within the four-version bound. Unsupported retired versions
+return unavailable rather than recomputing with the current key. Public logs
+and APIs may expose only the domain-separated fingerprint, never an unkeyed
+hash that permits offline verification of low-entropy keys or commands.
+
+The raw idempotency key and command payload are not exposed. A duplicate
+returns the existing receipt. A failed durable claim returns an
+`ErrorEnvelope`; it must not fabricate an operation ID.
 
 `ProcessView` contains the parent-required process identity fields plus:
 
@@ -331,10 +433,38 @@ permitted_recovery_actions
 updated_at
 ```
 
-History has at most 50 transitions. Recovery actions are closed capabilities
-(`cancel`, `retry`, `redrive`, `resume`, `inspect`) and are informational;
-querying a view never executes them. No raw payload, SQL, table row, credential,
-artifact bytes or traceback is exposed.
+History is the latest at most 50 transitions ordered by strictly increasing
+owner sequence, then stable transition ID as a corruption-detection tie-break.
+Its window metadata is exact:
+
+```text
+total_count
+returned_count
+first_sequence
+last_sequence
+omitted_before_count
+```
+
+Counts are integers 0-2,147,483,647 and sequences are
+0-9,223,372,036,854,775,807. Empty history requires zero counts and absent
+first/last sequence. A non-empty window requires
+`returned_count == len(items)`, `omitted_before_count == total_count -
+returned_count`, and first/last values matching the returned items. Duplicate
+or decreasing owner sequences are rejected rather than silently reordered.
+
+Recovery capabilities are Processes-owned bounded `RecoveryActionDescriptor`
+values containing owner namespace, action (`inspect`, `cancel_operation`,
+`retry_process_step`, `resume_process`, `redeliver_message`,
+`replay_immutable_input`, or `request_new_external_interaction`), opaque target
+ID, policy namespace/version, reason code, expiry and required actor scope. At
+most 16 descriptors are returned. The last three categories deliberately
+separate delivery retry, replay of already committed immutable input without an
+external call, and a new external interaction. Owner namespace and a later
+owner command provide the business meaning; this child introduces no Capture
+command. A descriptor is informational and authorization-neutral; the mutation
+endpoint re-establishes actor authority and policy. Querying a view never
+executes an action. No raw payload, SQL, table row, credential, artifact bytes
+or traceback is exposed.
 
 Owner query DTOs return typed data plus `QueryStatus`, which composes
 `ObservationState` and, only when observed, a `QueryCondition`. Thus an
@@ -365,8 +495,10 @@ version. Categories are `invalid`, `denied`, `conflict`, `saturated`,
 `unavailable`, `blocked`, `quarantined`, `stale`, `timeout`, `cancelled`, and
 `internal`. Messages and hints are bounded, operator-safe text. There is no
 arbitrary `extra`, traceback, exception object, credential, path, SQL or raw
-payload. A legacy adapter whitelists fields and supplies a stable generic
-message when safety cannot be proved.
+payload. Reason codes are 1-96 ASCII upper-case letters/digits plus `._-`;
+`retry_after_ms` is absent or an integer 0-86,400,000; messages/hints are at
+most 1,024 UTF-8 bytes each. A legacy adapter whitelists fields and supplies a
+stable generic message when safety cannot be proved.
 
 HTTP status and CLI exit code are compatibility-adapter decisions, not fields
 owned by the error. This allows current `/api/run` 503 and current CLI exit
@@ -387,19 +519,31 @@ and no binary or floating point values. Limits are:
 
 | Dimension | v1 limit |
 |---|---:|
-| Encoded envelope | 64 KiB |
-| Nesting depth | 8 |
-| String | 2 KiB |
-| Collection items | 100 |
+| Raw UTF-8 input before parse | 65,536 bytes |
+| Canonical UTF-8 output | 65,536 bytes |
+| Nested container depth | 8 |
+| One decoded string/key | 2,048 UTF-8 bytes |
+| Items/members in one container | 100 |
+| Aggregate array items + object members | 1,024 |
+| Total value nodes | 2,048 |
 | Actor scopes | 32 |
 | Delegation hops | 8 |
 | Process history | 50 |
-| Safe error message/hint | 1 KiB each |
+| Recovery descriptors | 16 |
+| Safe error message/hint | 1,024 UTF-8 bytes each |
 
-Validation occurs before object construction and before digest calculation.
-Command digest uses canonical bytes of the typed command DTO and excludes
-transport retry metadata. Serialization failure is a contract error, never a
-fallback to `str(object)` or `default=str`.
+Raw length is checked before JSON parsing. Decoding uses strict UTF-8, rejects a
+BOM, duplicate object keys, non-finite/floating values and decoded surrogate
+code points. Root scalar depth is zero; a root array/object has depth one; each
+array/object nested as a value increments depth by one. A value node is the
+root or any object value/array element; object keys consume string and member
+budgets but are not additional value nodes. Collection limits apply to every
+container, while aggregate and node limits apply to the whole tree. Validation
+uses an explicit bounded stack/queue rather than unbounded recursion. It occurs
+before DTO construction and public fingerprint calculation. Command
+fingerprints use canonical bytes of the typed command DTO and exclude transport
+retry metadata. Serialization failure is a contract error, never a fallback to
+`str(object)` or `default=str`.
 
 ### 9. Bound observation, cancellation and shutdown truthfully
 
@@ -415,12 +559,60 @@ link. A cancellation request returning `accepted` means intent was durably
 accepted, not that work is cancelled. `OperationState.cancelled` requires the
 owner's terminal receipt. Signal delivery alone is not terminal evidence.
 
-`ShutdownReceipt` includes owner identity, control ID, requested/deadline/
-completed timestamps, state, graceful/forced termination counts, residual
-owner counts by bounded category, and a safe error. `completed` requires zero
-owned live work and released non-reentrant resources. `deadline_exceeded` or
-`incomplete` retains residual ownership evidence and must not release an owner
-fence that could admit a second writer.
+`ShutdownReceipt` is a closed v1 record:
+
+```text
+schema_version
+owner_namespace
+owner_instance_id
+fence_generation
+control_id
+correlation_id
+causation_id
+operation_id?
+process_id?
+requested_at
+deadline
+finished_at
+state
+current_stage
+reason_code
+graceful_termination_count
+forced_termination_count
+residual_owners
+shutdown_recovery_actions
+safe_error?
+```
+
+`owner_instance_id` identifies one runtime incarnation. `fence_generation` is
+an integer 1-9,223,372,036,854,775,807 durably claimed before admission;
+generation N rejects every write or terminal receipt from an older generation.
+Crash takeover may claim N+1 only after the owner repository proves the prior
+lease expired or was explicitly revoked, records takeover causation, and keeps
+the old generation fenced. Restart never resets a generation or reuses an
+owner-instance ID.
+
+`current_stage` is one of `close_admission`, `request_graceful`,
+`force_process_tree`, `drain_delivery`, `commit_terminal_audit`,
+`release_resources`, `release_fence`, or `done`. Counts are integers
+0-2,147,483,647. Residual ownership is a closed map with at most 16 entries and
+categories `process_group`, `executor_task`, `python_thread`,
+`persistence_audit`, `writer_lease`, and `inflight_start`; every entry contains
+count 1-2,147,483,647 plus a non-secret `OpaqueId` inspection selector.
+`ShutdownRecoveryAction` is owned by `trade.platform.contracts.control`, not
+Processes. At most 16 entries use only `inspect_residual`,
+`retry_terminal_audit`, `terminate_process_group`,
+`retry_shutdown_with_deadline`, `revoke_expired_writer_lease` or
+`operator_intervention`, plus an opaque target, reason, expiry and required
+scope. It is informational and authorization-neutral.
+
+Every returned attempt has `finished_at`. `completed` requires stage `done`,
+zero residual owners,
+durable terminal audit, released non-reentrant resources and release of only
+the matching generation fence. `deadline_exceeded`, `incomplete` or `failed`
+requires a non-`done` stage, stable reason code and residual/recovery evidence
+when ownership remains. Such a receipt must not release an owner fence that
+could admit a second writer.
 
 Every public wait/control API requires a finite deadline. A bounded method must
 not perform `Thread.join()`, `Future.result()`, executor shutdown, subprocess
@@ -431,6 +623,13 @@ claimed as killable. Reaching a deadline stops new admission, preserves the
 last durable receipt and returns control. Cleanup may continue only in a
 daemon/isolated owner that cannot retain a writer lease or keep the caller
 blocked.
+
+Concurrent callers join the same immutable stop-attempt identity and observe
+the same shared monotonic deadline and final receipt. No secondary caller waits
+without its own finite observation deadline. A crash before final receipt is
+recovered by the next fenced generation, which inspects residual owner/audit
+records and either completes recovery or reports unavailable; it never assumes
+the previous in-memory thread completed.
 
 ```mermaid
 sequenceDiagram
@@ -455,7 +654,16 @@ sequenceDiagram
 
 This contract directly prevents a non-returning reviewer, worker or child
 process from keeping an interface call open indefinitely once adopted by the
-owning runtime. Adoption is deferred to Platform/Processes/Interfaces children.
+owning runtime. Contract types may be implemented in this child, but no current
+runtime may adopt them until the separate
+`runtime-owner-shutdown-and-recovery-hardening-v1` child passes strict design
+approval, implementation review and wall-clock recovery fixtures. That hard
+gate owns the audited EventBus terminal-persistence retry loop and monotonic
+idle observation; concurrent `WebResourceContainer.stop()` wait; startup
+failure cleanup; RuntimeCommandRunner executor tail; FastAPI lifespan
+signal-to-return; writer-generation takeover; and real Uvicorn
+signal-to-process-tree-reap behavior. Existing CLI output, HTTP payloads and
+exit-code snapshots must remain unchanged in that child.
 
 ### 10. Preserve legacy behavior with one-way explicit mappers
 
@@ -467,22 +675,42 @@ Web/FastAPI types.
 
 | Legacy surface | Canonical interpretation | Preserved legacy behavior | Refusal/fallback |
 |---|---|---|---|
-| EventBus accepted event | Durable legacy event identity and accepted/waiting observation | Existing event ID/topic/output | Live `bus` and untyped payload are excluded |
-| EventBus saturated/submission failure after durable insert | Accepted durable event with deferred/retry or explicit dispatch error, not “not persisted” | Existing deferred output/tempfail mapping | No fabricated process completion |
+| EventBus `accepted` | Durable legacy event identity; command admission `accepted`; handler dispatch observed as admitted | Existing event ID/topic/output | Live `bus`, handler exception and untyped payload are excluded; no handler completion inferred |
+| EventBus `saturated` | Durable event remains accepted; handler-dispatch observation is `observed/blocked` with `BUS_HANDLER_CAPACITY` | Existing deferred output/tempfail mapping | No retry schedule or process completion inferred |
+| EventBus `shutting_down` | Durable event remains accepted; handler-dispatch observation is `observed/blocked` with `BUS_OWNER_STOPPING` | Existing deferred/shutdown output | No cancellation, retry schedule or process completion inferred |
+| EventBus `submission_failed` | Durable event remains accepted; handler-dispatch observation is `observed/blocked` with safe `BUS_HANDLER_SUBMISSION_FAILED` | Existing admission-failure persistence/output | Live cause/detail are excluded; no event-persistence failure or process completion inferred |
 | `job_runs.running` | Running only when observed row is current | Existing row/status | Stale/owner-lost remains explicit |
 | `job_runs.ok` | Completed | Existing `ok` | No inferred business result |
 | `job_runs.error` | Failed | Existing `error` | Raw result summary is not public error text |
 | `job_runs.terminated` | Cancelled only with durable cancel intent; otherwise failed/unknown terminal observation | Existing `terminated` | Never infer user cancellation from signal/exit alone |
 | `/api/run` accepted | Operation receipt only when `run_id` was durably created | Exact current 200 payload including PID | PID remains legacy payload, not canonical receipt |
-| `/api/run` failure | Versioned error reason and admission state | Exact 503 body and `Retry-After` snapshot | No operation ID when persistence failed |
+| `/api/run` `saturated` | Admission `saturated` plus `COMMAND_CAPACITY_EXHAUSTED` | Exact 503 body and `Retry-After: 1` | Capacity rejection precedes `run_id`; no receipt or operation ID |
+| `/api/run` `stopping` without `run_id` | Admission `unavailable` plus `COMMAND_RUNTIME_STOPPING` | Exact 503 body and `Retry-After: 5` | No receipt, operation ID or cancellation |
+| `/api/run` `stopping` with `run_id` | Existing durable operation mapped from separately observed job row; stopping result alone is blocked/unknown, never cancelled | Exact 503 body, `run_id` and `Retry-After: 5` | PID is legacy-only; terminal state requires job-row evidence |
+| `/api/run` `persistence_failed` | Admission `unavailable` plus `COMMAND_PERSISTENCE_FAILED` | Exact 503 error body without retry header | No durable `run_id`; no receipt or operation ID |
+| `/api/run` `spawn_failed` | Durable `run_id` maps to failed only when the persisted error row is observed; safe `COMMAND_START_FAILED` | Exact 503 body including `run_id`, no retry header | Exception detail and PID are excluded |
 | CLI event wait timeout | Command remains accepted; observation timed out | Current output/exit compatibility until interface child | Must not report canonical completion |
 | Observatory error | Whitelisted reason/retry semantics | Existing route snapshot | Arbitrary `extra` and unsafe message are dropped |
-| Observatory artifact | Legacy artifact observation only | Existing model unchanged | `relative_path` is never a formal immutable reference |
+| Observatory artifact | `LegacyArtifactObservation` only | Existing model unchanged | `relative_path` is never a formal immutable reference |
 | Runtime shutdown exception | Incomplete/unknown shutdown error | Existing exception behavior | No parsing of free-form error text into fake residual counts |
 
 Each mapper has a named source version, target version, owner, lossiness record,
-snapshot, retirement condition and refusal test. Unknown legacy statuses fail
-closed to `ObservationState.unknown` and an error; they never map to success.
+snapshot, retirement condition and refusal test. The matrix is exhaustive for
+the reviewed enum versions. A mapper branches on durable identity evidence such
+as `run_id` instead of treating one outcome spelling as sufficient. Unknown
+legacy statuses fail closed to `ObservationState.unknown` and an error; they
+never map to success.
+Mappings are implemented only in the four owner-specific modules named in
+Decision 1. Package `__init__` modules must not aggregate or re-export them.
+
+`LegacyArtifactObservation` is a legacy-only DTO with owner/run/artifact
+identity, declared digest, relative-location token, `resolution_state`
+(`unresolved`, `resolved`, `unavailable`, `unsafe_path`) and
+`content_verification` (`not_checked`, `matched`, `mismatched`). A successful
+decode or path normalization proves none of existence, authorization,
+publication, quality or PIT correctness. Absolute paths, traversal segments,
+credential-bearing URIs and a single-byte digest mismatch yield explicit
+unsafe/mismatched state and can never be promoted to a formal reference.
 
 ### 11. This child has no durable state
 
@@ -499,16 +727,28 @@ flowchart TD
   K[trade.kernel]
   PC[trade.platform.contracts]
   PRC[trade.processes.contracts]
-  LC[trade_py.compat.public_contracts]
+  BC[trade_py.compat.bus_contracts]
+  JC[trade_py.compat.job_run_contracts]
+  OC[trade_py.compat.observatory_contracts]
+  RC[trade_py.compat.runtime_contracts]
   LEG[legacy trade_py/trade_web values]
 
   PC --> K
   PRC --> K
   PRC --> PC
-  LC --> K
-  LC --> PC
-  LC --> PRC
-  LC --> LEG
+  BC --> K
+  BC --> PC
+  BC --> LEG
+  JC --> K
+  JC --> PC
+  JC --> PRC
+  JC --> LEG
+  OC --> K
+  OC --> PC
+  OC --> LEG
+  RC --> K
+  RC --> PC
+  RC --> LEG
 
   K -. forbidden .-> PC
   K -. forbidden .-> LEG
@@ -533,23 +773,27 @@ tail join.
 
 ### Ownership and boundaries
 
-Kernel owns only generic identity/time/digest/result/envelope/reference
-primitives. Platform contracts own actors, command/query metadata, operations,
+Kernel owns only the parent-approved identity/time/digest/error/result/envelope
+modules. Platform contracts own actors, command/query metadata, operations,
 safe errors and controls. Processes contracts own `ProcessView` and process
-state. Business references remain future Context contracts. The legacy adapter
-owns mapping and imports target contracts; target packages never import legacy
-implementation. Package configuration owns additive discovery only, while the
-later package-layout child owns canonical distribution migration.
+state. All business and policy references remain future owner contracts under
+the normative reference policy. Owner-specific legacy adapters own mapping and
+import target contracts; there is no aggregate facade and target packages never
+import legacy implementation. Package configuration owns additive discovery
+only, while the later package-layout child owns canonical distribution
+migration.
 
 ### Data and state invariants
 
-IDs are opaque and immutable; digests are algorithm-bound; times are UTC and
-aware; local elapsed deadlines use monotonic time. Reference identity includes
-owner/kind/object/version/digest and no location. Contract states use closed
-families and validated transitions. Terminal timestamps exist only for terminal
-states. Duplicate command identity returns the same operation. Cancellation
-acceptance is not cancellation completion. A completed shutdown has no residual
-owned work. Query observation and data condition are orthogonal.
+IDs are opaque, bounded and immutable; content digests are algorithm-bound;
+public fingerprints are keyed, purpose-separated and versioned; times are UTC
+and aware while local elapsed deadlines use monotonic time. Owner reference
+contracts include owner/kind/object/version/digest and no location. Contract
+states use exact closed transition relations. Query observation and condition
+form a closed tagged union. Terminal timestamps exist only for terminal states.
+Duplicate command identity returns the same operation. Cancellation acceptance
+is not cancellation completion. A completed shutdown has no residual owned work
+and releases only its own fence generation.
 
 ### Contracts and compatibility
 
@@ -563,22 +807,29 @@ invented from an incomplete legacy object.
 
 ### Failure and recovery
 
-Invalid IDs/times/digests/transitions, unknown schema versions, forbidden
-fields, oversized/deep payloads and unsafe actor provenance return structural
-contract errors. Unavailable persistence cannot fabricate a receipt. Caller
-timeout preserves owner state and last links. Control timeout returns residual
-work; cancelled requires terminal evidence. A failed additive package proof
-stops implementation. Since there is no durable state, rollback stops new
-consumers and removes the new package/mappers; old paths remain usable.
+Invalid IDs/times/digests/transitions, duplicate keys, invalid UTF-8/surrogates,
+unknown schema versions, forbidden fields, oversized/deep/over-node payloads
+and unsafe actor provenance return structural contract errors. Unavailable
+persistence cannot fabricate a receipt. Caller timeout preserves owner state
+and last links. Control timeout returns residual work; cancelled requires
+terminal evidence. Stale fence generations cannot write. A failed additive
+package proof stops implementation. Since this child owns no durable state,
+rollback stops new consumers and removes the new package/mappers; old paths
+remain usable.
 
 ### Performance and capacity
 
-DTO construction and canonical serialization are linear in bounded input.
-Wire bytes, nesting, strings, collections, scopes, delegation and process
-history have fixed limits. No queue, worker, polling loop, database call,
-network call or artifact read exists in this child. Control tests use one shared
-deadline across all cleanup stages and assert elapsed upper bounds at 1x and
-10x residual-owner fixtures. No claim about production throughput is made.
+DTO construction and canonical serialization are linear in input bounded before
+parse and during an iterative traversal. Wire bytes, nesting, strings,
+per-container items, aggregate members, nodes, scopes, delegation, recovery
+descriptors and process history have fixed limits. No queue, worker, polling
+loop, database call, network call or artifact read exists in this child.
+Ordinary control tests use a fake monotonic clock and no real sleeps at exactly
+1 and 10 owners in each closed residual category. One minimal real subprocess
+fixture uses one child, one shared 2-second deadline, at most 250 ms elapsed
+tolerance, no retry, and a 5-second whole-fixture wall-clock ceiling. Packaging
+builds one wheel and installs it offline with `--no-deps`. No claim about
+production throughput is made.
 
 ### Persistent-write safety
 
@@ -601,13 +852,14 @@ deleted, restored or reinterpreted.
 
 ### Observability and operations
 
-Receipts carry correlation, operation and process links plus safe reason codes.
-Process views expose deadline, step, retry, compensation, dead-letter,
-observation and permitted recovery facts with bounded history. Shutdown
-receipts expose residual ownership. Operators can distinguish empty, partial,
-stale, quarantined, blocked, unknown, not observed, unavailable and failed.
-Credentials, raw payloads, paths, SQL, exception text and tracebacks are not
-public telemetry.
+Receipts carry correlation, causation, operation and process links plus safe
+reason codes. Process views expose deadline, step, retry, compensation,
+dead-letter, observation, exact history-window metadata and owner-scoped
+recovery descriptors. Shutdown receipts expose owner instance/generation,
+current stage, reason, closed residual categories and safe recovery selectors.
+Operators can distinguish empty, partial, stale, quarantined, blocked, unknown,
+not observed, unavailable and failed. Credentials, raw payloads, paths, SQL,
+exception text and tracebacks are not public telemetry.
 
 ### Validation strategy
 
@@ -618,8 +870,11 @@ sources, payload spoofing, anonymous policy and wire downgrade. Legacy snapshots
 cover EventBus, job runs, `/api/run`, CLI wait timeout, Observatory error/ref
 and shutdown-incomplete mapping. Concurrency fixtures cover observation
 deadline, cancellation acceptance versus terminalization, process-tree control,
-residual work and an executor whose final join would block. Packaging tests
-cover source, editable and clean wheel environments. Existing focused tests run
+all residual categories, stale-writer rejection, crash takeover, concurrent
+callers and an executor whose final join would block. Fake-clock tests own most
+combinations; the minimal real subprocess fixture proves process-tree reap
+under a fixed wall-clock ceiling. Packaging tests cover source, editable and
+one offline/no-deps clean-wheel environment. Existing focused tests run
 unchanged.
 
 ### Alternatives and trade-offs
@@ -637,12 +892,15 @@ more mapper code but preserve ownership and incremental rollback.
 ### Rollout and rollback
 
 Implementation uses a dedicated worktree after strict approval. First prove
-dual-root packaging in isolation; then add Kernel; then Platform and Processes
-contracts; then pure legacy mappers and tests. No current caller is rerouted.
+explicit additive dual-root packaging in isolation using one wheel; then add
+the six-module Kernel; then Platform and Processes contracts; then
+owner-specific pure legacy mappers and tests. No current caller is rerouted.
 Each unit is committed separately and can be reverted independently. A failed
 packaging, snapshot, import-isolation, actor or bounded-control test blocks
-delivery. Rollback removes new consumers first, retains old DTO/import/payload
-paths, and then reverts the additive files/config. No data restore is needed.
+delivery. Runtime adoption is separately blocked on
+`runtime-owner-shutdown-and-recovery-hardening-v1`. Rollback removes new
+consumers first, retains old DTO/import/payload paths, and then reverts the
+additive files/config. No data restore is needed.
 
 ## Risks / Trade-offs
 
@@ -679,15 +937,19 @@ paths, and then reverts the additive files/config. No data restore is needed.
    workflow.
 3. Prove additive dual-root package discovery in temporary source, editable and
    wheel installs. Stop and promote a package ADR if it fails.
-4. Implement Kernel primitives and invariant/serialization tests.
+4. Implement only the six approved Kernel modules and
+   invariant/serialization tests.
 5. Implement Platform public actor/message/operation/error/control contracts
    and tests.
 6. Implement Processes `ProcessView` contracts and transition/history tests.
-7. Implement one-way legacy compatibility mappers and snapshots without
-   rerouting current callers.
+7. Implement owner-specific one-way legacy compatibility mappers and snapshots
+   without aggregate re-exports or rerouting current callers.
 8. Run focused and existing compatibility suites, compile/build/import checks,
    architecture guard, quality plan/check and whitespace validation.
 9. Run six-role implementation review and resolve every P0 before squash merge.
+10. Keep current runtime adoption disabled until
+    `runtime-owner-shutdown-and-recovery-hardening-v1` independently passes its
+    design, implementation, compatibility and real signal-to-reap gates.
 
 Rollback at every step is code/config reversion only. There is no schema,
 artifact or runtime-state migration.

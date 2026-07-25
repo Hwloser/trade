@@ -9,9 +9,20 @@ SHALL accept exactly version 1 and the exact declared field set. Unknown fields,
 unknown versions, excessive depth/items/string/bytes or unregistered owner
 payloads SHALL fail before object construction or digest calculation.
 
-Version 1 SHALL limit an encoded envelope to 64 KiB, nesting to 8, a string to
-2 KiB, a collection to 100 items, actor scopes to 32, delegation hops to 8,
-process history to 50, and each safe error message or hint to 1 KiB.
+Version 1 SHALL limit raw UTF-8 input before parsing and canonical output each
+to 65,536 bytes; one string/key to 2,048 UTF-8 bytes; every container to 100
+items/members; aggregate array items plus object members to 1,024; total value
+nodes to 2,048; nested-container depth to 8; actor scopes to 32; delegation hops
+to 8; process history to 50; recovery descriptors to 16; and each safe error
+message/hint to 1,024 UTF-8 bytes.
+
+Raw length SHALL be checked before parsing. Decoding SHALL use strict UTF-8 and
+reject a BOM, duplicate keys, non-finite/floating values and surrogate code
+points. Root scalar depth is zero, root container depth is one, and each nested
+container increments depth by one. A value node is the root or an object
+value/array element; keys consume string/member budgets but are not extra value
+nodes. Traversal SHALL use a bounded explicit worklist rather than unbounded
+recursion.
 
 #### Scenario: The same DTO is serialized twice
 - **WHEN** code, contract version and values are identical
@@ -25,6 +36,10 @@ process history to 50, and each safe error message or hint to 1 KiB.
 - **WHEN** a payload exceeds any byte, depth, string, collection or history bound
 - **THEN** decoding fails with a bounded structural error and no partial object is returned
 
+#### Scenario: Input expands or aliases during parsing
+- **WHEN** raw input is 65,537 bytes, repeats an object key, contains an invalid surrogate or exceeds the aggregate node/member budget while each local container is valid
+- **THEN** decoding fails deterministically before DTO construction or fingerprint calculation
+
 ### Requirement: Source, editable and wheel installations SHALL expose compatible packages
 
 Implementation SHALL prove an additive package-discovery configuration that
@@ -34,13 +49,21 @@ imports. The proof SHALL cover source tree, editable install and a clean wheel
 installation. A root shim, symlink or test/notebook `sys.path` mutation SHALL
 NOT be used.
 
+The proof SHALL build one wheel, inspect that artifact's members and install
+the same artifact into an isolated temporary environment with dependency
+installation disabled and network access denied. The clean-wheel interpreter
+SHALL run outside the repository cwd. Source/editable checks SHALL reuse the
+locked development environment and SHALL NOT reinstall the full dependency
+graph per mode. This additive proof SHALL NOT move legacy packages or replace
+the later canonical package-layout child.
+
 #### Scenario: Dual-root packaging cannot be proven
 - **WHEN** the current build backend cannot produce both installed packages without broader migration or import ambiguity
 - **THEN** this child stops before contract implementation and promotes the package-transition ADR rather than shipping source-only imports
 
 #### Scenario: A wheel is installed in a clean environment
 - **WHEN** the built wheel is installed without the repository working directory on `sys.path`
-- **THEN** both legacy `trade_py` compatibility imports and new `trade` contract imports succeed while the console entry remains unchanged
+- **THEN** `--no-deps` offline installation succeeds, wheel members include both intended package roots, legacy `trade_py` compatibility imports and new `trade` contract imports succeed, and the console entry remains unchanged
 
 ### Requirement: Legacy mappings SHALL be explicit, one-way and conservative
 
@@ -52,6 +75,21 @@ be pure and SHALL NOT call repository mutation APIs or SQL mutation
 primitives, access `db._conn`, call providers, move pointers, signal processes
 or repair state.
 
+Mappers SHALL be split by legacy owner (`bus_contracts`,
+`job_run_contracts`, `observatory_contracts`, `runtime_contracts`). No
+`public_contracts` aggregate facade, package-level mapper re-export or
+cross-owner mapper import SHALL be introduced.
+
+The reviewed outcome matrix SHALL be exhaustive. EventBus `accepted`,
+`saturated`, `shutting_down` and `submission_failed` all retain the durable
+legacy event identity while describing handler-admission facts; none proves
+handler/process completion. Web command `saturated` and pre-persistence
+`stopping` have no operation receipt; `persistence_failed` has no durable
+operation ID; post-persistence `stopping` and `spawn_failed` may carry a legacy
+`run_id` but require separately observed job-row evidence for a target terminal
+state. Outcome spelling, process exit, PID or exception text alone SHALL NOT
+prove cancellation or completion.
+
 #### Scenario: A legacy value is lossy
 - **WHEN** a legacy event, artifact, error or status contains fields that are unsafe or have no target semantics
 - **THEN** the mapper records the loss, excludes those fields and never broadens authority or certainty
@@ -59,6 +97,14 @@ or repair state.
 #### Scenario: A target package is imported
 - **WHEN** tests import all public target modules in a clean interpreter
 - **THEN** no legacy implementation, Web, database, provider, pandas or native module is imported as a side effect
+
+#### Scenario: A compatibility package is imported
+- **WHEN** an owner mapper or its package is imported
+- **THEN** only that owner mapper's reviewed target dependencies are visible and no aggregate mapper facade is exported
+
+#### Scenario: The Web runner stops at different admission stages
+- **WHEN** two `stopping` results differ because one has no `run_id` and one has a durably created `run_id`
+- **THEN** the mapper produces no receipt for the first and requires separately observed durable state for the second rather than treating both as cancelled
 
 ### Requirement: Current mutation and status surfaces SHALL retain snapshots until owning migration
 
@@ -97,6 +143,10 @@ exception text.
 - **WHEN** an existing exception says shutdown is incomplete but exposes no structured residual counts
 - **THEN** the mapper emits a safe incomplete/unknown receipt or error and does not parse text into fabricated ownership evidence
 
+#### Scenario: A legacy artifact has a path and digest
+- **WHEN** Observatory supplies a relative path-bearing artifact, including traversal/absolute paths or a one-byte digest mismatch fixture
+- **THEN** mapping yields only a closed `LegacyArtifactObservation` resolution/verification state and never existence, authorization, publication, quality, PIT or formal-reference proof
+
 ### Requirement: Public wait and control compatibility SHALL expose finite observation
 
 New SDK and future Interface consumers SHALL observe operations through finite
@@ -112,3 +162,18 @@ interface child migrates them. They SHALL NOT become defaults for new APIs.
 #### Scenario: A non-returning worker exceeds observation deadline
 - **WHEN** a worker or review task does not produce a newer state before the caller deadline
 - **THEN** the caller receives not-observed/unavailable state and retains a correlation/operation/process link; the worker does not retain the caller indefinitely
+
+### Requirement: Runtime contract adoption SHALL be separately hardened
+
+This child SHALL NOT reroute EventBus, Web resources, RuntimeCommandRunner,
+FastAPI lifespan, CLI or HTTP behavior through the new shutdown/control
+contracts. Adoption SHALL require the independently reviewed
+`runtime-owner-shutdown-and-recovery-hardening-v1` child. That child SHALL
+preserve current CLI output/exit and HTTP payload/status snapshots while proving
+bounded terminal-persistence retry, monotonic observation, concurrent stop,
+startup cleanup, executor tail, owner-generation takeover and real Uvicorn
+signal-to-process-tree reap.
+
+#### Scenario: Contract DTOs exist before runtime hardening
+- **WHEN** this child has shipped but the named runtime hardening child has not passed its gates
+- **THEN** current runtime code remains on its compatibility path and architecture guards reject premature adoption
