@@ -438,7 +438,10 @@ The key set contains exactly one active write version, at most three retained
 read-only versions and a monotonically increasing `key_set_generation` in the
 range 1-9,223,372,036,854,775,807. Rotation and admission use the same
 owner-local CAS/lock. Rotation atomically advances generation with the key-set
-change.
+change. One command admission performs at most three total attempts, including
+the initial attempt. Generation read, at most four HMAC derivations, candidate
+query, transaction/CAS acquisition and any contention backoff consume the same
+`CommandEnvelope` monotonic remaining deadline; no sub-step restarts it.
 
 On every admission, one owner-local transaction reads the generation, derives
 candidate idempotency fingerprints for the active and all retained versions and
@@ -449,7 +452,7 @@ result product is exact:
 |---:|---|
 | `0` | revalidate unchanged generation, then create one claim with the active version |
 | `1` | validate the current command against the claim, then return its original operation and receipt |
-| `>1` | report corruption/unavailable and create nothing, even if all rows point to one operation |
+| `>1` | return `IDEMPOTENCY_CLAIM_CORRUPT` and create nothing, even if all rows point to one operation |
 
 A one-match claim binds `command_name`, `operation_kind` and the original
 canonical command fingerprint. Ingress recomputes the current command
@@ -458,7 +461,10 @@ stable `IDEMPOTENCY_COMMAND_CONFLICT`; it neither returns the old receipt nor
 creates a new operation. If generation changes before the zero-match insert,
 the transaction rolls back and re-derives all candidates from the new key set.
 A paused old-generation admission can therefore never insert after a newer
-rotation/admission has won.
+rotation/admission has won. If the third total attempt or shared deadline is
+exhausted before a stable result, admission returns
+`IDEMPOTENCY_KEYSET_CONTENTION`; it creates no claim, operation or receipt and
+does not continue in a background task.
 
 Receipts retain the version used at original admission. Rotation keeps versions
 for at least the owning operation retention horizon, never rewrites receipts,
@@ -567,6 +573,35 @@ HTTP status and CLI exit code are compatibility-adapter decisions, not fields
 owned by the error. This allows current `/api/run` 503 and current CLI exit
 behavior to remain unchanged while SDK and future interfaces share reason
 semantics.
+
+In addition to required `schema_name`, `schema_version`, `reason_code`,
+`occurred_at`, `safe_message` and the safe `recovery_hint` shown below,
+idempotency admission uses this exact variable-field product. Every optional
+link or retry field not shown as present is absent:
+
+| Reason | Category / observation | Retry | Public links | Recovery |
+|---|---|---|---|---|
+| `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | correlation only; no operation/process ID | submit the original command or use a new idempotency identity |
+| `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | correlation only; no operation/process ID | audited operator inspection |
+| `IDEMPOTENCY_KEYSET_CONTENTION` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | correlation only; no operation/process ID | retry the same command and identity with a fresh finite deadline |
+| `IDEMPOTENCY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | correlation only; no operation/process ID | inspect Platform persistence and retry after recovery |
+
+These products forbid an old receipt, a fabricated operation ID, a raw key,
+the command payload and claim internals. The Platform persistence owner records
+one immutable admission-audit fact for each terminal conflict, corruption or
+contention outcome before returning that exact outcome. If the audit fact
+cannot commit, admission returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and
+still creates no claim, operation or receipt. The owner also emits
+`platform_idempotency_admission_outcomes_total` with only
+`owner_namespace` and the closed outcome
+`created|replayed|command_conflict|claim_corrupt|keyset_retry|keyset_contention|audit_unavailable`
+as labels. A bounded structured event carries reason, correlation, owner,
+sorted matched key versions (at most four), key-set generation and attempt
+count but no raw key, command, actor identifier, payload or fingerprint. Claim
+corruption additionally raises an integrity alert. Telemetry emission failure
+is surfaced to the owner health/audit channel and never converts refusal into
+success or permits claim creation; the owning Platform child must define its
+bounded failure path before adoption.
 
 ### 8. Canonical serialization is exact, deterministic and bounded
 
@@ -950,9 +985,10 @@ and aware while local elapsed deadlines use monotonic time. Owner reference
 contracts include owner/kind/object/version/digest and no location. Contract
 states use exact closed transition relations. Query observation and condition
 form a closed tagged union. Terminal timestamps exist only for terminal states.
-Duplicate command identity returns the same operation. Cancellation acceptance
-is not cancellation completion. A completed shutdown has no residual owned work
-and releases only its own fence generation.
+Only command-equivalent duplicate identity returns the same operation; reuse
+for another command fails with no old receipt. Cancellation acceptance is not
+cancellation completion. A completed shutdown has no residual owned work and
+releases only its own fence generation.
 
 ### Contracts and compatibility
 
@@ -983,6 +1019,9 @@ parse and during an iterative traversal. Wire bytes, nesting, strings,
 per-container items, aggregate members, nodes, scopes, delegation, recovery
 descriptors and process history have fixed limits. No queue, worker, polling
 loop, database call, network call or artifact read exists in this child.
+Admission test doubles perform at most three attempts, twelve HMAC derivations,
+three candidate queries and three transaction/CAS acquisitions for one command;
+deadline exhaustion can reduce these counts but never increase them.
 Ordinary control tests use a fake monotonic clock and no real sleeps at exactly
 1 and 10 owners in each closed residual category. One minimal real subprocess
 fixture uses one child, one shared 2-second deadline, at most 250 ms elapsed
@@ -1016,6 +1055,10 @@ reason codes. Process views expose deadline, step, retry, compensation,
 dead-letter, observation, exact history-window metadata and owner-scoped
 recovery descriptors. Shutdown receipts expose owner instance/generation,
 current stage, reason, closed residual categories and safe recovery selectors.
+Idempotency admission exposes the closed low-cardinality outcome counter,
+bounded structured events and immutable terminal-refusal audit described
+above; claim corruption raises an integrity alert, while contention reports
+attempt count and generation without exposing raw identity or command data.
 Operators can distinguish empty, partial, stale, quarantined, blocked, unknown,
 not observed, unavailable and failed. Credentials, raw payloads, paths, SQL,
 exception text and tracebacks are not public telemetry.
@@ -1031,10 +1074,14 @@ and shutdown-incomplete mapping. Concurrency fixtures cover observation
 deadline, cancellation acceptance versus terminalization, process-tree control,
 all residual categories, stale-writer rejection, crash takeover, concurrent
 callers and an executor whose final join would block. Fake-clock tests own most
-combinations; the minimal real subprocess fixture proves process-tree reap
-under a fixed wall-clock ceiling. Packaging tests cover source, editable and
-one offline/no-deps clean-wheel environment. Existing focused tests run
-unchanged.
+combinations. A rotation-storm fixture proves success within one to three
+attempts, deterministic termination at attempt/deadline exhaustion, the
+12-HMAC/3-query/3-transaction maxima, exact four-error products, forbidden
+field combinations, closed metric labels, redacted structured events, one
+terminal audit and the corruption integrity alert. The minimal real subprocess
+fixture proves process-tree reap under a fixed wall-clock ceiling. Packaging
+tests cover source, editable and one offline/no-deps clean-wheel environment.
+Existing focused tests run unchanged.
 
 ### Alternatives and trade-offs
 
