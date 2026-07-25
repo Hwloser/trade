@@ -2,8 +2,8 @@ schema_version = 1
 policy_version = "v1"
 policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d00abe1b2a"
 artifact_digest_algorithm = "sha256-path-content-v1"
-artifact_digest = "sha256:7f8c7869768599f81fa8b671eba7aa59f161c281e2db16cd8d333f417bd936eb"
-reviewed_commit = "cce39ad4bbc4a82ad5456c303b53b9844fbf6c08"
+artifact_digest = "sha256:8f5fbe95a900952d3591b2e19df10e55b799ae85d72c03ab55e5e671dc411c45"
+reviewed_commit = "1cf56779d349a2df230c6a59bb31cc2b2d99a9bb"
 reviewed_at = "2026-07-25"
 status = "approved"
 bootstrap = false
@@ -12,25 +12,25 @@ bootstrap = false
 role = "reliability"
 status = "approved"
 score_before = 9
-score_after = 10
+score_after = 9.8
 
 [[judges]]
 role = "performance"
 status = "approved"
 score_before = 8
-score_after = 9.5
+score_after = 9.8
 
 [[judges]]
 role = "architecture"
 status = "approved"
 score_before = 9.2
-score_after = 9.7
+score_after = 9.8
 
 [[judges]]
 role = "data_quality"
 status = "approved"
 score_before = 9.1
-score_after = 9.6
+score_after = 9.8
 
 [[judges]]
 role = "observability"
@@ -63,7 +63,7 @@ priority = "P0"
 severity = "HIGH"
 consensus_count = 3
 status = "resolved"
-resolution = "V2 activation is blocked on a separately governed runtime child that proves one 12-second monotonic shutdown budget, supervisor-owned terminal receipts, exit 124 at forced deadline, process-tree reaping, and signal-to-reap within 15 seconds."
+resolution = "V2 activation is blocked on the separately governed runtime-owner-shutdown-and-recovery-hardening-v1 child. It covers EventBus terminal persistence, concurrent Web stop, startup cleanup, command-executor tail, FastAPI serving/lifespan and owned process trees, and must prove one 12-second monotonic shutdown budget, supervisor-owned terminal receipts, exit 124 at forced deadline, process-tree reaping, and signal-to-reap within 15 seconds."
 evidence = [
   "design.md:Failure and recovery",
   "specs/btc-workspace-bff-contract/spec.md:Serving process misses the shutdown deadline",
