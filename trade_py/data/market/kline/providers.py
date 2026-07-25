@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import socket
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
@@ -18,6 +20,22 @@ _COLUMN_ORDER = [
     "symbol", "date", "open", "high", "low", "close",
     "volume", "amount", "turnover_rate", "prev_close", "vwap",
 ]
+
+
+@contextmanager
+def _socket_timeout(seconds: float):
+    """Force a socket-level read timeout around akshare calls.
+
+    akshare's stock_zh_a_daily / stock_zh_a_hist expose no timeout; a stalled
+    connection would otherwise hang the whole sync forever. A dead read now
+    raises (caught by @retry → next provider) instead of blocking.
+    """
+    prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(prev)
 
 
 def _infer_suffix(code: str) -> str:
@@ -167,13 +185,14 @@ class AkshareKlineProvider:
     @staticmethod
     @retry(delays=_RETRY_DELAYS_SEC, on=(Exception,))
     def _fetch_raw(ak, code: str, start_ymd: str, end_ymd: str, adjust: str):
-        return ak.stock_zh_a_hist(
-            symbol=code,
-            period="daily",
-            start_date=start_ymd,
-            end_date=end_ymd,
-            adjust=adjust if adjust != "none" else "",
-        )
+        with _socket_timeout(30):
+            return ak.stock_zh_a_hist(
+                symbol=code,
+                period="daily",
+                start_date=start_ymd,
+                end_date=end_ymd,
+                adjust=adjust if adjust != "none" else "",
+            )
 
     def fetch(self, symbol: str, start: str, end: str, adjust: str = "hfq") -> pd.DataFrame:
         import akshare as ak
@@ -204,12 +223,13 @@ class SinaKlineProvider:
     @staticmethod
     @retry(delays=_RETRY_DELAYS_SEC, on=(Exception,))
     def _fetch_raw(ak, sina_code: str, start_ymd: str, end_ymd: str, adjust: str):
-        return ak.stock_zh_a_daily(
-            symbol=sina_code,
-            start_date=start_ymd,
-            end_date=end_ymd,
-            adjust=adjust if adjust != "none" else "",
-        )
+        with _socket_timeout(30):
+            return ak.stock_zh_a_daily(
+                symbol=sina_code,
+                start_date=start_ymd,
+                end_date=end_ymd,
+                adjust=adjust if adjust != "none" else "",
+            )
 
     def fetch(self, symbol: str, start: str, end: str, adjust: str = "hfq") -> pd.DataFrame:
         import akshare as ak
