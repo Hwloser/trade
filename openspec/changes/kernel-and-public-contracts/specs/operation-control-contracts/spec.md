@@ -75,9 +75,12 @@ without returning the old receipt or creating a new operation.
 If generation changes before zero-match insertion, admission SHALL roll back and
 end the current attempt. A later attempt MAY re-derive every candidate from the
 new key set within the same deadline. If the third claim attempt or shared
-deadline is exhausted before a stable result, admission SHALL return
-`IDEMPOTENCY_KEYSET_CONTENTION`, create no claim, operation or receipt, and
-start no background continuation. Existing
+deadline is exhausted before a stable result, admission SHALL form a
+provisional `IDEMPOTENCY_KEYSET_CONTENTION` refusal, create no claim, operation
+or receipt, and start no background continuation. It SHALL return that reason
+only after its refusal audit commits within the remaining shared deadline. If
+no time remains to start/commit that audit, or the audit transaction fails,
+admission SHALL return `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead. Existing
 receipts SHALL retain their original version and SHALL NOT be rewritten during
 rotation. Each key SHALL be retained for at least the owner operation-retention
 horizon; retirement SHALL fail if safe retention cannot fit the four-version
@@ -106,9 +109,13 @@ idempotency keys or commands.
 - **THEN** the paused admission fails generation revalidation, rolls back and re-derives candidates so exactly one durable claim exists
 
 #### Scenario: Rotation contention exhausts admission
-- **WHEN** key-set generation changes through the third admission attempt or the shared command deadline expires first
+- **WHEN** key-set generation changes through the third admission attempt and the contention refusal audit commits within the remaining shared deadline
 - **THEN** ingress returns `IDEMPOTENCY_KEYSET_CONTENTION` without a claim, operation, receipt or background continuation
 - **AND THEN** one admission has performed no more than twelve HMAC derivations, three candidate queries, three claim transaction/CAS acquisitions and one refusal-audit transaction
+
+#### Scenario: Deadline expires before contention audit
+- **WHEN** claim contention leaves no remaining time to start and commit its refusal audit
+- **THEN** ingress returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` without starting another transaction or reporting contention as durably recorded
 
 #### Scenario: A framework object enters a command
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object
@@ -291,9 +298,12 @@ body, artifact bytes, actor identifier, credential, path or fingerprint. It
 SHALL be visible only through an authorized Platform operator audit query and
 SHALL NOT enter an `ErrorEnvelope`, HTTP/SDK response or cross-Context
 projection. The audit transaction SHALL NOT create or reopen a claim,
-operation, receipt or dispatch. If the audit fact cannot commit, admission SHALL return
+operation, receipt or dispatch. If the audit fact cannot start or commit within
+the remaining deadline, admission SHALL return
 `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and SHALL still create no claim,
-operation or receipt. One admission SHALL therefore start at most three claim
+operation or receipt. The provisional conflict, corruption or contention reason
+SHALL NOT be returned as durably recorded in that case. One admission SHALL
+therefore start at most three claim
 transactions plus one refusal-audit transaction. The owner SHALL expose only the
 low-cardinality counter `platform_idempotency_admission_outcomes_total` with
 `owner_namespace` and the closed outcome
@@ -327,6 +337,10 @@ these bounds before adoption.
 #### Scenario: Terminal refusal audit cannot commit
 - **WHEN** the owner cannot durably record the conflict, corruption or contention refusal before the shared deadline
 - **THEN** admission returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` with no claim, operation or receipt and surfaces the audit failure without reporting the underlying refusal as durably recorded
+
+#### Scenario: Refusal audit outcome priority is deterministic
+- **WHEN** three contention attempts finish and audit either commits, has no remaining start budget, or fails within its remaining budget
+- **THEN** golden fixtures return respectively `IDEMPOTENCY_KEYSET_CONTENTION`, `IDEMPOTENCY_AUDIT_UNAVAILABLE`, and `IDEMPOTENCY_AUDIT_UNAVAILABLE`
 
 ### Requirement: Cancellation SHALL distinguish request acceptance from terminal cancellation
 

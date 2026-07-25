@@ -468,9 +468,12 @@ the transaction rolls back and the current attempt ends. A later attempt may
 re-derive all candidates from the new key set under the same deadline. A paused
 old-generation admission can therefore never insert after a newer rotation/
 admission has won. If the third claim attempt or shared deadline is exhausted
-before a stable result, admission returns
-`IDEMPOTENCY_KEYSET_CONTENTION`; it creates no claim, operation or receipt and
-does not continue in a background task.
+before a stable result, admission forms a provisional
+`IDEMPOTENCY_KEYSET_CONTENTION` refusal; it creates no claim, operation or
+receipt and does not continue in a background task. It returns that reason only
+after the refusal audit commits within the remaining shared deadline. If no
+time remains to start/commit that audit, or the audit transaction fails,
+admission returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead.
 
 Receipts retain the version used at original admission. Rotation keeps versions
 for at least the owning operation retention horizon, never rewrites receipts,
@@ -605,8 +608,10 @@ identifier, credential, path or fingerprint. It is visible only through an
 authorized Platform operator audit query and never enters an ErrorEnvelope,
 HTTP/SDK response or cross-Context projection. The audit transaction cannot
 create or reopen a claim, operation, receipt or dispatch. If the audit fact
-cannot commit, admission returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and
-still creates no claim, operation or receipt. One admission therefore starts at
+cannot start or commit within the remaining deadline, admission returns
+`IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and still creates no claim, operation
+or receipt. The provisional conflict, corruption or contention reason is never
+returned as durably recorded in that case. One admission therefore starts at
 most three claim transactions plus one refusal-audit transaction. The owner also
 emits
 `platform_idempotency_admission_outcomes_total` with only
@@ -1095,7 +1100,8 @@ deadline, cancellation acceptance versus terminalization, process-tree control,
 all residual categories, stale-writer rejection, crash takeover, concurrent
 callers and an executor whose final join would block. Fake-clock tests own most
 combinations. A rotation-storm fixture proves success within one to three
-attempts, deterministic termination at attempt/deadline exhaustion, the
+attempts, deterministic termination at attempt/deadline exhaustion, the exact
+priority between provisional refusal and audit-unavailable, the
 12-HMAC/3-query/3-claim-transaction/1-audit-transaction maxima, exact four-error
 products, forbidden field combinations, the 2,048-byte audit allowlist, closed
 metric labels, one-shot redacted event/counter/alert behavior and no background
