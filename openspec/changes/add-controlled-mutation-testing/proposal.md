@@ -48,17 +48,22 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     the non-spawning controller uses a per-run-capability-authenticated, numerically
     bounded single-session protocol with opaque worker handles; the shared channel MAC
     protects peer/replay integrity but is not treated as source attestation. The
-    supervisor alone owns the writable descriptor for a bounded hash-chained
-    attestation journal, while controller Landlock policy denies writes to receipt,
-    attestation, and fallback roots. It records a child immediately after OS creation,
-    before registration, and contains and observes cleanup even when registration or
-    the controller fails;
+    supervisor alone owns the writable descriptor for a numerically bounded,
+    hash-chained and terminally sealed attestation journal. Controller isolation is
+    not filesystem-only: supervisor dumpability, private PID/procfs visibility,
+    capabilities, seccomp process-control denials, descriptor ownership, signals and
+    Landlock are all read-back verified before the shared channel key is delivered.
+    The receipt/fallback anchors final journal head/count/sequence/size; valid-prefix
+    truncation is invalid. It records a child immediately after OS creation, before
+    registration, and contains and observes cleanup even when registration or the
+    controller fails;
   - denies network, process launch, and real-data paths with Linux Landlock/seccomp
     containment, transfers a seccomp listener over `SCM_RIGHTS`, brokers allowed
     opens with `openat2` plus descriptor injection, and requires independent
     controller-owned syscall audit and supervisor-owned child guard verification,
-    including an explicit listener-drain ownership handoff and tightly constrained
-    forced-close attestation after timeout/cancellation, before a mutant can be
+    including an explicit listener ownership handoff and supervisor-owned
+    freeze/drain/terminate/final-drain forced-close attestation after timeout/
+    cancellation, before a mutant can be
     killed, survived, or truthfully timed out;
   - distinguishes killed, survived, timeout, line no-coverage,
     baseline-unavailable, cancellation, invalid, and infrastructure-error outcomes;
@@ -66,8 +71,10 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     unconfirmed cleanup is an orthogonal status that replaces any provisional
     killed/survived result with a phase-appropriate infrastructure terminal. Reports
     preserve factual numerator/denominator, but an integrity, cleanup, degraded-run,
-    invalid-report, or zero-denominator condition makes the displayed score null and
-    prohibits cache, trend, or baseline use;
+    invalid-report, mixed/partial terminal, or zero-denominator condition makes the
+    displayed score null and prohibits cache, trend, aggregate, or baseline use.
+    Exact equivalent exceptions remain selected visible records instead of being
+    filtered from candidate algebra;
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
     generation with closed status/count algebra, a manifest hash anchored by the
     invocation receipt/current pointer, and an independent typed fallback if
@@ -84,9 +91,10 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     dry-run-first, approval-bound route.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry. Add finite reviewed
-  controller/baseline memory bootstrap caps, one immutable trend genesis marker per
-  configuration epoch, and an identity- and freshness-bound capacity qualification
-  contract for scheduled modes.
+  controller/baseline memory bootstrap caps, one durable create-only Git-ref
+  consumption receipt for each reviewed trend genesis marker, and an identity- and
+  freshness-bound CPU-and-concurrent-memory capacity qualification contract for
+  scheduled modes.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
   tests using temporary repositories and synthetic source.
 - Add optional locked mutation dependencies without changing the existing pytest
@@ -104,8 +112,9 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     validator fails on missing, malformed, unsafe, or receipt-unbound bundles;
   - scheduled modes require a reviewed, unexpired capacity qualification and carry
     trend history through validated immutable rolling aggregate artifacts rather than
-    treating result cache as evidence. Only one reviewed unused genesis marker may
-    establish the first no-predecessor checkpoint for an epoch;
+    treating result cache as evidence. Only one reviewed genesis marker plus its
+    durable compare-and-set consumption ref may establish the first no-predecessor
+    checkpoint for an epoch; artifact expiry can never make genesis reusable;
   - every execution route uses a reviewed disposable `trade-mutation-v1` runner with
     writable delegated cgroup v2, finite memory, Landlock and seccomp notification;
     GitHub repository owner `huanwei1208` is accountable for a prerequisite runner-
@@ -119,6 +128,12 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     decision table and nullable controller exit produce the trusted summary. Whole
     workflow cancellation before that job starts remains an explicitly best-effort
     observability boundary.
+  - one closed manual dispatch grammar distinguishes `core`, `full`, and `reconcile`;
+    reconcile binds exact source run/attempt, artifact name, digest, epoch, dry-run,
+    protected-environment approval, revalidation, and a strictly newer publication
+    tuple. Changed and ordinary manual execution perform no remote carrier listing or
+    restore. Scheduled upload inventory is namespace-aware and skips publication when
+    pagination cannot prove the 14/90 carrier quotas.
 - Add `docs/mutation-testing.md` covering operation, interpretation, exceptions,
   budgets, troubleshooting, and anti-gaming rules.
 
