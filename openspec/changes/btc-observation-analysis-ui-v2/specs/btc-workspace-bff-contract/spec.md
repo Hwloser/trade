@@ -146,7 +146,7 @@ and receipts; neither identifier SHALL enter business or cache identity.
 - **AND THEN** an absent, interrupted, or incomplete in-process receipt is never reported as completed
 
 #### Scenario: Runtime hardening prerequisite is absent
-- **WHEN** `web-runtime-shutdown-hardening-v1` lacks current strict approval, implementation evidence, or real Uvicorn subprocess proof
+- **WHEN** `runtime-owner-shutdown-and-recovery-hardening-v1` lacks current strict approval, implementation evidence, or real Uvicorn subprocess proof
 - **THEN** the V2 workspace routes and page remain unregistered or disabled
 - **AND THEN** the legacy Observatory remains the selected surface
 - **AND THEN** a browser AbortController or idle-only shutdown probe is not accepted as substitute evidence

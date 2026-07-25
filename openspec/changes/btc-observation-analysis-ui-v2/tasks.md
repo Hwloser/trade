@@ -137,11 +137,13 @@ child changes after this design receives strict approval and user confirmation.
   named child owns every inferential field in Studies.
 ## 4. Runtime, BFF, and SDK boundary preparation
 
-- [ ] 4.1 Create `web-runtime-shutdown-hardening-v1` as an independent governed [validates:btc-ui.bff-boundary] [validation:test]
+- [ ] 4.1 Create `runtime-owner-shutdown-and-recovery-hardening-v1` as an independent governed [validates:btc-ui.bff-boundary] [validation:test]
   prerequisite child before V2 route activation. Objective: close the audited
-  shutdown hang paths and make owner cancellation/admission truthful. Inputs:
-  current runtime resources/commands/app/web CLI, public operation-control
-  contracts, and real Uvicorn probes. Outputs: child proposal/design/spec/tasks
+  shutdown hang paths across EventBus terminal persistence, current runtime
+  resources/commands/app/web CLI, FastAPI serving process and owned child
+  process trees, and make owner cancellation/admission truthful. Inputs: these
+  audited owners, public operation-control contracts, and real Uvicorn probes.
+  Outputs: child proposal/design/spec/tasks
   for one 12-second monotonic shutdown deadline, bounded concurrent stop and
   startup cleanup, executor-tail behavior, QueryExecutionContext,
   32-active/32-queued process admission, process-group reap, in-process stage

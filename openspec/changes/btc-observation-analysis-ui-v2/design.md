@@ -974,7 +974,8 @@ unbounded executor wait, and executor tail cleanup can join after the shutdown
 deadline. Uvicorn also replaces the CLI SIGINT handler while lifespan shutdown
 runs, so the current in-process watchdog cannot guarantee termination of a
 stuck lifespan. This design consumes the public shutdown contract but does not
-implement those corrections. `web-runtime-shutdown-hardening-v1` must be
+implement those corrections.
+`runtime-owner-shutdown-and-recovery-hardening-v1` must be
 strictly approved, implemented and verified by a real Uvicorn subprocess test
 before any V2 route or page can be activated.
 
@@ -1284,8 +1285,9 @@ selection/projection.
 - **Existing design approvals are currently stale by repository date/commit
   policy.** Mitigation: every prerequisite is revalidated and re-reviewed at
   implementation time; no historical green report authorizes code.
-- **Current Web shutdown may hang despite browser cancellation.** Mitigation:
-  activation depends on `web-runtime-shutdown-hardening-v1`, one process-level
+- **Current runtime shutdown may hang despite browser cancellation.** Mitigation:
+  activation depends on `runtime-owner-shutdown-and-recovery-hardening-v1`, one
+  process-level
   deadline, residual-owner receipts, and real Uvicorn subprocess proofs; V2
   remains dark if that child is absent or regresses.
 - **Python threads cannot be force-killed safely.** Mitigation: potentially
@@ -1364,7 +1366,7 @@ Actual implementation is split after this design is strictly approved:
 
 ```mermaid
 flowchart TD
-    R[web-runtime-shutdown-hardening-v1]
+    R[runtime-owner-shutdown-and-recovery-hardening-v1]
     D[btc-descriptive-analysis-product-v1]
     S[btc-study-workspace-query-contract-v1]
     Q[btc-workspace-query-contracts-v1]
@@ -1383,9 +1385,11 @@ flowchart TD
     C -. explicit later scope .-> X
 ```
 
-1. `web-runtime-shutdown-hardening-v1`
-   - owner: Platform execution/events plus current Web runtime adapter;
-   - closes concurrent-stop, startup cleanup and executor-tail unbounded waits;
+1. `runtime-owner-shutdown-and-recovery-hardening-v1`
+   - owner: Platform execution/events plus current EventBus, Web resource,
+     command executor, FastAPI serving-process and owned child-process adapters;
+   - closes terminal-persistence retry, concurrent-stop, startup cleanup,
+     executor-tail and lifespan unbounded waits;
      introduces process-level admission, QueryExecutionContext propagation,
      one 12-second total shutdown budget, supervisor-terminal ShutdownReceipt
      and real Uvicorn process tests;
