@@ -23,17 +23,20 @@ scope explicitly.
 
 ### Requirement: BFF composes owner query contracts without owning business facts
 
-The BFF SHALL call context-owned read/query contracts and map their DTOs into
-versioned workspace payloads. It MAY perform authorization, bounded parallel
+The transport-neutral BTC workspace query application SHALL call context-owned
+read/query contracts and return framework-free workspace DTOs. HTTP V2, HTTP
+compatibility, and SDK adapters SHALL depend on that application as peers;
+React SHALL call the HTTP adapter at runtime and SHALL NOT be a Python import
+dependency. The HTTP BFF MAY perform authorization, bounded parallel
 composition, identity verification, response shaping, cache metadata, and
-status/error mapping. It SHALL NOT query owner tables directly, read parquet or
-artifact paths, call providers, calculate analysis metrics, repair data, build
-or publish Datasets, execute Studies, move lifecycle pointers, or write business
-state.
+status/error mapping. Neither application nor adapters SHALL query owner tables
+directly, read parquet or artifact paths, call providers, calculate analysis
+metrics, repair data, build or publish Datasets, execute Studies, move lifecycle
+pointers, or write business state.
 
 #### Scenario: Analyze slice is composed
 - **WHEN** the client requests Analyze for a confirmed context
-- **THEN** the BFF resolves the compatible AnalysisSnapshotRef through Datasets query contracts
+- **THEN** the application resolves the compatible analysis DatasetSnapshotRef and non-authoritative AnalysisSnapshotDescriptor through Datasets query contracts
 - **AND THEN** it verifies immutable-reference and lineage relationships before returning metrics and series descriptors
 - **AND THEN** no metric is derived from the Observe OHLCV response inside the BFF
 
@@ -92,11 +95,26 @@ requests SHALL be allowed only for the same semantic identity.
 ### Requirement: Failure and freshness states are structured
 
 Workspace payloads and errors SHALL distinguish transport failure, capability
-denial, context unavailable, product unavailable, partial product, stale product,
-identity mismatch, PIT not proven, quality blocked, query-budget exceeded, and
-unsupported selector. Every error SHALL use the versioned ErrorEnvelope or its
-legacy-compatible mapping with safe message, stable code, retryability,
-correlation id, and bounded evidence references.
+denial, successful empty result, context unavailable, product unavailable,
+partial product, stale product, identity mismatch, PIT not proven, quality
+blocked, query-budget exceeded, and unsupported selector. Every error SHALL use
+the versioned ErrorEnvelope or its legacy-compatible mapping with safe message,
+stable code, category, HTTP status, retryability, bounded Retry-After where
+applicable, server request id, correlation id, and bounded evidence references.
+
+The baseline mapping SHALL be: invalid selector/version `400`; authorization or
+capability denial `403`; unknown explicit evidence identity `404`; context,
+reference, PIT, quality, or lifecycle conflict `409`; response-byte overflow
+`413`; process admission saturation `429` with bounded Retry-After; owner
+deadline `504`; and unavailable technical dependency `503`. A successful empty
+query SHALL return `200` with `condition=empty`. The query-contract child SHALL
+freeze every code and legacy exception in the route compatibility matrix.
+
+The server SHALL create a unique request id for each attempt. It MAY accept an
+authenticated correlation id only under a bounded allowlisted syntax and SHALL
+otherwise replace it with an opaque server value. Request and correlation ids
+SHALL propagate through response header/body, owner QueryExecutionContext, logs,
+and receipts; neither identifier SHALL enter business or cache identity.
 
 #### Scenario: Analysis product has not been built
 - **WHEN** the active market snapshot has no compatible analysis product
@@ -106,7 +124,7 @@ correlation id, and bounded evidence references.
 
 #### Scenario: One owner query times out
 - **WHEN** one requested slice exceeds its bounded deadline
-- **THEN** that slice returns a timeout ErrorEnvelope and releases its resources
+- **THEN** that slice returns a timeout ErrorEnvelope and retains its capacity permit until owned work actually exits
 - **AND THEN** already confirmed independent slices keep their own identities and states
 - **AND THEN** the server does not continue an unbounded background query solely for the disconnected client
 
@@ -114,18 +132,57 @@ correlation id, and bounded evidence references.
 - **WHEN** the serving process receives shutdown while workspace queries or owned child processes are active
 - **THEN** admission closes before cancellation propagates to every owned query and child process group
 - **AND THEN** shutdown waits only through a finite documented grace period before escalating owned child process groups from graceful termination to forced termination
-- **AND THEN** every owned process is reaped, late results are discarded, and a bounded diagnostic identifies any owner that missed the deadline
+- **AND THEN** every owned process is reaped, while a Python thread that cannot be terminated is reported as residual rather than falsely reported reaped
+- **AND THEN** late results are discarded and a bounded ShutdownReceipt identifies stage, deadline, graceful/forced counts, residual owner/category, and last safe error
 - **AND THEN** shutdown does not wait for or signal unrelated processes, shared external services, or another runtime owner's resources
+
+#### Scenario: Runtime hardening prerequisite is absent
+- **WHEN** `web-runtime-shutdown-hardening-v1` lacks current strict approval, implementation evidence, or real Uvicorn subprocess proof
+- **THEN** the V2 workspace routes and page remain unregistered or disabled
+- **AND THEN** the legacy Observatory remains the selected surface
+- **AND THEN** a browser AbortController or idle-only shutdown probe is not accepted as substitute evidence
+
+### Requirement: Owner queries consume one bounded execution context
+
+Every workspace owner query SHALL accept a transport-neutral
+`QueryExecutionContext` containing monotonic deadline, cancellation token,
+request id, correlation id, semantic request identity, owner identity, and
+bounded child budget. Browser abort or HTTP disconnect alone SHALL NOT be
+treated as proof that owner work stopped. Cooperative adapters SHALL check
+cancellation between scan/page/map steps and apply native I/O timeouts.
+Potentially permanent or non-cooperative reads SHALL execute in an owned,
+bounded, terminable process or SHALL remain unavailable.
+
+When a slice calls multiple owners, it SHALL use one structured-concurrency
+scope. Deadline, disconnect, or a failure that prevents a valid partial result
+SHALL cancel unfinished siblings and join them only within the shared remaining
+budget. A response may include only completed, identity-verified owner results.
+
+#### Scenario: Client disconnects during a blocking owner read
+- **WHEN** disconnect cancellation reaches an owner query that has not completed
+- **THEN** the owner receives cancellation and no new child work is admitted
+- **AND THEN** its capacity permit remains owned until cooperative exit or bounded process termination is observed
+- **AND THEN** the ShutdownReceipt or query receipt reports residual work if the deadline expires
+
+#### Scenario: One sibling fails during bounded composition
+- **WHEN** one owner fails while another owner query remains active in the same slice
+- **THEN** the application cancels siblings not needed for a valid declared partial result
+- **AND THEN** it joins owned siblings only through the shared deadline
+- **AND THEN** no late or mismatched sibling result enters the response
 
 ### Requirement: Request, response, and rendering budgets are enforceable
 
 The BFF and client SHALL enforce finite budgets per slice. Initial design
-envelopes SHALL be no more than four concurrent same-workspace HTTP requests,
-one in-flight request per slice identity, 7,300 Observe daily positions, 2,000
-analysis series points per response, 100 metric observations per summary, 50
-lineage rows per page, 100 evidence references per response, 2 MiB uncompressed
-JSON per slice, and 15 seconds server/query deadline. Exceeding a budget SHALL be
-explicit and SHALL NOT silently truncate evidence.
+envelopes SHALL be no more than four active requests per subject/workspace, one
+in-flight request per complete slice identity, 32 active requests and 32 queued
+requests per serving process, one-second maximum admission wait, 2,000 Observe
+positions per V2 response, 2,000 analysis series points per response, 100 metric
+observations per summary, 50 lineage rows per page, 100 evidence references per
+response, 2 MiB uncompressed JSON per slice, and 15 seconds server/query
+deadline. The BTC product MAY retain 7,300 daily positions, but V2 SHALL access
+that history through bounded range/cursor responses; 7,300 is not a
+single-response promise. Same complete identities SHALL use bounded singleflight.
+Exceeding a budget SHALL be explicit and SHALL NOT silently truncate evidence.
 
 #### Scenario: Analysis series request is within budget
 - **WHEN** a requested metric series contains at most 2,000 points and the encoded response fits the byte budget
@@ -138,9 +195,21 @@ explicit and SHALL NOT silently truncate evidence.
 - **AND THEN** it does not silently discard references or start unbounded parallel reads
 
 #### Scenario: Ten-times workload is exercised
-- **WHEN** capacity tests run 10x the expected concurrent workspace sessions and maximum supported slice sizes
-- **THEN** admission, latency, memory, cancellation, cache, and error rates are measured against documented limits
+- **WHEN** capacity tests run 320 concurrent attempts against the 32-active/32-queued process envelope and maximum supported slice sizes
+- **THEN** admission, queue wait, latency, memory, cancellation, cache, and error rates are measured against documented thresholds
 - **AND THEN** overload produces bounded rejection/degradation rather than process exhaustion or cross-user identity reuse
+
+#### Scenario: Maximum Observe response is encoded
+- **WHEN** the compact Observe DTO contains 2,000 legal positions and maximum bounded slice metadata
+- **THEN** its canonical uncompressed JSON encoding is no more than 2 MiB
+- **AND THEN** provider, instrument, immutable reference, and policy metadata common to the slice are not redundantly repeated in every row
+
+#### Scenario: Rollout capacity thresholds are evaluated
+- **WHEN** the declared 1x fixture workload runs on the recorded CI host/runtime
+- **THEN** accepted-request p95 owner+BFF latency is no more than 5 seconds and p99 no more than 12 seconds
+- **AND THEN** five context/view cycles return browser heap to within 20 MiB of the post-first-cycle baseline
+- **AND THEN** long-task p95 is no more than 100 ms and interaction p95 no more than 250 ms
+- **AND THEN** a 320-attempt overload never grows the queue beyond 32, never OOMs, and leaves zero residual owned process groups after shutdown
 
 ### Requirement: Caching is immutable-reference aware and bounded
 
@@ -151,7 +220,7 @@ offline mode is introduced. LocalStorage SHALL remain limited to non-evidence
 presentation preferences such as the existing identity-bound K-line viewport.
 
 #### Scenario: Same immutable analysis is revisited
-- **WHEN** a user returns to the same confirmed AnalysisSnapshotRef and selectors
+- **WHEN** a user returns to the same confirmed analysis DatasetSnapshotRef and selectors
 - **THEN** a bounded same-identity memory/ETag cache may serve or revalidate it
 - **AND THEN** cache metadata retains source identity, schema version, stored time, and validation state
 
@@ -163,15 +232,17 @@ presentation preferences such as the existing identity-bound K-line viewport.
 ### Requirement: Legacy Observatory contracts remain compatible
 
 The system MUST keep existing `/api/v1/observatory/*` routes, status codes, ETag
-behavior, capability gate, error shape, and primary payload fields available
-during the published compatibility window. New workspace routes SHALL be
-additive and versioned. Compatibility adapters SHALL map legacy context, series,
-trust, runs, and H1 responses conservatively and SHALL NOT invent immutable
-references or analysis facts absent from legacy responses.
+behavior, capability gate, complete response payload fields/types/optional
+semantics, headers, and error shape available during the published compatibility
+window. New workspace routes SHALL be additive and versioned. Compatibility
+adapters SHALL map legacy context, series, trust, runs, and H1 responses
+conservatively and SHALL NOT invent immutable references or analysis facts
+absent from legacy responses. A route matrix SHALL freeze method, path/query/body
+defaults, status, headers, payload, SSE-or-none, capability, and error behavior.
 
 #### Scenario: Legacy frontend is served with the new backend
 - **WHEN** a pre-V2 frontend calls the existing Observatory endpoints
-- **THEN** it receives compatible methods, paths, selectors, status codes, ETags, and major payload fields
+- **THEN** it receives compatible methods, paths, selectors/defaults, status codes, headers/ETags, complete payload semantics, errors, capability behavior, and SSE-or-none behavior
 - **AND THEN** no V2 analysis field is required for existing Observe, Assurance, Lineage, or H1 behavior
 
 #### Scenario: New frontend runs before analysis backend cutover
@@ -187,11 +258,13 @@ references or analysis facts absent from legacy responses.
 
 ### Requirement: Web, SDK, and notebook share query DTO semantics
 
-The versioned workspace query contracts SHALL be usable by Web, SDK, and
-notebook callers without exposing ORM models, repositories, database
+The versioned transport-neutral workspace query contracts SHALL be usable by
+HTTP adapters and the SDK without exposing ORM models, repositories, database
 connections, DataFrames, filesystem paths, or framework-specific response
-objects. Notebook consumers SHALL NOT modify `sys.path`, scan the repository,
-read internal parquet directly, or import adapters.
+objects. HTTP V2, HTTP compatibility, and SDK adapters SHALL be peers over the
+same query application; SDK SHALL NOT import FastAPI/BFF response shaping.
+Notebook consumers SHALL NOT modify `sys.path`, scan the repository, read
+internal parquet directly, or import adapters.
 
 #### Scenario: Notebook requests BTC analysis
 - **WHEN** a notebook requests a confirmed analysis snapshot and metric series through the SDK
@@ -203,6 +276,27 @@ read internal parquet directly, or import adapters.
 - **THEN** the SDK exposes the structured unavailable state and reason codes
 - **AND THEN** it does not coerce the result to `0`, `NaN`, an empty DataFrame, or a successful optional value without status
 
+### Requirement: External evidence and streaming require a separate governed capability
+
+This daily BTC workspace SHALL NOT expose news, social, macro, on-chain, stream,
+L2, or external-event overlays under this change. Before any such route,
+capability, SSE channel, replay, or redrive is implemented, a separate OpenSpec
+change SHALL set `external_event_data=true` and define Capture SourceManifest,
+source rights and deletion, event/publication/first-seen/revision clocks,
+multi-source immutable reference sets, Dataset/Study ownership, bounded
+projection, capacity, reconnect and replay semantics.
+
+#### Scenario: Future external overlay is proposed
+- **WHEN** a child proposes news, sentiment, macro, on-chain, stream, L2, or SSE evidence
+- **THEN** `btc-external-evidence-overlays-v1` or an equivalent governed child completes strict design approval before code
+- **AND THEN** rights withdrawal prevents serving and invalidates affected caches without inventing a replacement fact
+- **AND THEN** the daily workspace contracts remain unchanged until that capability is explicitly enabled
+
+#### Scenario: Workspace GET requests missing stream history
+- **WHEN** a read query cannot satisfy an overlay range from its bounded projection
+- **THEN** it returns unavailable, cursor-expired, or resync-required under the future contract
+- **AND THEN** it does not call a provider, request Capture, replay/redrive an event, or scan an unbounded log
+
 ### Requirement: BFF observability is bounded and privacy-safe
 
 The BFF SHALL emit correlation-aware operational telemetry for slice name,
@@ -210,6 +304,23 @@ contract version, result state, reason code, owner-query latency, response
 bytes, cache outcome, cancellation, deadline, and identity-mismatch count. Logs
 and metrics SHALL NOT include access tokens, raw payloads, full evidence content,
 local paths, or unbounded reference arrays.
+
+Metrics SHALL use a fixed low-cardinality label allowlist: route/slice, contract
+version, result category, reason family, owner class, channel, knowledge mode,
+revision policy, cache outcome, and bounded lag/size buckets. Request id,
+correlation id, context/ref digest, evidence id, URL, and raw source key SHALL
+appear only in bounded structured logs or audit receipts. Shutdown receipts and
+read-path write attempts SHALL be auditable; routine request logs may be sampled
+under a documented retention policy.
+
+Initial rollout SHALL target accepted-request availability of at least 99% over
+24 hours and accepted-slice p95 latency of at most 5 seconds over 30 minutes.
+Identity mismatch, read-path write attempt, and residual owned-process counts
+SHALL each be zero. Current-product analysis lag SHALL be no more than one
+expected daily release interval. Any identity/write event, any shutdown
+residual, availability below 99%, p95 above 5 seconds for 15 minutes, analysis
+lag beyond one interval, or eligible budget rejection above 5% for 15 minutes
+SHALL halt rollout and invoke the owned rollback runbook.
 
 #### Scenario: User reports a failed Analyze panel
 - **WHEN** an Analyze request returns a structured failure
@@ -221,3 +332,8 @@ local paths, or unbounded reference arrays.
 - **WHEN** a response arrives after its request identity was superseded
 - **THEN** the client records a bounded stale-response-discard diagnostic
 - **AND THEN** the payload is not rendered, persisted, or logged in full
+
+#### Scenario: Rollout alert fires
+- **WHEN** an initial SLI threshold is breached
+- **THEN** the alert identifies the owning runtime/query/product/cutover team, the bounded dashboard evidence, and the feature/route rollback action
+- **AND THEN** V2 expansion stops until the breach is resolved and the rollback or forward-recovery receipt is recorded

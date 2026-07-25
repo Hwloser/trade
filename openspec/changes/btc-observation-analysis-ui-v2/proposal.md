@@ -26,15 +26,18 @@ read-only query composition surface.
   descriptive-analysis contract. Every metric carries its immutable input
   reference, event/knowledge/available clocks, window, method version, units,
   sample and coverage state, evidence references, and explicit unavailable
-  reasons.
+  reasons. Formal products use standard DatasetVersionRef/DatasetSnapshotRef;
+  any AnalysisSnapshotDescriptor is query-only and cannot become a Study input.
 - Assign reusable BTC return, realized-volatility, drawdown, and distribution
   series to a versioned derived Dataset product. Assign hypotheses, forward
   outcomes, statistical validation, and promotion state to Studies. The UI and
   BFF do not calculate either class of business fact.
 - Define a Context-first BFF/query flow: resolve one immutable workspace
   context, then lazily request only the active view using that context identity.
-  Hidden views are not prefetched, query paths are read-only, and one panel's
-  failure does not turn another panel's stale payload into current truth.
+  A transport-neutral workspace query application serves peer HTTP V2, HTTP
+  compatibility, and SDK adapters. Hidden views are not prefetched, query paths
+  are read-only, and one panel's failure does not turn another panel's stale
+  payload into current truth.
 - Preserve existing `/api/v1/observatory/*` routes, payloads, capability gate,
   page key, and deep links through compatibility adapters. Add only versioned
   workspace query DTOs and the additive `obsLens=analysis` URL value; old or
@@ -48,11 +51,22 @@ read-only query composition surface.
 - Establish explicit budgets for response size, rows, concurrent requests,
   rendering, cancellation, caching, and mobile behavior. No view starts a
   provider request, data repair, dataset build, study run, lifecycle transition,
-  or polling loop.
-- Split future delivery into independently reviewable child changes for the
-  derived analysis product, query/BFF contracts, React workspace, and
-  compatibility cutover. This design change itself modifies no production code,
-  API behavior, database, artifact, or real data.
+  or polling loop. The initial envelope is four active requests per
+  subject/workspace, 32 active plus 32 queued per process, one-second admission
+  wait, 15-second query deadline, 2 MiB per slice, and 2,000 Observe or analysis
+  points per response. The 7,300-position history is range/cursor-addressable,
+  not one response.
+- Make runtime shutdown hardening a prerequisite after actual-code audit found
+  unbounded concurrent-stop, startup-cleanup, and executor-tail waits and showed
+  that Uvicorn can replace the CLI SIGINT handler during stuck lifespan
+  shutdown. Browser abort is not treated as owner termination; capacity remains
+  held until cooperative exit or owned-process reap.
+- Split future delivery into independently reviewable child changes for runtime
+  hardening, descriptive Datasets, Study queries, transport-neutral workspace
+  queries, React workspace, and compatibility cutover. A conditional external
+  evidence child is mandatory before news/stream/L2 overlays. This design change
+  itself modifies no production code, API behavior, database, artifact, or real
+  data.
 
 ### Relationship to existing changes
 
@@ -81,8 +95,9 @@ read-only query composition surface.
   BTC analysis products and the boundary between Datasets-owned reusable
   metrics and Studies-owned experimental or forward-looking results.
 - `btc-workspace-bff-contract`: Defines Context-first read composition, query
-  budgets, identity validation, cancellation, cache behavior, failure isolation,
-  and compatibility adapters for HTTP/Web/SDK consumers.
+  budgets, process admission, owner cancellation, cache behavior, failure
+  isolation, shutdown prerequisites, and compatibility adapters for
+  HTTP/Web/SDK consumers.
 
 ### Modified Capabilities
 
@@ -116,7 +131,9 @@ as prerequisites rather than rewritten by this design.
   equivalent destinations.
 - Existing `/api/v1/observatory/*` routes remain available through the
   compatibility window. New workspace DTOs use additive versioned paths and do
-  not silently change existing payloads or status/error shapes.
+  not silently change existing methods, selectors/defaults, status codes,
+  headers/ETags, complete payload field/type/optional semantics, capability,
+  errors, or SSE-or-none behavior.
 - The current Data page BTC adapter remains compatible and is not redirected by
   this change.
 
@@ -135,7 +152,10 @@ child is strictly approved and available, Analyze returns an explicit
 `analysis_product_unavailable` state rather than computing a browser fallback.
 
 Rollout is route- and feature-flagged. The existing Observatory workspace remains
-the rollback surface until OpenAPI, BFF, URL, visual, accessibility, PIT, and
-read-only compatibility checks pass. Rollback selects the legacy page/BFF
-adapter and retains all immutable source/product facts; it requires no data
-deletion or migration reversal.
+the rollback surface until runtime shutdown, OpenAPI, complete compatibility,
+BFF, URL, visual, accessibility, PIT, read-only, capacity, and residual-owner
+checks pass. Rollback selects the legacy page/BFF adapter and retains all
+immutable source/product facts; it requires no data deletion or migration
+reversal. Future news, social, macro, on-chain, stream or L2 capability is out
+of scope and requires a separately approved external-evidence design with
+rights, temporal, replay and backpressure governance.

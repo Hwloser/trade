@@ -146,9 +146,10 @@ Observatory remains a product surface, not a business context.
 
 ### Data and state invariants
 
-Every displayed formal fact binds an immutable DatasetSnapshotRef,
-AnalysisSnapshotRef or StudyResultRef plus content digest, UTC event/available/
-knowledge clocks, revision policy, method version and availability state.
+Every displayed formal fact binds an immutable DatasetSnapshotRef or
+StudyResultRef plus content digest, UTC event/available/knowledge clocks,
+revision policy, method version and availability state. The analysis convenience
+object is a query-only `AnalysisSnapshotDescriptor`, not a second formal ref.
 WorkspaceContext identity excludes render time and UI state. Cross-snapshot or
 cross-channel payloads cannot combine, missing required clocks fail closed, and
 revision creates a new version while preserving prior evidence.
@@ -168,20 +169,27 @@ Context failure blocks dependent slices; other slice failures stay isolated
 and retain typed timeout, unavailable, partial, stale, mismatch or budget
 states. Admission closes before shutdown cancellation propagates. Each owner
 has a finite grace period, owned child process groups escalate from TERM to
-KILL and are reaped, and late results are discarded. The current runtime can
-still wait on a blocking non-daemon handler or thread until its bounded stage
-deadline; the CLI watchdog then force-exits and reports residual thread names.
-V2 therefore requires owner/stage diagnostics and never waits for or signals an
-unrelated process.
+KILL and are reaped, and late results are discarded. Python threads cannot be
+force-reaped; a non-cooperative residual thread is reported as residual and its
+capacity remains owned. Current code still has unbounded concurrent-stop,
+startup-cleanup and executor-tail waits, and Uvicorn replaces the CLI SIGINT
+handler while lifespan shutdown runs, so the current watchdog cannot guarantee
+termination of a stuck lifespan. V2 activation therefore requires the separate
+runtime-hardening child, owner/stage receipts, and a supervisor-independent
+termination proof; it never waits for or signals an unrelated process.
 
 ### Performance and capacity
 
-One workspace permits at most four same-identity HTTP requests and one in-flight
-request per slice. Initial ceilings are 15 seconds, 2 MiB uncompressed JSON,
-7,300 Observe positions, 2,000 analysis points, 100 metrics, 50 lineage rows
-per page and 100 evidence refs. Hidden views remain lazy, detail is selected
-explicitly, overload is rejected or paginated, and temporary-fixture 1x/10x
-tests measure latency, memory, event-loop lag, cancellation and residual owners.
+One subject/workspace permits at most four active HTTP requests and one
+in-flight request per complete slice identity. One process permits 32 active
+and 32 queued workspace requests with at most one second admission wait.
+Initial ceilings are 15 seconds, 2 MiB uncompressed JSON, 2,000 Observe
+positions per response, 2,000 analysis points, 100 metrics, 50 lineage rows per
+page and 100 evidence refs. The product can retain 7,300 daily positions behind
+bounded range/cursor reads. Hidden views remain lazy, detail is selected
+explicitly, overload is rejected or paginated, and temporary-fixture 1x and
+320-attempt tests measure latency, memory, event-loop lag, cancellation and
+residual owners.
 
 ### Persistent-write safety
 
@@ -205,13 +213,14 @@ remaining current.
 
 ### Observability and operations
 
-Every slice returns a correlation id, contract version, immutable identity,
-result state and stable reason code. Bounded telemetry records owner latency,
-response bytes, cache outcome, cancellation/deadline, identity mismatches and
-shutdown stage/residual ownership without payloads, credentials, local paths or
-unbounded refs. Operators can distinguish empty, partial, stale, unavailable,
-failed, superseded and timed-out results and can identify which shutdown owner
-missed its deadline.
+Every slice returns request/correlation ids, contract version, immutable
+identity, result state and stable reason code. Low-cardinality metrics record
+route/result/owner class, latency, response-size buckets, cache outcome,
+cancellation/deadline and mismatch counts. Correlation/ref identity stays in
+bounded logs or receipts, not metric labels. ShutdownReceipt exposes stage,
+deadline, graceful/forced counts and residual owner/category without payloads,
+credentials, local paths or unbounded refs. Operators can distinguish empty,
+partial, stale, unavailable, failed, superseded and timed-out results.
 
 ### Validation strategy
 
@@ -235,13 +244,15 @@ owner per fact, bounded reads, independent failures and Web/SDK parity.
 
 ### Rollout and rollback
 
-Delivery is split into analysis-product, query-contract, Web and compatibility
-children. The analysis product ships without consumers, the BFF dark-launches
-with dual-read evidence, Web remains feature-gated, and cutover follows
-OpenAPI/URL/PIT/read-only/capacity/visual/a11y parity. Any identity mismatch,
-write attempt, latency/payload breach, inaccessible layout or shutdown residual
-disables V2 and restores the legacy page/routes and previous verified analysis
-release without deleting data or changing old URLs.
+Delivery is split into runtime hardening, analysis-product, Study-query,
+workspace-query, Web and compatibility children. The analysis product ships
+without consumers, the BFF dark-launches with dual-read evidence, Web remains
+feature-gated, and cutover follows OpenAPI/URL/PIT/read-only/capacity/visual/a11y
+parity. Any identity mismatch, write attempt, quantified latency/payload breach,
+inaccessible layout or shutdown residual disables V2 and restores the legacy
+page/routes and previous verified analysis release without deleting data or
+changing old URLs. The cutover child owns a rehearsed runbook with flag owner,
+scope, activation mechanism, smoke checks, time limit and escalation path.
 
 ## Requirements and acceptance
 
@@ -339,6 +350,10 @@ interfaces/http/bff/btc_workspace/
   evidence.py
   mapping.py
 
+interfaces/btc_workspace/
+  contracts.py
+  queries.py
+
 interfaces/http/compat/observatory/
 interfaces/sdk/btc_workspace.py
 ```
@@ -355,6 +370,7 @@ flowchart LR
     D[Datasets contracts + queries]
     S[Studies contracts + queries]
     P[Platform status/query APIs]
+    Q[Transport-neutral workspace queries]
     B[BTC Workspace BFF]
     C[Observatory HTTP compat]
     SDK[SDK / Notebook]
@@ -364,23 +380,26 @@ flowchart LR
     D --> K
     S --> K
     S --> D
-    B --> K
-    B --> D
-    B --> S
-    B --> P
-    C --> B
-    SDK --> B
-    W --> B
+    Q --> K
+    Q --> D
+    Q --> S
+    Q --> P
+    B --> Q
+    C --> Q
+    SDK --> Q
+    W -. HTTP runtime .-> B
     BOOT --> D
     BOOT --> S
     BOOT --> P
+    BOOT --> Q
     BOOT --> B
     BOOT --> C
 ```
 
-Datasets and Studies never import Interfaces or React. The BFF never imports
-concrete repositories/adapters. Only Bootstrap composes concrete query
-implementations.
+Datasets and Studies never import Interfaces or React. HTTP V2, HTTP compat and
+SDK are peer adapters over transport-neutral query contracts; SDK does not
+import FastAPI response shaping. The BFF never imports concrete
+repositories/adapters. Only Bootstrap composes concrete query implementations.
 
 ## Data and state invariants
 
@@ -405,26 +424,25 @@ workspace_context_id =
 It excludes request/render timestamps, browser page state, chart viewport,
 selected tab, and selected date.
 
-`AnalysisSnapshotRef` contains:
+The formal analysis product uses a standard Datasets `DatasetSnapshotRef`.
+`AnalysisSnapshotDescriptor` is a non-authoritative query DTO containing:
 
 ```text
-owner_context              = datasets
-artifact_type              = btc_descriptive_analysis_snapshot
-version
-content_digest
-analysis_dataset_ref
+analysis_dataset_snapshot_ref
 source_market_snapshot_ref
 semantic_schema_policy_ref
 method_policy_ref
 transform_environment_ref
 knowledge_cut
 revision_policy
-created_at
+lineage_relationship
+created_at_operational
 ```
 
-A path or mutable pointer is never a reference. The BFF verifies owner, type,
-version, digest, and source-lineage relationship before presenting current
-analysis.
+A path or mutable pointer is never a reference. The descriptor is never a
+DatasetBuild or StudyRun input. The query application verifies the standard
+analysis DatasetSnapshotRef and source-lineage relationship before presenting
+current analysis.
 
 ### Time semantics
 
@@ -437,6 +455,12 @@ analysis.
   DatasetSnapshotRef.
 - Revision policy: explicit `as_known` or a later separately proven restatement
   policy. `latest_restated` cannot masquerade as point-in-time evidence.
+- Point basis: every rolling point declares `as_known_at_point` or
+  `restated_at_snapshot_cut`; an as-known point admits only constituent rows
+  whose required clocks are no later than that point's knowledge boundary.
+- Clock provenance: `availability_basis`, `clock_confidence`, and
+  `clock_source_ref` distinguish provider publication, market-boundary proxy,
+  and installation observation.
 - Rendered/request time: operational metadata only; it never changes product or
   metric identity.
 
@@ -475,7 +499,10 @@ The UI never receives a bare authoritative number. A metric observation is:
     "version": "1"
   },
   "input_ref": {"type": "DatasetSnapshotRef", "digest": "..."},
-  "output_ref": {"type": "AnalysisSnapshotRef", "digest": "..."},
+  "output_ref": {"type": "DatasetSnapshotRef", "digest": "..."},
+  "availability_basis": "installation_observed",
+  "clock_confidence": "exact",
+  "clock_source_ref": {"type": "DatasetSnapshotRef", "digest": "..."},
   "evidence_refs": [],
   "reason_codes": []
 }
@@ -490,22 +517,27 @@ The first analysis product is deliberately bounded:
 
 | Family | Initial metric | Method-policy requirement |
 | --- | --- | --- |
-| Performance | trailing return for 1, 7, 30, 90 and 365 included final daily observations | `close_t / close_t-n - 1`; both endpoints present; exact decimal output |
-| Volatility | annualized close-to-close realized volatility for 20 and 60 log-return observations | sample standard deviation, `ddof=1`, annualization `sqrt(365)`, complete required window |
-| Range | daily high-low range percentage and rolling 20-observation median | positive enclosing OHLC; declared denominator; no inferred intraday path |
-| Drawdown | current drawdown and maximum drawdown for 30, 90, 365 and full product window | close-based running peak; episode dates returned |
-| Distribution | RV20 empirical percentile over trailing 730 available RV observations | minimum 252 valid RV values; ties policy versioned |
+| Performance | trailing return for 1, 7, 30, 90 and 365 return intervals | `n` means `n+1` eligible close endpoints; `close_t / close_t-n - 1`; exact decimal output |
+| Volatility | annualized close-to-close realized volatility for 20 and 60 log-return observations | `n+1` eligible close endpoints, sample standard deviation, `ddof=1`, annualization `sqrt(365)`, complete required window |
+| Range | daily high-low range percentage and rolling 20-observation median | positive enclosing OHLC; V1 denominator is close; no inferred intraday path |
+| Drawdown | current drawdown and maximum drawdown for 30, 90, 365 and full product window | close-based running peak; earliest equal peak wins; episode start/trough/end dates returned |
+| Distribution | RV20 empirical percentile over trailing 730 available RV observations | minimum 252 valid RV values; inclusive current point; midrank ties |
 | Volume | trailing change/distribution only where stable comparable unit is proven | otherwise `volume_unit_unproven` |
 | Coverage/revision | expected, included, excluded, revised and quarantined observations | derived from Dataset quality/revision facts, never chart whitespace heuristics |
 
 This table is a design baseline, not permission to implement values before the
-Datasets child defines golden fixtures and receives strict approval.
+Datasets child freezes decimal scale/rounding, market/venue/instrument/quote
+identity, gap policy, dependency manifest and golden fixtures and receives
+strict approval. Content identity is canonical bytes over ordered immutable
+inputs, dependency manifest, schema/method/environment policies and lineage;
+wall-clock/run/release/receipt metadata is excluded.
 
 ### State families
 
 State families remain orthogonal:
 
 - transport: `idle | loading | confirmed | failed`;
+- observation condition: `nonempty | empty`;
 - product availability: `complete | partial | unavailable | stale`;
 - quality: Dataset-owned quality enum;
 - lifecycle: selected market/analysis release state;
@@ -513,9 +545,10 @@ State families remain orthogonal:
 - purpose fitness: one result per declared purpose;
 - Study lifecycle: preregistered/run/validated/rejected/insufficient/stale/etc.
 
-Cancellation acceptance is not a terminal business state. A timed-out query is
-not a missing Dataset. A stale Study is not a failed market snapshot. The BFF
-and UI preserve these distinctions.
+Cancellation acceptance is not a terminal business state. Successful empty is
+not unavailable or failed. A timed-out query is not a missing Dataset. A stale
+Study is not a failed market snapshot. The BFF and UI preserve these
+distinctions.
 
 ## Contracts and compatibility
 
@@ -526,10 +559,10 @@ The proposed BFF routes are additive:
 | Method/path | Purpose | Required identity | Default budget |
 | --- | --- | --- | --- |
 | `GET /api/v1/workspaces/btc/context` | resolve WorkspaceContext | channel + temporal/revision selectors | one context |
-| `GET /api/v1/workspaces/btc/observe` | observation strip + selected-series descriptor | context id + market ref | 7,300 daily positions |
+| `GET /api/v1/workspaces/btc/observe` | observation strip + selected-series descriptor | context id + market ref + range/cursor | 2,000 positions/response; 7,300 product history |
 | `GET /api/v1/workspaces/btc/analyze` | bounded metric summary | context id + market ref | 100 metrics |
-| `GET /api/v1/workspaces/btc/analyze/series` | one metric series | context id + analysis ref + metric/window/range | 2,000 points |
-| `GET /api/v1/workspaces/btc/assurance` | selected-snapshot fitness/coverage/findings | context id + market/analysis ref | bounded findings |
+| `GET /api/v1/workspaces/btc/analyze/series` | one metric series | context id + analysis DatasetSnapshotRef + metric/window/range | 2,000 points |
+| `GET /api/v1/workspaces/btc/assurance` | selected-snapshot fitness/coverage/findings | context id + market/analysis DatasetSnapshotRef | bounded findings |
 | `GET /api/v1/workspaces/btc/lineage` | catalog-wide runs/diff descriptor | cursor or immutable refs | 50 rows/page |
 | `GET /api/v1/workspaces/btc/research` | hypotheses + Study result summaries | optional context relationship | bounded result list |
 | `GET /api/v1/workspaces/btc/evidence/{kind}/{id}` | one explicit evidence detail | immutable ref + context where required | 100 refs/2 MiB |
@@ -577,11 +610,40 @@ invent missing facts.
 | `knowledgeAsOf` | Context knowledge cut selector | retained; commit, not per-keystroke query |
 | `obsChart`, `obsTimeframe`, `obsDate` | Observe-local state | retained |
 | `obsRun`, `obsCompare` | Lineage-local state | retained |
-| `/api/v1/observatory/...` | compat adapter | methods/status/ETag/major payloads retained |
+| `/api/v1/observatory/...` | compat adapter | method, selectors/defaults, status, headers/ETag, complete payload field/type/optional semantics, capability, errors, and SSE-or-none retained per route |
 | Data page BTC series adapter | legacy selected series | retained until separately migrated |
 
 No legacy optional field becomes proof for a new immutable ref. Missing owner,
 digest, clock, method, or source relationship maps to `unproven`/unavailable.
+
+### Frozen legacy HTTP inventory
+
+Actual `trade_web/backend/observatory/router.py` audit identifies ten GET routes
+and no SSE route. The compatibility child snapshots every nested field, nullable/
+optional distinction and enum value from the existing fixture/OpenAPI payload;
+the field summaries below are minimum complete top-level obligations, not
+permission to drop nested fields.
+
+| Method/path | Query/path contract | Success/header behavior | Frozen top-level payload |
+| --- | --- | --- | --- |
+| `GET /api/v1/observatory/capability` | no parameters; always registered | `200`; no ETag/SSE; disabled, ready, stale and registration-error variants | `enabled`, `state`, `show_nav`, optional `generation_id`, optional `reason_code` |
+| `GET /api/v1/observatory/assets/crypto.BTC/context` | `channel=observed`, `knowledge_as_of=latest`, `knowledge_mode=installation_observed`, `revision_policy=as_known`, optional `snapshot_id`, `run_id` | `200` + ETag; exact `If-None-Match` yields empty `304` + ETag; no SSE | complete `_context_payload` plus `view_fingerprint`, `etag`, `evidence_coverage`, `semantic_channels` |
+| `GET /api/v1/observatory/assets/crypto.BTC/series` | `view=composite`, same temporal defaults, `include_quarantined=false`, optional `snapshot_id`, `run_id`, `from`, `to` | `200` + ETag; exact `If-None-Match` yields empty `304` + ETag; no SSE | composite: `view`, `asset_id`, `layers`, `reason_codes`, `fingerprint_basis`, `view_fingerprint`, `etag`; single: `view`, `context`, `rows`, `pit_valid`, `reason_codes`, `view_fingerprint`, `etag` |
+| `GET /api/v1/observatory/assets/crypto.BTC/dates/{market_date}` | path date; optional `snapshot_id`; `channel=formal` | `200`; no ETag/SSE | `date`, `snapshot_id`, `run_id`, nullable `ohlcv`, nullable `reconciliation`, nullable `revision`, `run_lineage`, `research_visibility`, `reason_codes` |
+| `GET /api/v1/observatory/assets/crypto.BTC/trust` | optional `snapshot_id`; `channel=formal` | `200`; no ETag/SSE | `snapshot_id`, `run_id`, `gates`, `findings`, `acquisition_state`, `quality_state` |
+| `GET /api/v1/observatory/assets/crypto.BTC/runs` | optional `cursor`; `limit=50`, maximum `500` | `200`; FastAPI `422` remains for invalid limit shape; no ETag/SSE | `runs`, nullable `next_cursor`, `catalog_fingerprint` |
+| `GET /api/v1/observatory/runs/diff` | required `base`, `compare` | `200`; FastAPI `422` remains for missing parameters; no ETag/SSE | `base`, `compare`, `added_dates`, `removed_dates`, `changed_dates`, `gate_changes`, `code_changed`, `config_changed`, `schema_changed` |
+| `GET /api/v1/observatory/runs/{run_id}` | path run id; traversal remains fail-closed | `200`; no ETag/SSE | `run_id`, `created_at`, `market_watermark`, `data_readiness`, `quality_state`, `lifecycle_state`, `acquisition_state`, `canonical_rows`, `code_revision`, `artifact_refs`, `gates` |
+| `GET /api/v1/observatory/assets/crypto.BTC/hypotheses` | no parameters | `200`; no ETag/SSE | `hypotheses`, retaining per-item hypothesis id/version, statement, directional, research state and nullable current run id |
+| `GET /api/v1/observatory/research-runs/{research_run_id}` | path research run id | `200`; no ETag/SSE | research run/input identities, knowledge cut, lifecycle/current flag, `metrics`, `evidence_refs` |
+
+All facade `ObservatoryError` responses retain `to_payload()` shape and current
+reason/status mapping: `404` for missing snapshot/channel, `409` for invalid
+pointer/hash/manifest/stale Dataset, `422` for PIT/quality/research/composite/
+restatement/legacy-time failures, `400` for invalid selector, and `503` for stale
+Catalog. Only stale Catalog adds its bounded `Retry-After`. FastAPI parameter
+validation remains its current framework error contract. The child freezes
+actual JSON fixtures and OpenAPI so this prose cannot conceal payload drift.
 
 ## Persistent-write safety
 
@@ -632,10 +694,10 @@ design does not authorize a new global DB facade or cross-context transaction.
 
 ### SDK and notebook
 
-SDK types mirror owner/query contracts and do not expose FastAPI, React,
-DataFrame, repository, DB, path, or adapter types. Notebook code imports the
-installed SDK and can pin an AnalysisSnapshotRef; it does not modify `sys.path`
-or read parquet directly.
+SDK types mirror transport-neutral owner/query contracts and do not expose
+FastAPI, React, DataFrame, repository, DB, path, or adapter types. Notebook code
+imports the installed SDK and can pin the analysis product's standard
+DatasetSnapshotRef; it does not modify `sys.path` or read parquet directly.
 
 ### C++ boundary
 
@@ -650,28 +712,31 @@ tests would be mandatory.
 
 ```mermaid
 flowchart TD
-    UI[React task workspace] -->|context selector| BFF[BTC Workspace BFF]
-    BFF -->|resolve snapshot + fitness| DQ[Datasets query handle]
+    UI[React task workspace] -->|HTTP context selector| HTTP[HTTP V2 adapter]
+    SDK[SDK / Notebook] -->|framework-free DTO| QA[BTC workspace query application]
+    COMPAT[HTTP Observatory compat] --> QA
+    HTTP --> QA
+    QA -->|resolve snapshot + fitness| DQ[Datasets query handle]
     DQ --> WC[WorkspaceContext]
-    WC --> UI
+    WC --> QA
 
-    UI -->|active Observe + context id| BFF
-    BFF --> DQ
+    UI -->|HTTP active Observe + context id| HTTP
+    QA --> DQ
 
-    UI -->|active Analyze + context id| BFF
-    BFF -->|resolve analysis ref + metrics| AQ[Datasets analysis query]
+    UI -->|HTTP active Analyze + context id| HTTP
+    QA -->|resolve analysis DatasetSnapshotRef + metrics| AQ[Datasets analysis query]
 
-    UI -->|active Assurance| BFF
-    BFF --> DQ
-    BFF --> AQ
+    UI -->|HTTP active Assurance| HTTP
+    QA --> DQ
+    QA --> AQ
 
-    UI -->|active Research| BFF
-    BFF -->|StudyResultRef query| SQ[Studies query handle]
+    UI -->|HTTP active Research| HTTP
+    QA -->|StudyResultRef query| SQ[Studies query handle]
 
-    UI -->|explicit evidence only| BFF
-    BFF --> DQ
-    BFF --> AQ
-    BFF --> SQ
+    UI -->|HTTP explicit evidence only| HTTP
+    QA --> DQ
+    QA --> AQ
+    QA --> SQ
 ```
 
 Code dependencies are acyclic even though runtime selection can branch and
@@ -684,24 +749,31 @@ Process commands.
 sequenceDiagram
     participant U as User
     participant W as React Workspace
-    participant B as BTC BFF
+    participant H as HTTP V2 Adapter
+    participant Q as Workspace Query Application
     participant D as Datasets Queries
     participant S as Studies Queries
 
     U->>W: open Analyze(channel, knowledge, revision)
-    W->>B: GET context
-    B->>D: resolve market DatasetSnapshotRef
-    D-->>B: context + fitness + immutable ref
-    B-->>W: WorkspaceContext
-    W->>B: GET analyze(context_id, market_ref)
-    B->>D: resolve AnalysisSnapshotRef + summary
-    D-->>B: metrics / explicit unavailable
-    B-->>W: identity-verified Analyze slice
+    W->>H: GET context
+    H->>Q: resolve context(QueryExecutionContext)
+    Q->>D: resolve market DatasetSnapshotRef
+    D-->>Q: context + fitness + immutable ref
+    Q-->>H: framework-free WorkspaceContext
+    H-->>W: WorkspaceContext
+    W->>H: GET analyze(context_id, market_ref)
+    H->>Q: query Analyze slice
+    Q->>D: resolve analysis DatasetSnapshotRef + summary
+    D-->>Q: metrics / explicit unavailable
+    Q-->>H: identity-verified Analyze DTO
+    H-->>W: identity-verified Analyze slice
     opt explicit Study relation
-        W->>B: GET research(context_id)
-        B->>S: list StudyResultRefs
-        S-->>B: result + input refs
-        B-->>W: result + snapshot relationship
+        W->>H: GET research(context_id)
+        H->>Q: query Research slice
+        Q->>S: list StudyResultRefs
+        S-->>Q: result + DatasetSnapshotRef inputs
+        Q-->>H: result + snapshot relationship
+        H-->>W: result + snapshot relationship
     end
 ```
 
@@ -845,17 +917,41 @@ embedded in this read workspace design.
 | metric insufficient lookback | structured unavailable | zero or prior value |
 | partial coverage | visible partial + counts/reasons | normal confirmed styling |
 | Study stale after revision | visible stale relationship | current/validated claim |
-| owner query timeout | scoped ErrorEnvelope; resource cancelled/released | unbounded tail work |
+| valid scope has no matches | HTTP 200 + `condition=empty`; non-retryable empty presentation | unavailable, failed, zero, or stale prior value |
+| owner query timeout | scoped ErrorEnvelope; cancellation requested; permit held until owned work exits | claim of release while work continues |
 | response exceeds budget | explicit budget error/pagination | silent truncation |
 | ETag without matching cache identity | full retry/unavailable | other selector's bytes |
 | one panel fails | other confirmed panels retain identity | page-wide fake success |
+| process admission saturated | HTTP 429 + bounded `Retry-After` | unbounded queue or retry loop |
+| shutdown deadline expires | ShutdownReceipt with residual owner/category; supervisor terminates serving process | unbounded join or false clean receipt |
 | V2 cutover defect | feature flag to legacy BFF/page | data deletion |
 
-Every request uses one bounded deadline. Cancellation is cooperative plus
-transport disconnect observation; late results are ignored by identity. Server
-code must not call an unbounded `shutdown(wait=True)` or equivalent after the
-shared deadline is exhausted. This design consumes the shutdown contract from
-`kernel-and-public-contracts`; it does not implement it.
+Every request receives one `QueryExecutionContext` with monotonic deadline,
+cancellation token, request/correlation ids, semantic identity, owner identity,
+and child budget. Browser abort or transport disconnect requests cancellation
+but is not proof of owner termination. Cooperative owners check cancellation
+between bounded work units and use native I/O timeouts; a potentially permanent
+blocking read runs in an owned terminable process or is unavailable. The process
+permit remains held until exit is observed. Structured composition cancels
+unfinished siblings and joins them only within the shared remaining budget;
+late or mismatched results are discarded.
+
+Shutdown uses one monotonic process deadline across admission close, query
+cancellation, owned process-group TERM/KILL/reap, persistence flush, and
+executor cleanup. No stage can restart its own full timeout or perform
+`shutdown(wait=True)` after the shared deadline is exhausted. `ShutdownReceipt`
+records stage, deadline, graceful/forced counts, residual owner/category and last
+safe error. A Python thread that cannot terminate is residual, not reaped.
+
+Actual-code audit found three unresolved current runtime paths: concurrent
+`stop()` callers can wait without a deadline, startup-failure cleanup uses an
+unbounded executor wait, and executor tail cleanup can join after the shutdown
+deadline. Uvicorn also replaces the CLI SIGINT handler while lifespan shutdown
+runs, so the current in-process watchdog cannot guarantee termination of a
+stuck lifespan. This design consumes the public shutdown contract but does not
+implement those corrections. `web-runtime-shutdown-hardening-v1` must be
+strictly approved, implemented and verified by a real Uvicorn subprocess test
+before any V2 route or page can be activated.
 
 ## Performance and capacity
 
@@ -864,11 +960,14 @@ shared deadline is exhausted. This design consumes the shutdown contract from
 Initial deployment is a local/small-team research workspace, not a public
 exchange terminal. Design correctness still requires deterministic bounds:
 
-- at most four concurrent same-workspace HTTP requests;
-- one in-flight request per slice identity;
+- at most four active HTTP requests per authenticated subject/workspace;
+- one in-flight request per complete slice identity;
+- at most 32 active and 32 queued workspace requests per serving process;
+- at most one second process-admission wait;
 - 15-second server/query deadline;
 - 2 MiB uncompressed JSON per slice;
-- 7,300 Observe daily positions, inherited from the chart contract;
+- 2,000 Observe positions per response, with 7,300 retained product-history
+  positions reachable only through bounded range/cursor reads;
 - 2,000 points per analysis series response;
 - 100 metric observations per analysis summary;
 - 50 lineage rows per page;
@@ -877,9 +976,12 @@ exchange terminal. Design correctness still requires deterministic bounds:
 - one primary analysis visualization mounted at a time;
 - no polling or automatic retry loop.
 
-These are contract ceilings, not throughput claims. The implementation child
-must measure baseline payload/latency/memory and can lower bounds with evidence.
-Increasing them requires design review.
+These are contract ceilings, not throughput claims. The query-contract child
+must freeze a compact `ObservePositionDTO` whose per-slice metadata lives in a
+header rather than repeating provider/instrument/ref fields in every row. A
+canonical encoding golden proves that each maximum legal response remains
+within 2 MiB. The implementation may lower bounds with evidence; increasing any
+bound requires design review.
 
 ### Backpressure and cancellation
 
@@ -891,11 +993,17 @@ Increasing them requires design review.
 - Pagination/cursor controls lineage.
 - Oversize requests are rejected with supported alternatives.
 - Canvas/SVG updates are coalesced; accessible summaries are bounded.
+- Process admission uses a fixed 32-active/32-queued envelope and returns 429
+  after one second rather than growing another queue.
+- Browser abort, owner timeout, and process shutdown share cancellation identity,
+  but capacity is released only after cooperative exit or owned-process reap.
+- Compatibility dual-read has an explicit sample budget and never doubles every
+  production request indefinitely.
 
 ### 10x validation
 
-Capacity tests exercise ten times the measured expected concurrent sessions and
-maximum supported payloads. They record:
+Capacity tests exercise 320 concurrent attempts, ten times the 32-active process
+envelope, plus maximum supported payloads. They record:
 
 - admitted/rejected requests;
 - p50/p95/p99 owner and BFF latency;
@@ -907,27 +1015,46 @@ maximum supported payloads. They record:
 - stale-response discard;
 - timeout/error classes.
 
-The acceptance criterion is bounded degradation and cleanup, not a fabricated
-QPS target.
+Initial rollout thresholds are:
+
+- process queue never exceeds 32 and admission wait never exceeds one second;
+- maximum encoded legal slice is at most 2 MiB;
+- p95 accepted owner+BFF latency is at most 5 seconds and p99 at most 12 seconds
+  under the declared 1x fixture workload;
+- 10x overload produces bounded 429/504 results, no OOM, no queue growth after
+  admission closes, and zero residual owned process groups after shutdown;
+- browser heap after five context/view cycles returns to within 20 MiB of the
+  post-first-cycle baseline, long-task p95 is at most 100 ms, and interaction
+  p95 is at most 250 ms on the declared CI browser/host profile;
+- the maximum Observe and Analyze fixtures have no blank canvas, overlap, or
+  event-loop stall over 200 ms caused by one render task;
+- the V2 route bundle budget is frozen by the Web child against its measured
+  legacy baseline; any increase above the approved absolute bytes or 10% delta
+  fails that child.
+
+The implementation children record hardware/runtime/fixture identities with
+these measurements. A child may propose tighter or environment-normalized
+numbers, but cannot waive process, payload, cleanup, or no-growth guarantees.
 
 ## Observability and operations
 
 Each slice emits bounded telemetry:
 
-- correlation/request id;
-- workspace context id prefix/digest, not raw payload;
-- slice and schema version;
-- selected channel/knowledge mode/revision policy enum;
-- owner query names;
-- result state/reason code;
-- owner/BFF duration;
-- response bytes/point/metric counts;
-- cache outcome;
-- cancellation/deadline;
-- identity mismatch/stale discard.
+- low-cardinality metrics: route/slice, contract version, result category,
+  reason family, owner class, channel, knowledge mode, revision policy, cache
+  outcome, and bounded lag/size buckets;
+- bounded structured logs/receipts: request/correlation id, immutable identity
+  digest/prefix, owner query names, shutdown stage/residual owner, and safe
+  errors;
+- audit facts: read-path write attempts, capability/cutover transitions,
+  analysis-release selection, and rollback execution.
 
 No token, credential, raw OHLCV set, evidence body, local path, SQL, or full ref
-array is logged. The UI exposes safe correlation id and reason code for support.
+array is logged. Request/correlation/ref/source identities never become metrics
+labels. The UI exposes safe correlation id and reason code for support. Metrics
+retain 30 days initially, sampled routine request logs retain 14 days, and
+audit/shutdown receipts follow the repository operation-record retention policy
+frozen by the owning child.
 
 Operational dashboards distinguish:
 
@@ -943,6 +1070,23 @@ Operational dashboards distinguish:
 An operator can therefore tell “no product built yet” from “query failed,”
 “partial evidence,” “stale after revision,” and “contract mismatch.”
 
+Initial rollout SLI/SLO and alerts are:
+
+- workspace accepted-request availability at least 99% over 24 hours, excluding
+  intentional 4xx selector/auth failures;
+- p95 accepted slice latency at most 5 seconds over 30 minutes;
+- identity mismatch and read-path write attempt rates exactly zero;
+- analysis-product lag no more than one expected daily release interval for
+  current-product capability;
+- shutdown receipts with residual owned processes exactly zero.
+
+Any identity/write event pages immediately. Availability below 99%, p95 latency
+above 5 seconds for 15 minutes, product lag beyond one interval, repeated
+budget rejection above 5% of eligible requests for 15 minutes, or any shutdown
+residual disables further rollout and invokes the rollback runbook. The
+cutover child freezes dashboard queries, alert ownership, notification path,
+maintenance exclusions, and the exact operation-record retention policy.
+
 ## Validation strategy
 
 ### Contract and domain
@@ -951,12 +1095,21 @@ An operator can therefore tell “no product built yet” from “query failed,�
   drawdown, percentile, coverage, revision, exact decimal, units, boundary
   dates, leap years, missing bars, quarantine, and minimum samples.
 - Immutable-ref verification/tamper tests.
-- PIT tests with available/event/knowledge/revision clocks and missing-time
-  fail-closed cases.
-- Property tests for deterministic identical-input identity, ordering, window
-  boundaries, and no NaN/Infinity serialization.
+- PIT tests distinguish `as_known_at_point` from
+  `restated_at_snapshot_cut`, require every constituent clock at each point,
+  and fail closed on missing/late/quarantined input.
+- Field-level revision tests use method dependency manifests so high/low/volume,
+  unit, availability, duplicate, quality, and quarantine changes stale or
+  rebuild every affected metric even when close is unchanged.
+- Property tests randomize revision, gap, duplicate and input order while
+  proving deterministic content identity, window boundaries, no NaN/Infinity
+  serialization, and no cross-snapshot reuse.
+- Golden tests freeze decimal scale/rounding, market/venue/instrument/quote
+  identity, range denominator, drawdown tie policy, percentile tie/current-point
+  policy, unit conversion, UTC/leap-date cases, and canonical digest inputs.
 - Study-boundary tests proving forward labels/inference cannot enter the
-  Datasets metric contract.
+  Datasets metric contract and StudyRun accepts only verified
+  DatasetSnapshotRef inputs.
 
 ### BFF/SDK
 
@@ -965,12 +1118,20 @@ An operator can therefore tell “no product built yet” from “query failed,�
 - Context-first request topology and snapshot relationship tests.
 - Read-only guard with provider, persistence-write, repair, publish, and Study
   execution spies.
+- ErrorEnvelope/HTTP/Retry-After/request/correlation propagation matrix.
 - ETag same-identity reuse and mismatch rejection.
-- timeout, cancellation, disconnected-client, partial-owner and query-budget
-  fixtures.
+- timeout, cooperative cancellation, non-cooperative owned-process,
+  disconnected-client, partial-owner, sibling cleanup, process admission, and
+  query-budget fixtures.
 - Web/SDK/notebook contract parity.
-- 1x/10x response/latency/memory/cancellation tests using temporary immutable
-  fixtures.
+- Full per-route legacy method/selector/default/status/header/payload/
+  optional/error/capability/SSE-or-none snapshots.
+- Real compact DTO encoding goldens at every row/byte ceiling.
+- 1x/320-attempt response/latency/memory/cancellation/admission tests using
+  temporary immutable fixtures.
+- Real Uvicorn subprocess shutdown tests for idle, active cooperative query,
+  non-cooperative owned child, startup failure, concurrent stop and exhausted
+  deadline; assert total shutdown bound and zero residual owned process groups.
 
 ### Frontend
 
@@ -980,11 +1141,13 @@ An operator can therefore tell “no product built yet” from “query failed,�
 - Analyze state/method/unit/window/sample/coverage rendering.
 - No browser metric computation test: V2 components accept only structured
   MetricObservation/series DTOs, not raw OHLCV for analysis.
-- independent panel failures, stale identity, rapid switching, and ETag races.
+- empty/partial/unavailable/failed state golden tests, independent panel
+  failures, stale identity, rapid switching, and ETag races.
 - keyboard, screen-reader announcements, focus restoration, non-color status.
 - Playwright at 360x800, 768x1024, 1280x800, and 1600x900.
 - screenshot/visual overlap checks and chart canvas pixel/nonblank checks.
-- bundle, render-node, interaction, and cleanup budgets.
+- measured bundle, heap cleanup, render-node, long-task, event-loop and
+  interaction budgets.
 
 ### Repository gates
 
@@ -1060,14 +1223,15 @@ selection/projection.
   Mitigation: conservative compatibility mapping; `unproven` when a ref cannot
   be verified; formal PIT/contract child precedes current-product cutover.
 - **More endpoints can create request fan-out.** Mitigation: Context-first
-  gating, active-view-only requests, four-request ceiling, one series/evidence
-  selection, cancellation, and 10x tests.
+  gating, active-view-only requests, four-request per-subject ceiling,
+  32-active/32-queued process admission, one series/evidence selection,
+  cancellation, and 320-attempt tests.
 - **New tabs can make the product harder to scan.** Mitigation: four task verbs,
   compact context header, one primary surface, no nested cards, usability and
   responsive screenshot checks.
-- **Legacy and V2 routes may drift.** Mitigation: one BFF owner, explicit compat
-  adapter, OpenAPI/DTO golden tests, dual-read comparison, and a finite
-  compatibility retirement decision.
+- **Legacy and V2 routes may drift.** Mitigation: peer HTTP V2/compat adapters
+  over one transport-neutral query application, full route-contract goldens,
+  bounded dual-read comparison, and a finite compatibility retirement decision.
 - **Browser state can become cross-snapshot stale.** Mitigation: complete
   identity keys, context invalidation before children, no evidence persistent
   cache, and stale-response tests.
@@ -1080,29 +1244,47 @@ selection/projection.
 - **Existing design approvals are currently stale by repository date/commit
   policy.** Mitigation: every prerequisite is revalidated and re-reviewed at
   implementation time; no historical green report authorizes code.
+- **Current Web shutdown may hang despite browser cancellation.** Mitigation:
+  activation depends on `web-runtime-shutdown-hardening-v1`, one process-level
+  deadline, residual-owner receipts, and real Uvicorn subprocess proofs; V2
+  remains dark if that child is absent or regresses.
+- **Python threads cannot be force-killed safely.** Mitigation: potentially
+  permanent reads use owned processes or are unavailable, permits remain held
+  while threads live, and residual threads fail the activation gate rather than
+  being reported clean.
+- **Future news/stream/L2 overlays could bypass temporal and rights controls.**
+  Mitigation: current DTOs contain no overlay data; a conditional governed child
+  is mandatory before any such route/capability and must set
+  `external_event_data=true`.
 
 ## Rollout and rollback
 
 ### Migration phases
 
-1. **Freeze baselines.** Snapshot current URL, OpenAPI, payload, page-state,
+1. **Freeze baselines.** Snapshot current URL, OpenAPI, full per-route payload/
+   header/error/capability/SSE behavior, page-state,
    K-line, viewport, capability, Data-page BTC, a11y, visual, and request-budget
    behavior. No production behavior changes.
-2. **Publish analysis product behind no consumer.** Build a Datasets-owned
+2. **Harden runtime shutdown.** Close the audited unbounded waits, add
+   QueryExecutionContext/owner cancellation and process-level admission, and
+   prove real Uvicorn total shutdown bounds. Existing routes retain behavior.
+3. **Publish analysis product behind no consumer.** Build a Datasets-owned
    immutable product from pinned BTC snapshots; verify golden methods, lineage,
    revision propagation, and rollback. Existing Web remains unchanged.
-3. **Add BFF/SDK contracts dark.** Add context and slice queries, read-only
+4. **Add Study and workspace query contracts dark.** Add owner queries,
+   transport-neutral context/slice DTOs, HTTP/SDK adapters, read-only
    guards, compatibility adapters, metrics, and capacity telemetry. Dual-read
    against legacy Observe/Assurance facts; no navigation change.
-4. **Ship React V2 behind feature/capability gates.** Observe first uses the new
+5. **Ship React V2 behind feature/capability gates.** Observe first uses the new
    BFF while preserving old URL and K-line behavior. Analyze appears only when
    its product capability is available.
-5. **Migrate Assurance and Research composition.** Switch to Datasets/Studies
+6. **Migrate Assurance and Research composition.** Switch to Datasets/Studies
    query handles, retaining legacy route parity and old page rollback.
-6. **Default V2 after parity window.** Require contract, visual, a11y, PIT,
-   read-only, and 1x/10x gates. Monitor identity errors, product lag, failure,
-   payload, and latency.
-7. **Retire compatibility only in a later change.** Removal requires measured
+7. **Default V2 after parity window.** Require runtime hardening, contract,
+   visual, a11y, PIT, read-only, shutdown and 1x/320-attempt gates. Monitor
+   identity errors, product lag, failure, payload, admission, latency and
+   residual owners.
+8. **Retire compatibility only in a later change.** Removal requires measured
    zero consumers, published window, snapshot updates, and explicit rollback.
 
 ### Rollback triggers
@@ -1114,6 +1296,8 @@ selection/projection.
 - browser metric fallback detected;
 - query-path write/provider call;
 - request/payload/render budget breach;
+- admission queue growth or SLO/alert threshold breach;
+- any residual owned process or unbounded shutdown stage;
 - accessibility blocker or overlapping UI;
 - elevated timeout/error/memory beyond approved envelope.
 
@@ -1129,33 +1313,86 @@ selection/projection.
   data.
 - Pending process/outbox facts, if introduced later, are retained for compatible
   recovery rather than discarded by the UI rollback.
+- The cutover runbook names flag and route-registration owners, exact disable
+  commands/mechanism, smoke checks, five-minute rollback decision target,
+  dashboard/receipt checks, communication/escalation path, and forward-recovery
+  criteria. It is rehearsed against temporary fixtures before default rollout.
 
 ## Child OpenSpec changes
 
 Actual implementation is split after this design is strictly approved:
 
-1. `btc-descriptive-analysis-product-v1`
+```mermaid
+flowchart TD
+    R[web-runtime-shutdown-hardening-v1]
+    D[btc-descriptive-analysis-product-v1]
+    S[btc-study-workspace-query-contract-v1]
+    Q[btc-workspace-query-contracts-v1]
+    W[btc-observation-analysis-web-v2]
+    C[btc-workspace-compatibility-cutover]
+    X[conditional btc-external-evidence-overlays-v1]
+
+    R --> Q
+    D --> Q
+    S --> Q
+    Q --> W
+    W --> C
+    Q --> C
+    D --> C
+    S --> C
+    C -. explicit later scope .-> X
+```
+
+1. `web-runtime-shutdown-hardening-v1`
+   - owner: Platform execution/events plus current Web runtime adapter;
+   - closes concurrent-stop, startup cleanup and executor-tail unbounded waits;
+     introduces process-level admission, QueryExecutionContext propagation,
+     ShutdownReceipt and real Uvicorn process tests;
+   - preserves current public routes and is independently rollbackable; V2
+     registration remains disabled until its strict approval and implementation
+     gates pass.
+2. `btc-descriptive-analysis-product-v1`
    - owner: Datasets;
    - delivers method registry, immutable derived DatasetVersion/Snapshot,
-     lineage, quality/PIT/revision contracts, repositories/adapters, golden
-     fixtures, and reversible release;
+     per-point PIT, field/method dependency manifests, lineage,
+     quality/revision contracts, repositories/adapters, golden fixtures, and
+     reversible release;
    - independently testable/rollbackable; no UI change.
-2. `btc-workspace-query-contracts-v1`
-   - owner: Interfaces plus Datasets/Studies public query contracts;
-   - delivers WorkspaceContext, versioned BFF slices, ErrorEnvelope mapping,
-     SDK, read-only guard, ETag/query budgets, and legacy adapters;
+3. `btc-study-workspace-query-contract-v1`
+   - owner: Studies;
+   - delivers transport-neutral StudyResultRef relationship queries,
+     stale/evidence-gap mapping, and tests that formal StudyRun accepts only
+     DatasetSnapshotRef;
+   - independently returns unavailable when no compatible Study evidence exists;
+     no Web dependency.
+4. `btc-workspace-query-contracts-v1`
+   - owner: Interfaces, consuming separately owned Datasets/Studies queries;
+   - delivers transport-neutral WorkspaceContext/slice application, peer HTTP
+     V2/compat/SDK adapters, complete ErrorEnvelope/route mapping, read-only
+     guard, ETag/query budgets, admission telemetry, and legacy adapters;
    - dark launch and dual-read; no default page change.
-3. `btc-observation-analysis-web-v2`
+5. `btc-observation-analysis-web-v2`
    - owner: Web Interfaces;
    - delivers four-task React composition, compact header, Analyze views,
      evidence rail, responsive/accessibility behavior, and feature flag;
-   - consumes only approved BFF DTOs; keeps the current K-line component.
-4. `btc-workspace-compatibility-cutover`
+   - consumes only approved HTTP DTOs; keeps the current K-line component and
+     removes browser `display_estimate` from all V2 components.
+6. `btc-workspace-compatibility-cutover`
    - owner: Interfaces/Bootstrap;
    - migrates Observe/Assurance/Research calls, verifies Data-page and old-client
-     parity, performs monitored default switch, and records retirement
-     conditions;
+     parity, verifies shutdown/capacity/SLO gates, rehearses rollback, performs
+     monitored default switch, and records retirement conditions;
    - does not remove legacy routes in the same PR.
+7. Conditional `btc-external-evidence-overlays-v1`
+   - required before any news, social, macro, on-chain, stream, L2, SSE overlay,
+     replay/redrive, or external-event capability is designed or implemented;
+   - sets `external_event_data=true` and governs Capture manifests, temporal
+     envelopes (`event_time`, `published_at`, `first_seen_at`,
+     `source_revised_at`), source rights/retention/deletion, multi-source ref
+     sets, capacity/backpressure, shared SSE hub/cursor expiry/resync, DLQ and
+     explicit Data Ops replay;
+   - Workspace GET remains a bounded projection read and never triggers capture,
+     replay, redrive or provider access.
 
 Each child maps to one reviewable PR, has its own strict design approval,
 focused tests, compatibility/data-safety evidence, feature/capability gate,
@@ -1163,14 +1400,17 @@ reverse-order rollback, and implementation-diff six-role review.
 
 ## Open Questions
 
-No unresolved question blocks this architecture design. The following values
-must be resolved with fixture/performance evidence in their named child without
-changing ownership:
+No unresolved question blocks approval of this design-only parent. The following
+values are deliberately delegated to named child approvals and cannot be chosen
+silently during implementation:
 
 - exact durable storage shape for the analysis DatasetVersion;
-- whether 2,000 series points is lowered after response/render measurements;
+- whether the 2,000 Observe/series caps are lowered after encoded-byte and
+  render measurements;
 - the final enum names for Dataset quality and Study relationship mapping;
-- the compatibility-window duration and retirement telemetry threshold;
+- the compatibility-window duration and zero-consumer retirement threshold;
+- exact approved Web bundle bytes after the child records the current legacy
+  baseline;
 - whether a second asset consumer later justifies generalizing BTC-specific DTO
   names.
 

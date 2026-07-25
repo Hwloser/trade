@@ -32,7 +32,11 @@ Observe SHALL retain the existing selected-channel daily K-line, `1D`/`1W`/`1M`/
 `1Y` display timeframes, local viewport restoration, Market/Compare modes,
 explicit date evidence, Formal/evaluated-candidate/observed separation, and
 point-in-time failure behavior. It SHALL add a compact observation strip whose
-values are server-provided and bound to the same market snapshot.
+values are server-provided and bound to the same market snapshot. Once V2 is
+enabled, no V2 Observe or Analyze component SHALL display the legacy
+`display_estimate` return, drawdown, realized-volatility, percentile, or another
+browser-computed business metric. Those estimates MAY exist only inside the
+complete legacy-page rollback bundle.
 
 #### Scenario: Selected observed data is newer than Formal
 - **WHEN** the selected observed snapshot has a later market watermark than the Formal baseline
@@ -44,6 +48,7 @@ values are server-provided and bound to the same market snapshot.
 - **THEN** the strip shows the supplied latest OHLCV, bar time, selected-channel lifecycle state, freshness, and coverage state
 - **AND THEN** every value carries the same market snapshot identity as the chart
 - **AND THEN** absent values remain unavailable rather than becoming zero, unchanged, or neutral
+- **AND THEN** it does not derive a return, drawdown, volatility, percentile, range, or volume statistic from chart rows
 
 #### Scenario: Chart compatibility behavior remains available
 - **WHEN** the user restores a valid existing chart mode, timeframe, selected date, or local viewport
@@ -130,8 +135,11 @@ decision.
 
 ### Requirement: Workspace states remain explicit and independently recoverable
 
-Each request-driven region SHALL have explicit `idle`, `loading`, `confirmed`,
-`partial`, `unavailable`, and `failed` presentation states where applicable.
+Each request-driven region SHALL keep transport state (`idle`, `loading`,
+`confirmed`, `failed`) orthogonal to observed condition (`nonempty`, `empty`,
+`partial`, `unavailable`, `stale`) where applicable. `empty` means a successful
+query over a valid scope with zero matching observations; it SHALL use a
+non-retryable, non-numeric presentation distinct from unavailable and failed.
 Stale prior evidence SHALL be separately labelled with its original identity.
 A region SHALL NOT infer success from another region or convert absence to a
 neutral numeric value.
@@ -147,6 +155,11 @@ neutral numeric value.
 - **THEN** the superseded request is cancelled or ignored by identity
 - **AND THEN** old current-truth content is cleared or explicitly retained only as labelled previous evidence
 - **AND THEN** only a response matching the complete active identity may become confirmed
+
+#### Scenario: Valid query returns no matching evidence
+- **WHEN** a confirmed owner query observes a valid scope with no matching metric, Study, lineage, or evidence records
+- **THEN** the region presents `empty` with the queried scope and stable reason code
+- **AND THEN** it does not show a retryable failure, unavailable-product message, zero-valued metric, or stale prior row
 
 ### Requirement: URL and navigation compatibility is additive
 

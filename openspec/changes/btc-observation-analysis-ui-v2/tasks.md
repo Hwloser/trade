@@ -23,8 +23,10 @@ child changes after this design receives strict approval and user confirmation.
   governance marker. Objective: define an implementable UI architecture without
   changing production behavior. Inputs: task 1.1 audit and repository design
   policy. Outputs: complete governed artifacts under this change. Affected
-  contracts: WorkspaceContext, AnalysisSnapshotRef, MetricObservation, BFF
-  slices, URL/API/SDK compatibility, responsive Web behavior. Validation:
+  contracts: WorkspaceContext, standard DatasetSnapshotRef,
+  AnalysisSnapshotDescriptor, MetricObservation, transport-neutral query
+  application/BFF slices, URL/API/SDK compatibility, responsive Web behavior.
+  Validation:
   OpenSpec artifacts contain normative scenarios and every selected policy
   profile has concrete evidence. Rollback: edit or remove only this design
   change before approval. Completion evidence: proposal/design/specs/tasks and
@@ -39,7 +41,7 @@ child changes after this design receives strict approval and user confirmation.
   `contract`, `forecast`, and `concurrency` profiles. Rollback: correct only
   governed design artifacts and rerun. Completion evidence: command output and
   task checkmark record the exact result.
-- [ ] 1.4 Run the six-role design review in a separate review worktree for [validates:btc-ui.task-flow] [validates:btc-analysis.product-boundary] [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:review]
+- [x] 1.4 Run the first-round six-role design review in a separate review worktree for [validates:btc-ui.task-flow] [validates:btc-analysis.product-boundary] [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:review]
   reliability, performance, architecture, data quality, observability, and
   news/future integration. Objective: challenge UI semantics, temporal
   correctness, data ownership, workload bounds, compatibility, and future
@@ -49,7 +51,11 @@ child changes after this design receives strict approval and user confirmation.
   judge returns a substantive report; contradictions receive at most one
   reconciliation round; all findings are evidence-backed. Rollback: discard the
   review-only worktree and no review evidence is fabricated. Completion
-  evidence: reports and consensus are retained outside governed artifact digest.
+  evidence: all six judges returned `CHANGES REQUIRED`; reports and consensus
+  are retained outside governed artifact digest, with findings covering standard
+  Dataset refs, per-point PIT, field-level revision impact, runtime shutdown,
+  owner cancellation/admission, full compatibility, empty state, payload
+  limits, observability, and conditional external evidence.
 - [ ] 1.5 Resolve all P0 and material P1 findings, rerun the non-strict check, [validates:btc-ui.compatibility] [validates:btc-analysis.product-boundary] [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:review]
   record current digest-bound `design-review.toml`, and run
   `./trade dev design-check btc-observation-analysis-ui-v2 --strict`.
@@ -94,55 +100,86 @@ child changes after this design receives strict approval and user confirmation.
   Datasets, not React or the BFF. Inputs: DatasetSnapshotRef, formal PIT/revision
   policy, current BTC daily contract, metric-method table, immutable-ref rules.
   Outputs: child proposal/design/spec/tasks for method registry, build/version/
-  snapshot/release, lineage, quality, query projection, repository/adapters, and
-  rollback. Affected contracts: AnalysisSnapshotRef, MetricObservation,
-  analysis series, Dataset lineage/revision. Validation: exact-decimal and
+  snapshot/release, standard DatasetSnapshotRef, query-only
+  AnalysisSnapshotDescriptor, field/method dependency manifest, lineage,
+  quality, query projection, repository/adapters, and rollback. Affected
+  contracts: DatasetVersionRef/DatasetSnapshotRef, MetricObservation, analysis
+  series, Dataset lineage/revision. Validation: exact-decimal and per-point
   temporal golden fixtures cover return, volatility, range, drawdown,
-  percentile, coverage, missing/quarantine/revision/minimum samples, identical
-  input determinism, tamper rejection, and no moving inputs. Rollback: select
+  percentile, coverage, missing/late/quarantine/revision/minimum samples,
+  market/unit identity, changed high/low/volume/clock/quality with unchanged
+  close, identical input determinism, tamper rejection, and no moving inputs.
+  Rollback: select
   the prior verified analysis release or disable analysis capability while
   retaining immutable artifacts. Completion evidence: child strict design
   approval defines one Dataset owner and no UI/BFF business calculation.
-- [ ] 3.2 Prepare the Studies relationship contract in the analysis product or [validates:btc-analysis.product-boundary] [validates:btc-ui.temporal-coherence] [validation:test]
-  study-boundary child. Objective: prevent forward labels, inference, validation,
+- [ ] 3.2 Create `btc-study-workspace-query-contract-v1` as an independent [validates:btc-analysis.product-boundary] [validates:btc-ui.temporal-coherence] [validation:test]
+  Studies-owned child. Objective: prevent forward labels, inference, validation,
   and promotion from leaking into descriptive Analyze metrics. Inputs: H1
-  receipt, Study lifecycle parent spec, Dataset/Analysis refs, revision flow.
-  Outputs: StudyResultRef relationship DTO, stale/evidence-gap states, and
-  forbidden-field/dependency test plan. Affected contracts: Research slice,
-  Study result input refs, stale-after-revision mapping. Validation: contract
-  tests reject moving/raw/provider inputs and reject forecast/recommendation
-  fields in the descriptive analysis schema; deterministic Study fixtures retain
-  their own method/sample/uncertainty/lifecycle. Rollback: retain legacy H1
+  receipt, Study lifecycle parent spec, DatasetSnapshotRef and query descriptor,
+  revision flow.
+  Outputs: governed child artifacts, transport-neutral StudyResultRef
+  relationship query, stale/evidence-gap states, and forbidden-field/dependency
+  test plan. Affected contracts: Research slice, Study result input refs,
+  stale-after-revision mapping. Validation: contract tests prove formal StudyRun
+  accepts only verified DatasetSnapshotRef, reject descriptor/moving/raw/provider
+  inputs, and reject forecast/recommendation fields in the descriptive analysis
+  schema; deterministic Study fixtures retain their own
+  method/sample/uncertainty/lifecycle. Rollback: retain legacy H1
   rendering and keep new relationship unavailable. Completion evidence: the
   named child owns every inferential field in Studies.
-## 4. BFF and SDK boundary preparation
+## 4. Runtime, BFF, and SDK boundary preparation
 
-- [ ] 4.1 Create `btc-workspace-query-contracts-v1` as an independent governed [validates:btc-ui.bff-boundary] [validates:btc-ui.compatibility] [validates:btc-ui.temporal-coherence] [validation:test]
+- [ ] 4.1 Create `web-runtime-shutdown-hardening-v1` as an independent governed [validates:btc-ui.bff-boundary] [validation:test]
+  prerequisite child before V2 route activation. Objective: close the audited
+  shutdown hang paths and make owner cancellation/admission truthful. Inputs:
+  current runtime resources/commands/app/web CLI, public operation-control
+  contracts, and real Uvicorn probes. Outputs: child proposal/design/spec/tasks
+  for one monotonic shutdown deadline, bounded concurrent stop and startup
+  cleanup, executor-tail behavior, QueryExecutionContext, 32-active/32-queued
+  process admission, ShutdownReceipt, process-group reap, and supervisor-level
+  termination. Affected contracts: runtime operation receipts and internal query
+  execution only; public Observatory payloads remain unchanged. Validation:
+  real subprocess tests cover idle, active cooperative query, non-cooperative
+  owned child, startup failure, concurrent stop, exhausted deadline and SIGINT;
+  total deadline is bounded, owned processes are reaped, Python thread residuals
+  are reported rather than falsely cleared, and unrelated processes are never
+  signalled. Rollback: revert runtime implementation and keep all V2 routes/page
+  disabled. Completion evidence: child strict approval, focused tests and
+  implemented-diff review pass before V2 activation.
+- [ ] 4.2 Create `btc-workspace-query-contracts-v1` as an independent governed [validates:btc-ui.bff-boundary] [validates:btc-ui.compatibility] [validates:btc-ui.temporal-coherence] [validation:test]
   child. Objective: introduce WorkspaceContext and active-view query slices
-  through Interfaces while preserving legacy Observatory contracts. Inputs:
-  approved public refs/DTOs, Dataset/Study query contracts, current router/facade,
-  URL/OpenAPI matrix and query budgets. Outputs: versioned HTTP/SDK DTOs,
+  through a transport-neutral application while preserving legacy Observatory
+  contracts. Inputs: approved public refs/DTOs, separate Dataset/Study query
+  contracts, runtime hardening, current router/facade, full URL/OpenAPI route
+  matrix and query budgets. Outputs: framework-free query DTOs, peer versioned
+  HTTP V2/HTTP compat/SDK adapters,
   context/observe/analyze/assurance/lineage/research/evidence endpoints,
   compatibility mapper, capability bits and ErrorEnvelope mapping. Affected
   contracts: additive workspace API, legacy Observatory HTTP/ETag/error behavior,
-  SDK/notebook semantics. Validation: OpenAPI/DTO/legacy snapshots, context-first
-  topology, same-identity ETag, mismatch rejection, partial-owner errors and
-  Web/SDK parity. Rollback: disable additive route registration and select the
-  legacy adapter. Completion evidence: child strict approval and dark-launch
-  dual-read plan with no legacy removal.
-- [ ] 4.2 Define and validate read-only, deadline, cancellation and capacity [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:test]
+  SDK/notebook semantics. Validation: OpenAPI/DTO/full per-route legacy
+  snapshots, context-first topology, same-identity ETag, mismatch rejection,
+  partial-owner errors and Web/SDK parity. Rollback: disable additive route
+  registration and select the legacy adapter. Completion evidence: child strict
+  approval and bounded dark-launch dual-read plan with no legacy removal.
+- [ ] 4.3 Define and validate read-only, deadline, cancellation and capacity [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:test]
   guards in the query-contract child. Objective: ensure the BFF cannot become a
   workflow or unbounded aggregation owner. Inputs: owner query ports,
-  QueryBudget, Platform status/error APIs, current resource cancellation,
-  specified 1x/10x envelopes. Outputs: instrumented read-only integration
-  fixtures and capacity-result schema. Affected contracts: every workspace GET,
-  cache identity, timeout ErrorEnvelope, response budgets, telemetry. Validation:
+  QueryBudget, QueryExecutionContext, Platform status/error APIs, hardened
+  resource cancellation/admission, and specified 1x/320-attempt envelopes.
+  Outputs: instrumented read-only integration fixtures and capacity-result
+  schema. Affected contracts: every workspace GET, cache identity, timeout
+  ErrorEnvelope, response budgets, telemetry. Validation:
   provider/write/repair/publish/Study-run spies fail the read; disconnect and
-  deadline terminate owned work; four-request, 2 MiB, 2,000-point, 100-metric,
-  pagination and 10x overload cases remain bounded and preserve partial reports.
+  deadline propagate cancellation while permits remain owned until exit;
+  four-request subject, 32-active/32-queued process, 1-second admission, 2 MiB,
+  2,000 Observe/series, 100-metric, pagination and 320-attempt overload cases
+  remain bounded and preserve valid partial reports. Compact encoded DTO goldens
+  prove byte ceilings.
   Rollback: disable the new BFF; no business state exists to migrate. Completion
   evidence: child tests distinguish timeout/tool error from unavailable product
-  and show zero residual query owners.
+  and separately report residual threads while showing zero residual owned
+  process groups.
 ## 5. Web and compatibility cutover preparation
 
 - [ ] 5.1 Create `btc-observation-analysis-web-v2` as an independent governed [validates:btc-ui.task-flow] [validates:btc-ui.compatibility] [validates:btc-ui.bff-boundary] [validation:test]
@@ -155,22 +192,40 @@ child changes after this design receives strict approval and user confirmation.
   request topology, visual/a11y behavior, K-line compatibility. Validation:
   Vitest/typecheck/build/bundle plus Playwright functional/a11y/visual/canvas
   checks at all target viewports, rapid-switch cancellation, independent
-  failures, and a static/contract guard proving Analyze does not consume raw
-  OHLCV for metric calculation. Rollback: turn off V2 and restore the legacy
+  failures, successful empty states, measured heap/long-task/interaction/bundle
+  budgets, and a static/contract guard proving every V2 Observe/Analyze
+  component rejects raw OHLCV for metric calculation and never calls
+  `display_estimate`. Rollback: turn off V2 and restore the complete legacy
   page bundle without data cleanup. Completion evidence: child strict approval,
   focused green tests, and implemented-diff six-role review.
 - [ ] 5.2 Create `btc-workspace-compatibility-cutover` only after analysis, [validates:btc-ui.compatibility] [validates:btc-ui.temporal-coherence] [validation:test]
-  query, and Web children meet their independent exit criteria. Objective:
+  runtime, Study-query, workspace-query, and Web children meet their independent
+  exit criteria. Objective:
   switch Observe/Assurance/Research composition and V2 default safely while
   keeping old clients and the Data-page BTC adapter working. Inputs: dual-read
   reports, compatibility snapshots, feature/capability telemetry, rollback
   runbook. Outputs: staged percentage/local gate, monitored default, consumer
   inventory, and later retirement proposal. Affected contracts: legacy and V2
-  HTTP, URL, SDK, Data page, page assets. Validation: parity, PIT identity,
-  read-only, error/status, latency/payload, accessibility and rollback drills
-  pass before each stage. Rollback: select legacy routes/page and previous
-  verified Dataset release; retain immutable facts. Completion evidence: one
-  reviewable cutover PR with no legacy deletion.
+  HTTP, URL, SDK, Data page, page assets. Validation: full per-route parity, PIT
+  identity, read-only, error/status, process admission, latency/payload,
+  shutdown, accessibility, SLI/alert and rollback drills pass before each stage.
+  Rollback: the runbook names flag/route owners, exact mechanism, smoke checks,
+  five-minute decision target and escalation path; select legacy routes/page and
+  previous verified Dataset release; retain immutable facts. Completion evidence:
+  one reviewable cutover PR with no legacy deletion.
+- [ ] 5.3 Create conditional `btc-external-evidence-overlays-v1` before any [validates:btc-ui.temporal-coherence] [validation:review]
+  news, social, macro, on-chain, stream, L2, SSE-overlay, replay or redrive
+  capability. Objective: prevent future heterogeneous evidence from bypassing
+  Capture, rights, PIT and capacity governance. Inputs: parent Capture/Datasets/
+  Studies contracts and concrete source manifests. Outputs: child artifacts with
+  `external_event_data=true`, source rights/retention/deletion, event/published/
+  first-seen/revision clocks, multi-source immutable refs, bounded projection,
+  shared SSE hub, per-client byte/item queues, cursor expiry/resync, DLQ and
+  explicit Data Ops replay. Affected contracts: only the future capability;
+  current daily workspace remains unchanged. Validation: Workspace GET cannot
+  call provider/capture/replay, rights withdrawal blocks serving, and bounded
+  stream backpressure/reconnect tests pass. Rollback: disable overlay and retain
+  daily V2. Completion evidence: separate strict approval before code.
 ## 6. Final handoff audit
 
 - [ ] 6.1 Review child-proposal evidence against this design before any [validates:btc-ui.task-flow] [validates:btc-analysis.product-boundary] [validates:btc-ui.bff-boundary] [validates:btc-ui.compatibility] [validates:btc-ui.temporal-coherence] [validation:review]
