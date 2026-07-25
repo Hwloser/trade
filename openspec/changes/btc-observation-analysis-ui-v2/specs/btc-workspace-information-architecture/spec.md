@@ -136,10 +136,12 @@ decision.
 ### Requirement: Workspace states remain explicit and independently recoverable
 
 Each request-driven region SHALL keep transport state (`idle`, `loading`,
-`confirmed`, `failed`) orthogonal to observed condition (`nonempty`, `empty`,
-`partial`, `unavailable`, `stale`) where applicable. `empty` means a successful
-query over a valid scope with zero matching observations; it SHALL use a
-non-retryable, non-numeric presentation distinct from unavailable and failed.
+`confirmed`, `failed`), observation condition (`nonempty`, `empty`, or absent
+before confirmation), and product availability (`complete`, `partial`,
+`unavailable`, `stale`) as orthogonal axes where applicable. `empty` means a
+successful query over a valid scope with zero matching observations; it SHALL
+use a non-retryable, non-numeric presentation distinct from unavailable and
+failed.
 Stale prior evidence SHALL be separately labelled with its original identity.
 A region SHALL NOT infer success from another region or convert absence to a
 neutral numeric value.
@@ -160,6 +162,12 @@ neutral numeric value.
 - **WHEN** a confirmed owner query observes a valid scope with no matching metric, Study, lineage, or evidence records
 - **THEN** the region presents `empty` with the queried scope and stable reason code
 - **AND THEN** it does not show a retryable failure, unavailable-product message, zero-valued metric, or stale prior row
+
+#### Scenario: State axes are combined
+- **WHEN** a region presents a completed empty product
+- **THEN** it uses `transport=confirmed`, `condition=empty`, and `availability=complete`
+- **AND THEN** a policy-sufficient nonempty partial product uses `confirmed`, `nonempty`, and `partial`
+- **AND THEN** a transport failure has no observation condition and cannot reuse a prior availability state as current
 
 ### Requirement: URL and navigation compatibility is additive
 

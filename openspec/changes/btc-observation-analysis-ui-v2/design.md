@@ -175,8 +175,10 @@ capacity remains owned. Current code still has unbounded concurrent-stop,
 startup-cleanup and executor-tail waits, and Uvicorn replaces the CLI SIGINT
 handler while lifespan shutdown runs, so the current watchdog cannot guarantee
 termination of a stuck lifespan. V2 activation therefore requires the separate
-runtime-hardening child, owner/stage receipts, and a supervisor-independent
-termination proof; it never waits for or signals an unrelated process.
+runtime-hardening child, one 12-second process deadline, CI signal-to-reap
+within 15 seconds, supervisor-owned forced terminal receipts, and a
+supervisor-independent termination proof; it never waits for or signals an
+unrelated process.
 
 ### Performance and capacity
 
@@ -189,7 +191,11 @@ page and 100 evidence refs. The product can retain 7,300 daily positions behind
 bounded range/cursor reads. Hidden views remain lazy, detail is selected
 explicitly, overload is rejected or paginated, and temporary-fixture 1x and
 320-attempt tests measure latency, memory, event-loop lag, cancellation and
-residual owners.
+residual owners. The overload gate enforces 100/250 ms server event-loop p95/p99,
+256 MiB peak RSS delta, 32 MiB retained RSS delta after cooldown and no
+monotonic growth. Compatibility dual-read deterministically samples at most 1%,
+permits two active shadows with no queue and a two-second ceiling, and stops on
+fixed sample, time, latency, read-amplification, or RSS thresholds.
 
 ### Persistent-write safety
 
@@ -246,13 +252,14 @@ owner per fact, bounded reads, independent failures and Web/SDK parity.
 
 Delivery is split into runtime hardening, analysis-product, Study-query,
 workspace-query, Web and compatibility children. The analysis product ships
-without consumers, the BFF dark-launches with dual-read evidence, Web remains
-feature-gated, and cutover follows OpenAPI/URL/PIT/read-only/capacity/visual/a11y
-parity. Any identity mismatch, write attempt, quantified latency/payload breach,
-inaccessible layout or shutdown residual disables V2 and restores the legacy
-page/routes and previous verified analysis release without deleting data or
-changing old URLs. The cutover child owns a rehearsed runbook with flag owner,
-scope, activation mechanism, smoke checks, time limit and escalation path.
+without consumers, the BFF dark-launches with deterministic bounded dual-read
+evidence, Web remains feature-gated, and cutover follows OpenAPI/URL/PIT/read-
+only/capacity/visual/a11y parity. Any identity mismatch, write attempt,
+quantified latency/payload breach, inaccessible layout or shutdown residual
+disables V2 and restores the legacy page/routes and previous verified analysis
+release without deleting data or changing old URLs. The cutover child owns a
+rehearsed runbook with flag owner, scope, activation mechanism, smoke checks,
+time limit and escalation path.
 
 ## Requirements and acceptance
 
@@ -303,7 +310,8 @@ disposition, and current digest-bound strict approval.
 | Hypothesis, forward label, effect, validation, promotion, stale Study result | `src/trade/studies/` | `trade_py/observatory/research`, current H1 receipt |
 | Cross-context revision rerun/evidence-gap flow | `src/trade/processes/` | later Process Manager child |
 | Query timeout/cancellation/status/cache primitives | `src/trade/platform/` public APIs | current HTTP/runtime primitives |
-| BTC WorkspaceContext and slice DTO composition | `src/trade/interfaces/http/bff/btc_workspace/` | `trade_web/backend/observatory/` compatibility router |
+| BTC WorkspaceContext and slice DTO/query composition | `src/trade/interfaces/btc_workspace/` | `trade_py/observatory/query/` behind compatibility adapters |
+| BTC V2 HTTP protocol adapter | `src/trade/interfaces/http/bff/btc_workspace/` | `trade_web/backend/observatory/` router patterns |
 | SDK query surface | `src/trade/interfaces/sdk/btc_workspace.py` | current Observatory SDK |
 | React product surface | repository `web/` after layout migration | `trade_web/frontend/src/pages/observatory/` |
 | Legacy HTTP/URL mapping | `src/trade/interfaces/http/compat/observatory/` | current route/type/url helpers |
@@ -340,7 +348,7 @@ studies/
   ports/
   adapters/
 
-interfaces/http/bff/btc_workspace/
+interfaces/btc_workspace/
   context.py
   observe.py
   analyze.py
@@ -348,11 +356,13 @@ interfaces/http/bff/btc_workspace/
   lineage.py
   research.py
   evidence.py
-  mapping.py
-
-interfaces/btc_workspace/
   contracts.py
   queries.py
+
+interfaces/http/bff/btc_workspace/
+  routes.py
+  authorization.py
+  mapping.py
 
 interfaces/http/compat/observatory/
 interfaces/sdk/btc_workspace.py
@@ -396,10 +406,14 @@ flowchart LR
     BOOT --> C
 ```
 
-Datasets and Studies never import Interfaces or React. HTTP V2, HTTP compat and
-SDK are peer adapters over transport-neutral query contracts; SDK does not
-import FastAPI response shaping. The BFF never imports concrete
-repositories/adapters. Only Bootstrap composes concrete query implementations.
+Datasets and Studies never import Interfaces or React. All context/observe/
+analyze/assurance/lineage/research/evidence composition lives only in
+`interfaces/btc_workspace/`. HTTP V2, HTTP compat and SDK are peer adapters over
+that transport-neutral application; HTTP directories own only authorization,
+protocol parsing, status/header/ETag and response mapping, and SDK does not
+import FastAPI response shaping. Architecture guards reject duplicated slice
+composition in an HTTP adapter. The BFF never imports concrete repositories/
+adapters. Only Bootstrap composes concrete query implementations.
 
 ## Data and state invariants
 
@@ -936,12 +950,23 @@ permit remains held until exit is observed. Structured composition cancels
 unfinished siblings and joins them only within the shared remaining budget;
 late or mismatched results are discarded.
 
-Shutdown uses one monotonic process deadline across admission close, query
+Shutdown uses one monotonic 12-second `T_shutdown` from the first accepted
+SIGINT/SIGTERM or startup-cleanup decision across admission close, query
 cancellation, owned process-group TERM/KILL/reap, persistence flush, and
-executor cleanup. No stage can restart its own full timeout or perform
-`shutdown(wait=True)` after the shared deadline is exhausted. `ShutdownReceipt`
-records stage, deadline, graceful/forced counts, residual owner/category and last
-safe error. A Python thread that cannot terminate is residual, not reaped.
+executor cleanup. Shutdown overrides a longer request deadline. No stage can
+restart its own full timeout or perform `shutdown(wait=True)` after the shared
+deadline is exhausted. CI asserts signal-to-process-reap at no more than 15
+seconds, allowing three seconds only for loaded-runner scheduling, not runtime
+work. Graceful exit is code 0; deadline-forced supervisor exit is 124; startup
+cleanup failure uses the repository-standard software-error code frozen by the
+runtime child.
+
+The serving process may append incomplete stage receipts, but its supervisor is
+the authoritative observer for deadline-forced termination. After `waitpid`, the
+supervisor atomically appends the terminal outcome with exit path, graceful/
+forced counts, residual process group/thread category, and last safe error. A
+missing, interrupted, or non-terminal child receipt can never become
+`completed`. A Python thread that cannot terminate is residual, not reaped.
 
 Actual-code audit found three unresolved current runtime paths: concurrent
 `stop()` callers can wait without a deadline, startup-failure cleanup uses an
@@ -997,8 +1022,16 @@ bound requires design review.
   after one second rather than growing another queue.
 - Browser abort, owner timeout, and process shutdown share cancellation identity,
   but capacity is released only after cooperative exit or owned-process reap.
-- Compatibility dual-read has an explicit sample budget and never doubles every
-  production request indefinitely.
+- Compatibility dual-read selects at most 1% of eligible complete request
+  identities by a fixed versioned identity hash. It permits at most two active
+  shadow reads per process, has no queue, and uses the lesser of two seconds or
+  the primary request's remaining deadline. Shadow completion never delays or
+  changes the primary response.
+- Dual-read stops automatically after the earlier of seven elapsed days or
+  1,000 completed shadow identities. It stops sooner if rolling owner-read
+  amplification exceeds 1.01x, main-path p95 latency regresses by more than 5%,
+  or shadow-attributable RSS exceeds 32 MiB against the recorded non-shadow
+  baseline.
 
 ### 10x validation
 
@@ -1023,6 +1056,10 @@ Initial rollout thresholds are:
   under the declared 1x fixture workload;
 - 10x overload produces bounded 429/504 results, no OOM, no queue growth after
   admission closes, and zero residual owned process groups after shutdown;
+- under the 320-attempt fixture, server event-loop lag is at most 100 ms p95 and
+  250 ms p99, peak RSS delta from warmed idle is at most 256 MiB, and RSS after
+  a 60-second cooldown is at most 32 MiB above the pre-overload warmed baseline;
+  three repeated runs show no monotonic retained-RSS growth;
 - browser heap after five context/view cycles returns to within 20 MiB of the
   post-first-cycle baseline, long-task p95 is at most 100 ms, and interaction
   p95 is at most 250 ms on the declared CI browser/host profile;
@@ -1035,6 +1072,9 @@ Initial rollout thresholds are:
 The implementation children record hardware/runtime/fixture identities with
 these measurements. A child may propose tighter or environment-normalized
 numbers, but cannot waive process, payload, cleanup, or no-growth guarantees.
+If the declared CI profile cannot sustain these initial numbers, changing them
+requires an evidence-backed amendment and renewed review before implementation;
+report-only performance output is not completion evidence.
 
 ## Observability and operations
 
@@ -1347,7 +1387,8 @@ flowchart TD
    - owner: Platform execution/events plus current Web runtime adapter;
    - closes concurrent-stop, startup cleanup and executor-tail unbounded waits;
      introduces process-level admission, QueryExecutionContext propagation,
-     ShutdownReceipt and real Uvicorn process tests;
+     one 12-second total shutdown budget, supervisor-terminal ShutdownReceipt
+     and real Uvicorn process tests;
    - preserves current public routes and is independently rollbackable; V2
      registration remains disabled until its strict approval and implementation
      gates pass.
@@ -1369,7 +1410,8 @@ flowchart TD
    - owner: Interfaces, consuming separately owned Datasets/Studies queries;
    - delivers transport-neutral WorkspaceContext/slice application, peer HTTP
      V2/compat/SDK adapters, complete ErrorEnvelope/route mapping, read-only
-     guard, ETag/query budgets, admission telemetry, and legacy adapters;
+     guard, ETag/query budgets, admission telemetry, deterministic bounded
+     dual-read, and legacy adapters;
    - dark launch and dual-read; no default page change.
 5. `btc-observation-analysis-web-v2`
    - owner: Web Interfaces;
@@ -1386,11 +1428,15 @@ flowchart TD
 7. Conditional `btc-external-evidence-overlays-v1`
    - required before any news, social, macro, on-chain, stream, L2, SSE overlay,
      replay/redrive, or external-event capability is designed or implemented;
-   - sets `external_event_data=true` and governs Capture manifests, temporal
-     envelopes (`event_time`, `published_at`, `first_seen_at`,
-     `source_revised_at`), source rights/retention/deletion, multi-source ref
-     sets, capacity/backpressure, shared SSE hub/cursor expiry/resync, DLQ and
-     explicit Data Ops replay;
+   - sets `external_event_data=true` and maps every parent Capture obligation:
+     original source values and timezone, event/published/observed/received/
+     first-seen/available/revision clocks, precision/confidence, finality,
+     correction/retraction, rights/retention/deletion and multi-source immutable
+     ref sets;
+   - separately owns Capture quarantine, Platform delivery DLQ, immutable
+     artifact replay, event-envelope redelivery, and explicit provider-refetch
+     Commands; it also governs capacity/backpressure, a shared SSE hub,
+     per-client byte/item queues, and cursor expiry/resync;
    - Workspace GET remains a bounded projection read and never triggers capture,
      replay, redrive or provider access.
 

@@ -98,9 +98,12 @@ Workspace payloads and errors SHALL distinguish transport failure, capability
 denial, successful empty result, context unavailable, product unavailable,
 partial product, stale product, identity mismatch, PIT not proven, quality
 blocked, query-budget exceeded, and unsupported selector. Every error SHALL use
-the versioned ErrorEnvelope or its legacy-compatible mapping with safe message,
-stable code, category, HTTP status, retryability, bounded Retry-After where
-applicable, server request id, correlation id, and bounded evidence references.
+the transport-neutral versioned ErrorEnvelope or its legacy-compatible mapping
+with safe message, stable code, category, retryability, server request id,
+correlation id, and bounded evidence references. ErrorEnvelope SHALL NOT contain
+HTTP status or headers. The HTTP adapter SHALL map error category/code to HTTP
+status and bounded `Retry-After`; SDK preserves the same neutral envelope without
+transport fields.
 
 The baseline mapping SHALL be: invalid selector/version `400`; authorization or
 capability denial `403`; unknown explicit evidence identity `404`; context,
@@ -135,6 +138,12 @@ and receipts; neither identifier SHALL enter business or cache identity.
 - **AND THEN** every owned process is reaped, while a Python thread that cannot be terminated is reported as residual rather than falsely reported reaped
 - **AND THEN** late results are discarded and a bounded ShutdownReceipt identifies stage, deadline, graceful/forced counts, residual owner/category, and last safe error
 - **AND THEN** shutdown does not wait for or signal unrelated processes, shared external services, or another runtime owner's resources
+
+#### Scenario: Serving process misses the shutdown deadline
+- **WHEN** the process has not exited within the single 12-second monotonic shutdown budget
+- **THEN** the supervisor force-terminates and reaps it, and CI observes process exit within 15 seconds of the first signal
+- **AND THEN** the supervisor atomically appends the authoritative terminal ShutdownReceipt with forced exit code 124
+- **AND THEN** an absent, interrupted, or incomplete in-process receipt is never reported as completed
 
 #### Scenario: Runtime hardening prerequisite is absent
 - **WHEN** `web-runtime-shutdown-hardening-v1` lacks current strict approval, implementation evidence, or real Uvicorn subprocess proof
@@ -210,6 +219,36 @@ Exceeding a budget SHALL be explicit and SHALL NOT silently truncate evidence.
 - **AND THEN** five context/view cycles return browser heap to within 20 MiB of the post-first-cycle baseline
 - **AND THEN** long-task p95 is no more than 100 ms and interaction p95 no more than 250 ms
 - **AND THEN** a 320-attempt overload never grows the queue beyond 32, never OOMs, and leaves zero residual owned process groups after shutdown
+- **AND THEN** server event-loop lag is no more than 100 ms p95 and 250 ms p99
+- **AND THEN** peak server RSS delta is no more than 256 MiB, retained RSS after a 60-second cooldown is no more than 32 MiB above warmed baseline, and three repeated runs show no monotonic retained-RSS growth
+
+### Requirement: Compatibility dual-read is deterministic and strictly bounded
+
+Dark-launch comparison SHALL sample no more than 1% of eligible complete request
+identities using a fixed versioned identity hash. A process SHALL run at most two
+shadow reads, SHALL NOT queue shadow work, and SHALL give each shadow the lesser
+of two seconds or the primary request's remaining deadline. Shadow work SHALL
+never delay, fail, or alter the primary response.
+
+Dual-read SHALL stop after the earlier of seven days or 1,000 completed shadow
+identities. It SHALL stop sooner when rolling owner-read amplification exceeds
+1.01x, main-path p95 latency regresses by more than 5%, or shadow-attributable
+RSS exceeds 32 MiB against the recorded non-shadow baseline.
+
+#### Scenario: Eligible request is not selected
+- **WHEN** the versioned identity hash falls outside the configured one-percent sample
+- **THEN** only the primary query runs
+- **AND THEN** no probabilistic or unseeded sampling changes that decision
+
+#### Scenario: Shadow capacity is full
+- **WHEN** two shadow reads are active or no shadow time budget remains
+- **THEN** the comparison is skipped with a bounded counter
+- **AND THEN** it is not queued and the primary request remains unaffected
+
+#### Scenario: Dual-read window completes or breaches a stop threshold
+- **WHEN** seven days, 1,000 completed identities, or any amplification/latency/RSS stop threshold is reached
+- **THEN** new shadow admission closes automatically
+- **AND THEN** the compatibility report retains completed comparison evidence and the main route continues without shadow reads
 
 ### Requirement: Caching is immutable-reference aware and bounded
 
@@ -276,15 +315,24 @@ internal parquet directly, or import adapters.
 - **THEN** the SDK exposes the structured unavailable state and reason codes
 - **AND THEN** it does not coerce the result to `0`, `NaN`, an empty DataFrame, or a successful optional value without status
 
+#### Scenario: SDK receives an application error
+- **WHEN** the transport-neutral query application returns ErrorEnvelope
+- **THEN** the SDK exposes code, category, retryability, request/correlation identity, safe message, and bounded evidence refs
+- **AND THEN** the SDK DTO contains no HTTP status, header, or Retry-After field
+
 ### Requirement: External evidence and streaming require a separate governed capability
 
 This daily BTC workspace SHALL NOT expose news, social, macro, on-chain, stream,
 L2, or external-event overlays under this change. Before any such route,
 capability, SSE channel, replay, or redrive is implemented, a separate OpenSpec
 change SHALL set `external_event_data=true` and define Capture SourceManifest,
-source rights and deletion, event/publication/first-seen/revision clocks,
-multi-source immutable reference sets, Dataset/Study ownership, bounded
-projection, capacity, reconnect and replay semantics.
+source rights and deletion, original source timezone/value, event, publication,
+observed, received, first-seen, available and revision clocks, temporal
+precision/confidence, finality, correction/retraction, multi-source immutable
+reference sets, Dataset/Study ownership, bounded projection, capacity, reconnect
+and replay semantics. It SHALL separately assign Capture quarantine, Platform
+delivery DLQ, immutable-artifact replay, event-envelope redelivery, and explicit
+provider-refetch Command ownership.
 
 #### Scenario: Future external overlay is proposed
 - **WHEN** a child proposes news, sentiment, macro, on-chain, stream, L2, or SSE evidence

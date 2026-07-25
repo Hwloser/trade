@@ -109,6 +109,11 @@ child changes after this design receives strict approval and user confirmation.
   percentile, coverage, missing/late/quarantine/revision/minimum samples,
   market/unit identity, changed high/low/volume/clock/quality with unchanged
   close, identical input determinism, tamper rejection, and no moving inputs.
+  The child freezes a purpose-by-availability-basis-by-confidence admissibility
+  matrix and a fixture-by-fixture table with exact values/states/reasons for
+  identical/conflicting duplicates, non-final bars, OHLC violations,
+  missing/late clocks, 251/252 boundaries, zero variance, field revisions and
+  tampering.
   Rollback: select
   the prior verified analysis release or disable analysis capability while
   retaining immutable artifacts. Completion evidence: child strict design
@@ -125,7 +130,9 @@ child changes after this design receives strict approval and user confirmation.
   accepts only verified DatasetSnapshotRef, reject descriptor/moving/raw/provider
   inputs, and reject forecast/recommendation fields in the descriptive analysis
   schema; deterministic Study fixtures retain their own
-  method/sample/uncertainty/lifecycle. Rollback: retain legacy H1
+  method/sample/uncertainty/lifecycle. Type/ref verification failure is rejected
+  before StudyRun creation; `insufficient_data` is reserved for a verified
+  DatasetSnapshotRef whose eligible sample is inadequate. Rollback: retain legacy H1
   rendering and keep new relationship unavailable. Completion evidence: the
   named child owns every inferential field in Studies.
 ## 4. Runtime, BFF, and SDK boundary preparation
@@ -135,16 +142,19 @@ child changes after this design receives strict approval and user confirmation.
   shutdown hang paths and make owner cancellation/admission truthful. Inputs:
   current runtime resources/commands/app/web CLI, public operation-control
   contracts, and real Uvicorn probes. Outputs: child proposal/design/spec/tasks
-  for one monotonic shutdown deadline, bounded concurrent stop and startup
-  cleanup, executor-tail behavior, QueryExecutionContext, 32-active/32-queued
-  process admission, ShutdownReceipt, process-group reap, and supervisor-level
-  termination. Affected contracts: runtime operation receipts and internal query
-  execution only; public Observatory payloads remain unchanged. Validation:
+  for one 12-second monotonic shutdown deadline, bounded concurrent stop and
+  startup cleanup, executor-tail behavior, QueryExecutionContext,
+  32-active/32-queued process admission, process-group reap, in-process stage
+  receipts, and supervisor-owned terminal ShutdownReceipt. Affected contracts:
+  runtime operation receipts and internal query execution only; public
+  Observatory payloads remain unchanged. Validation:
   real subprocess tests cover idle, active cooperative query, non-cooperative
   owned child, startup failure, concurrent stop, exhausted deadline and SIGINT;
-  total deadline is bounded, owned processes are reaped, Python thread residuals
-  are reported rather than falsely cleared, and unrelated processes are never
-  signalled. Rollback: revert runtime implementation and keep all V2 routes/page
+  signal-to-reap is at most 15 seconds on CI for a 12-second runtime budget,
+  graceful exit is 0, forced deadline exit is 124, owned processes are reaped,
+  Python thread residuals are reported rather than falsely cleared, supervisor
+  terminal receipts survive child receipt absence/interruption, and unrelated
+  processes are never signalled. Rollback: revert runtime implementation and keep all V2 routes/page
   disabled. Completion evidence: child strict approval, focused tests and
   implemented-diff review pass before V2 activation.
 - [ ] 4.2 Create `btc-workspace-query-contracts-v1` as an independent governed [validates:btc-ui.bff-boundary] [validates:btc-ui.compatibility] [validates:btc-ui.temporal-coherence] [validation:test]
@@ -155,13 +165,18 @@ child changes after this design receives strict approval and user confirmation.
   matrix and query budgets. Outputs: framework-free query DTOs, peer versioned
   HTTP V2/HTTP compat/SDK adapters,
   context/observe/analyze/assurance/lineage/research/evidence endpoints,
-  compatibility mapper, capability bits and ErrorEnvelope mapping. Affected
+  compatibility mapper, capability bits, transport-neutral ErrorEnvelope, and
+  HTTP-only status/header/Retry-After mapping. Affected
   contracts: additive workspace API, legacy Observatory HTTP/ETag/error behavior,
   SDK/notebook semantics. Validation: OpenAPI/DTO/full per-route legacy
   snapshots, context-first topology, same-identity ETag, mismatch rejection,
   partial-owner errors and Web/SDK parity. Rollback: disable additive route
   registration and select the legacy adapter. Completion evidence: child strict
-  approval and bounded dark-launch dual-read plan with no legacy removal.
+  approval and deterministic dark-launch dual-read with no legacy removal:
+  fixed identity-hash sampling at no more than 1%, two active shadows per
+  process, no queue, at most two seconds, automatic stop at seven days or 1,000
+  completed identities, and earlier stop on 1.01x read amplification, 5% p95
+  regression, or 32 MiB shadow RSS.
 - [ ] 4.3 Define and validate read-only, deadline, cancellation and capacity [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:test]
   guards in the query-contract child. Objective: ensure the BFF cannot become a
   workflow or unbounded aggregation owner. Inputs: owner query ports,
@@ -175,7 +190,9 @@ child changes after this design receives strict approval and user confirmation.
   four-request subject, 32-active/32-queued process, 1-second admission, 2 MiB,
   2,000 Observe/series, 100-metric, pagination and 320-attempt overload cases
   remain bounded and preserve valid partial reports. Compact encoded DTO goldens
-  prove byte ceilings.
+  prove byte ceilings. The 320-attempt gate fails above 100/250 ms server
+  event-loop p95/p99, 256 MiB peak RSS delta, 32 MiB retained RSS after a
+  60-second cooldown, or monotonic retained-RSS growth across three runs.
   Rollback: disable the new BFF; no business state exists to migrate. Completion
   evidence: child tests distinguish timeout/tool error from unavailable product
   and separately report residual threads while showing zero residual owned
@@ -195,7 +212,9 @@ child changes after this design receives strict approval and user confirmation.
   failures, successful empty states, measured heap/long-task/interaction/bundle
   budgets, and a static/contract guard proving every V2 Observe/Analyze
   component rejects raw OHLCV for metric calculation and never calls
-  `display_estimate`. Rollback: turn off V2 and restore the complete legacy
+  `display_estimate`. A four-page cursor fixture verifies viewport/range fetch,
+  cross-page deduplication, cancellation, cache eviction, resident-point caps,
+  and cache-size encoding below the 100 ms long-task gate. Rollback: turn off V2 and restore the complete legacy
   page bundle without data cleanup. Completion evidence: child strict approval,
   focused green tests, and implemented-diff six-role review.
 - [ ] 5.2 Create `btc-workspace-compatibility-cutover` only after analysis, [validates:btc-ui.compatibility] [validates:btc-ui.temporal-coherence] [validation:test]
@@ -218,10 +237,14 @@ child changes after this design receives strict approval and user confirmation.
   capability. Objective: prevent future heterogeneous evidence from bypassing
   Capture, rights, PIT and capacity governance. Inputs: parent Capture/Datasets/
   Studies contracts and concrete source manifests. Outputs: child artifacts with
-  `external_event_data=true`, source rights/retention/deletion, event/published/
-  first-seen/revision clocks, multi-source immutable refs, bounded projection,
-  shared SSE hub, per-client byte/item queues, cursor expiry/resync, DLQ and
-  explicit Data Ops replay. Affected contracts: only the future capability;
+  `external_event_data=true` and a parent-Capture obligation map covering source
+  values/timezone, event/published/observed/received/first-seen/available/
+  revision clocks, precision/confidence, finality, correction/retraction,
+  rights/retention/deletion and multi-source immutable refs. It separately maps
+  Capture quarantine, Platform delivery DLQ, immutable-artifact replay,
+  event-envelope redelivery, provider-refetch Commands, bounded projection,
+  shared SSE hub, per-client byte/item queues and cursor expiry/resync. Affected
+  contracts: only the future capability;
   current daily workspace remains unchanged. Validation: Workspace GET cannot
   call provider/capture/replay, rights withdrawal blocks serving, and bounded
   stream backpressure/reconnect tests pass. Rollback: disable overlay and retain

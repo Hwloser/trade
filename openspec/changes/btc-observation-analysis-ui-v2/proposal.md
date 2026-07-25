@@ -60,7 +60,9 @@ read-only query composition surface.
   unbounded concurrent-stop, startup-cleanup, and executor-tail waits and showed
   that Uvicorn can replace the CLI SIGINT handler during stuck lifespan
   shutdown. Browser abort is not treated as owner termination; capacity remains
-  held until cooperative exit or owned-process reap.
+  held until cooperative exit or owned-process reap. The runtime child owns one
+  12-second process deadline, CI signal-to-reap within 15 seconds, and a
+  supervisor-authored terminal receipt for forced exit.
 - Split future delivery into independently reviewable child changes for runtime
   hardening, descriptive Datasets, Study queries, transport-neutral workspace
   queries, React workspace, and compatibility cutover. A conditional external
@@ -159,3 +161,9 @@ immutable source/product facts; it requires no data deletion or migration
 reversal. Future news, social, macro, on-chain, stream or L2 capability is out
 of scope and requires a separately approved external-evidence design with
 rights, temporal, replay and backpressure governance.
+
+Dark-launch dual-read is deterministic and finite: at most 1% identity-hash
+sampling, two active shadows per process, no queue, a two-second ceiling, and
+automatic stop after seven days, 1,000 completed identities, or an earlier
+read/latency/RSS threshold. The 320-attempt capacity gate has failing server
+event-loop and RSS thresholds; it is not report-only evidence.

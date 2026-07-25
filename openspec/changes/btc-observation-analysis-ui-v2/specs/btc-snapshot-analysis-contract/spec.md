@@ -67,6 +67,10 @@ observation/event as-of, knowledge cut, available time, sample count, expected
 sample count, coverage ratio, coverage state, quality state, method id/version,
 input and standard output DatasetSnapshotRef values, availability basis, clock
 confidence/source reference, evidence references, and reason codes.
+The Datasets child SHALL freeze a purpose-by-availability-basis-by-confidence
+admissibility matrix. A market-boundary proxy, installation observation, or
+collector clock SHALL NOT be upgraded to provider-publication evidence, and a
+purpose that requires stronger proof SHALL fail closed.
 
 #### Scenario: Complete metric is returned
 - **WHEN** a metric meets its method's temporal, sample, coverage, and quality requirements
@@ -87,6 +91,11 @@ confidence/source reference, evidence references, and reason codes.
 - **WHEN** a valid immutable analysis query has no observations in its requested supported scope
 - **THEN** the response sets `observation_state=observed` and `condition=empty`, omits a numeric value, and returns stable scope and reason identity
 - **AND THEN** empty is not reported as unavailable, failed, partial, zero, or retryable transport failure
+
+#### Scenario: Clock evidence is weaker than the declared purpose
+- **WHEN** a metric purpose requires provider-publication proof but the input clock is only a market-boundary proxy or installation observation
+- **THEN** the metric is unavailable with its actual availability basis and confidence
+- **AND THEN** the query does not relabel or extrapolate that clock as stronger evidence
 
 ### Requirement: Initial descriptive metric set is bounded and versioned
 
@@ -202,8 +211,9 @@ analysis Dataset or inferred by the UI.
 
 #### Scenario: Study input is not immutable
 - **WHEN** a StudyRun is given an AnalysisSnapshotDescriptor, raw artifact, provider response, moving current state, or a DatasetSnapshotRef that cannot be verified
-- **THEN** the StudyRun is rejected or concludes insufficient data
+- **THEN** the request is rejected before a formal StudyRun is created
 - **AND THEN** it does not query Capture, a provider, or a raw artifact
+- **AND THEN** `insufficient_data` is reserved for an accepted, verified DatasetSnapshotRef whose eligible sample is inadequate
 
 #### Scenario: Study consumes the descriptive analysis product
 - **WHEN** a Study needs a published descriptive-analysis Dataset as an input
