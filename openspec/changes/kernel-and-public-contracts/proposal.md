@@ -39,8 +39,8 @@ reported as successful cancellation.
 - Define versioned, domain-separated keyed public fingerprints for command and
   idempotency identity, exact zero/one/multi-match admission, command-conflict
   rejection, generation-serialized rotation, three-attempt contention bounds
-  and exact auditable refusal outcomes so receipts do not expose raw values or
-  enumerable unkeyed hashes.
+  and exact size-bounded auditable refusal outcomes so receipts and refusal
+  evidence do not expose raw values or enumerable unkeyed hashes.
 - Define Platform codec descriptors and registry invariants; the later Platform
   foundation child implements static Bootstrap assembly. Codecs validate one
   owner/schema/purpose shape but grant no authority or external-content rights;

@@ -51,10 +51,14 @@ The key set SHALL have exactly one active write version, at most three retained
 read-only versions and a monotonically increasing `key_set_generation` in the
 range 1-9,223,372,036,854,775,807. Rotation and admission SHALL use the same
 owner-local CAS/lock; rotation SHALL atomically advance generation with the key
-set. One command admission SHALL make at most three total attempts, including
-the initial attempt. Generation read, at most four HMAC derivations per
-attempt, candidate query, transaction/CAS acquisition and any contention
-backoff SHALL consume one `CommandEnvelope` monotonic remaining deadline.
+set. One command admission SHALL make at most three total claim attempts,
+including the initial attempt. Each attempt SHALL start at most one claim transaction,
+read one generation, derive at most four HMAC candidates and perform one
+candidate query. A changed generation SHALL end and roll back that attempt;
+re-derivation SHALL occur only in the next attempt. Claim attempts,
+transaction/CAS acquisition, any contention backoff, one optional refusal-audit
+transaction and telemetry SHALL consume one `CommandEnvelope` monotonic
+remaining deadline.
 
 In one owner-local admission transaction, ingress SHALL read generation, derive
 and query candidate idempotency fingerprints for every active or retained key
@@ -69,10 +73,11 @@ version. Any mismatch SHALL return stable `IDEMPOTENCY_COMMAND_CONFLICT`,
 without returning the old receipt or creating a new operation.
 
 If generation changes before zero-match insertion, admission SHALL roll back and
-re-derive every candidate from the new key set within the same attempt/deadline
-budget. If the third total attempt or shared deadline is exhausted before a
-stable result, admission SHALL return `IDEMPOTENCY_KEYSET_CONTENTION`, create no
-claim, operation or receipt, and start no background continuation. Existing
+end the current attempt. A later attempt MAY re-derive every candidate from the
+new key set within the same deadline. If the third claim attempt or shared
+deadline is exhausted before a stable result, admission SHALL return
+`IDEMPOTENCY_KEYSET_CONTENTION`, create no claim, operation or receipt, and
+start no background continuation. Existing
 receipts SHALL retain their original version and SHALL NOT be rewritten during
 rotation. Each key SHALL be retained for at least the owner operation-retention
 horizon; retirement SHALL fail if safe retention cannot fit the four-version
@@ -103,7 +108,7 @@ idempotency keys or commands.
 #### Scenario: Rotation contention exhausts admission
 - **WHEN** key-set generation changes through the third admission attempt or the shared command deadline expires first
 - **THEN** ingress returns `IDEMPOTENCY_KEYSET_CONTENTION` without a claim, operation, receipt or background continuation
-- **AND THEN** one admission has performed no more than twelve HMAC derivations, three candidate queries and three transaction/CAS acquisitions
+- **AND THEN** one admission has performed no more than twelve HMAC derivations, three candidate queries, three claim transaction/CAS acquisitions and one refusal-audit transaction
 
 #### Scenario: A framework object enters a command
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object
@@ -277,18 +282,30 @@ These errors SHALL contain no old receipt, raw key, command payload, claim
 internals, actor identifier or fingerprint. The future Platform persistence
 owner SHALL record one immutable admission-audit fact for every terminal
 conflict, corruption and contention outcome before returning that exact
-outcome. If the audit fact cannot commit, admission SHALL return
+outcome. The fact SHALL use one optional repository transaction after the claim
+attempt ends, SHALL have canonical size at most 2,048 bytes, and SHALL contain
+only schema/version, reason, correlation ID, static owner namespace, sorted
+matched key versions (at most four), key-set generation, attempt count and
+occurred-at. It SHALL contain no raw key, command DTO/payload, provider/source
+body, artifact bytes, actor identifier, credential, path or fingerprint. It
+SHALL be visible only through an authorized Platform operator audit query and
+SHALL NOT enter an `ErrorEnvelope`, HTTP/SDK response or cross-Context
+projection. The audit transaction SHALL NOT create or reopen a claim,
+operation, receipt or dispatch. If the audit fact cannot commit, admission SHALL return
 `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and SHALL still create no claim,
-operation or receipt. The owner SHALL expose only the
+operation or receipt. One admission SHALL therefore start at most three claim
+transactions plus one refusal-audit transaction. The owner SHALL expose only the
 low-cardinality counter `platform_idempotency_admission_outcomes_total` with
 `owner_namespace` and the closed outcome
 `created|replayed|command_conflict|claim_corrupt|keyset_retry|keyset_contention|audit_unavailable`
-as labels. A bounded structured event SHALL include reason, correlation, owner,
-sorted matched key versions (at most four), key-set generation and attempt
-count, but none of the prohibited values above. Claim corruption SHALL raise an
-integrity alert. Telemetry emission failure SHALL surface to the owner
-health/audit channel and SHALL NOT convert a refusal to success or permit claim
-creation; the owning child SHALL define a bounded failure path before adoption.
+as labels. The counter, one bounded structured event and, for corruption, one
+integrity alert SHALL each be attempted at most once, synchronously under the
+same remaining deadline, with no retry or background continuation. The event
+SHALL contain only reason, correlation, owner, sorted matched key versions (at
+most four), key-set generation and attempt count. Telemetry emission failure
+SHALL surface once to the owner health/audit channel and SHALL NOT convert a
+refusal to success or permit claim creation; the owning child SHALL preserve
+these bounds before adoption.
 
 #### Scenario: An Observatory error is mapped
 - **WHEN** a legacy `ObservatoryError` contains reason, message, evidence refs and arbitrary extra fields
@@ -304,7 +321,8 @@ creation; the owning child SHALL define a bounded failure path before adoption.
 
 #### Scenario: Claim corruption is observed
 - **WHEN** more than one candidate claim matches
-- **THEN** the owner records one immutable terminal refusal, increments only the closed low-cardinality outcome, emits a redacted bounded event and raises an integrity alert
+- **THEN** the owner records one 2,048-byte-bounded allowlisted terminal refusal and attempts one closed low-cardinality counter, one redacted bounded event and one integrity alert under the same remaining deadline
+- **AND THEN** telemetry is neither retried nor continued in a background task
 
 #### Scenario: Terminal refusal audit cannot commit
 - **WHEN** the owner cannot durably record the conflict, corruption or contention refusal before the shared deadline

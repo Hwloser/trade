@@ -438,10 +438,15 @@ The key set contains exactly one active write version, at most three retained
 read-only versions and a monotonically increasing `key_set_generation` in the
 range 1-9,223,372,036,854,775,807. Rotation and admission use the same
 owner-local CAS/lock. Rotation atomically advances generation with the key-set
-change. One command admission performs at most three total attempts, including
-the initial attempt. Generation read, at most four HMAC derivations, candidate
-query, transaction/CAS acquisition and any contention backoff consume the same
-`CommandEnvelope` monotonic remaining deadline; no sub-step restarts it.
+change. One command admission performs at most three total claim attempts,
+including the initial attempt. Each attempt starts at most one claim
+transaction, reads
+one generation, derives at most four HMAC candidates and performs one candidate
+query. A changed generation ends and rolls back that attempt; re-derivation may
+occur only in the next attempt. Claim attempts, transaction/CAS acquisition,
+any contention backoff, one optional refusal-audit transaction and telemetry
+consume the same `CommandEnvelope` monotonic remaining deadline; no sub-step
+restarts it.
 
 On every admission, one owner-local transaction reads the generation, derives
 candidate idempotency fingerprints for the active and all retained versions and
@@ -459,10 +464,11 @@ canonical command fingerprint. Ingress recomputes the current command
 fingerprint using that claim's recorded key version. Any field mismatch returns
 stable `IDEMPOTENCY_COMMAND_CONFLICT`; it neither returns the old receipt nor
 creates a new operation. If generation changes before the zero-match insert,
-the transaction rolls back and re-derives all candidates from the new key set.
-A paused old-generation admission can therefore never insert after a newer
-rotation/admission has won. If the third total attempt or shared deadline is
-exhausted before a stable result, admission returns
+the transaction rolls back and the current attempt ends. A later attempt may
+re-derive all candidates from the new key set under the same deadline. A paused
+old-generation admission can therefore never insert after a newer rotation/
+admission has won. If the third claim attempt or shared deadline is exhausted
+before a stable result, admission returns
 `IDEMPOTENCY_KEYSET_CONTENTION`; it creates no claim, operation or receipt and
 does not continue in a background task.
 
@@ -589,19 +595,31 @@ link or retry field not shown as present is absent:
 These products forbid an old receipt, a fabricated operation ID, a raw key,
 the command payload and claim internals. The Platform persistence owner records
 one immutable admission-audit fact for each terminal conflict, corruption or
-contention outcome before returning that exact outcome. If the audit fact
+contention outcome before returning that exact outcome. This fact uses one
+optional repository transaction after the claim attempt ends and has an exact
+2,048-byte canonical limit and closed fields: schema/version, reason,
+correlation ID, static owner namespace, sorted matched key versions (at most
+four), key-set generation, attempt count and occurred-at. It contains no raw
+key, command DTO/payload, provider/source body, artifact bytes, actor
+identifier, credential, path or fingerprint. It is visible only through an
+authorized Platform operator audit query and never enters an ErrorEnvelope,
+HTTP/SDK response or cross-Context projection. The audit transaction cannot
+create or reopen a claim, operation, receipt or dispatch. If the audit fact
 cannot commit, admission returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and
-still creates no claim, operation or receipt. The owner also emits
+still creates no claim, operation or receipt. One admission therefore starts at
+most three claim transactions plus one refusal-audit transaction. The owner also
+emits
 `platform_idempotency_admission_outcomes_total` with only
 `owner_namespace` and the closed outcome
 `created|replayed|command_conflict|claim_corrupt|keyset_retry|keyset_contention|audit_unavailable`
-as labels. A bounded structured event carries reason, correlation, owner,
-sorted matched key versions (at most four), key-set generation and attempt
-count but no raw key, command, actor identifier, payload or fingerprint. Claim
-corruption additionally raises an integrity alert. Telemetry emission failure
-is surfaced to the owner health/audit channel and never converts refusal into
-success or permits claim creation; the owning Platform child must define its
-bounded failure path before adoption.
+as labels. The counter, one bounded structured event and, for corruption, one
+integrity alert are each attempted at most once, synchronously under the same
+remaining deadline, with no retry or background continuation. The event carries
+only reason, correlation, owner, sorted matched key versions (at most four),
+key-set generation and attempt count. Telemetry emission failure is surfaced
+once to the owner health/audit channel and never converts refusal into success
+or permits claim creation; the owning Platform child must preserve these bounds
+before adoption.
 
 ### 8. Canonical serialization is exact, deterministic and bounded
 
@@ -1020,8 +1038,10 @@ per-container items, aggregate members, nodes, scopes, delegation, recovery
 descriptors and process history have fixed limits. No queue, worker, polling
 loop, database call, network call or artifact read exists in this child.
 Admission test doubles perform at most three attempts, twelve HMAC derivations,
-three candidate queries and three transaction/CAS acquisitions for one command;
-deadline exhaustion can reduce these counts but never increase them.
+three candidate queries, three claim transaction/CAS acquisitions and one
+refusal-audit transaction for one command. They attempt one counter, one event
+and at most one alert per terminal outcome; deadline exhaustion can reduce
+these counts but never increase them.
 Ordinary control tests use a fake monotonic clock and no real sleeps at exactly
 1 and 10 owners in each closed residual category. One minimal real subprocess
 fixture uses one child, one shared 2-second deadline, at most 250 ms elapsed
@@ -1076,9 +1096,10 @@ all residual categories, stale-writer rejection, crash takeover, concurrent
 callers and an executor whose final join would block. Fake-clock tests own most
 combinations. A rotation-storm fixture proves success within one to three
 attempts, deterministic termination at attempt/deadline exhaustion, the
-12-HMAC/3-query/3-transaction maxima, exact four-error products, forbidden
-field combinations, closed metric labels, redacted structured events, one
-terminal audit and the corruption integrity alert. The minimal real subprocess
+12-HMAC/3-query/3-claim-transaction/1-audit-transaction maxima, exact four-error
+products, forbidden field combinations, the 2,048-byte audit allowlist, closed
+metric labels, one-shot redacted event/counter/alert behavior and no background
+continuation. The minimal real subprocess
 fixture proves process-tree reap under a fixed wall-clock ceiling. Packaging
 tests cover source, editable and one offline/no-deps clean-wheel environment.
 Existing focused tests run unchanged.
