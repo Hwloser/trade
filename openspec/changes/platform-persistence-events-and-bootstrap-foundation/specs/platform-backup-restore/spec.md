@@ -18,6 +18,18 @@ receipt SHALL be written atomically after all staged bytes are hashed. A failed
 or partial snapshot SHALL remain `preparing`/`failed`, SHALL not be published as
 restorable and SHALL preserve bounded diagnostics.
 
+Hash equality alone SHALL NOT make a backup trusted because an attacker could
+replace both archive and manifest. `BackupCertification` SHALL bind the
+canonical bounded manifest digest, archive digest/size, backup/source generation,
+schema capability and creation time to an independently configured
+`BackupTrustPolicyRef`, signing key ID/version, signature algorithm and detached
+signature. The trust policy SHALL be outside the archive and SHALL define
+approved algorithms, trusted key versions, validity interval, revocation state,
+backup/source namespace and allowed restore environment. Private key material
+SHALL remain behind a signing port and SHALL never enter manifests, logs,
+receipts or archives. A signing outage SHALL leave the backup hashed but
+`uncertified`; it SHALL not silently fall back to digest-only certification.
+
 #### Scenario: SQLite receives writes during backup
 - **WHEN** a backup starts while compatible writers continue
 - **THEN** the archive contains one database snapshot generation produced by the reviewed SQLite snapshot mechanism rather than a mixture of copied database, WAL and SHM moments
@@ -29,6 +41,14 @@ restorable and SHALL preserve bounded diagnostics.
 #### Scenario: Remote publication is partial
 - **WHEN** the archive uploads but the manifest upload or remote digest verification fails
 - **THEN** the backup remains not-published with an explicit retryable outcome and is never selected as the latest verified remote generation
+
+#### Scenario: Both archive and manifest are replaced
+- **WHEN** archive bytes and their matching digest manifest are supplied without a valid detached signature from the configured trust policy
+- **THEN** Platform reports `untrusted_certification`, excludes the backup from automatic restore and extracts no member
+
+#### Scenario: A signing key is revoked
+- **WHEN** certification refers to a key version revoked for the backup creation interval or target environment
+- **THEN** verification fails closed even when all member and archive digests match
 
 ### Requirement: RestoreOperation SHALL verify before extraction or activation
 
@@ -46,6 +66,27 @@ It SHALL extract only declared regular files/directories into a no-follow staged
 root on the target filesystem, then re-hash and validate the staged database and
 required artifacts. It SHALL never call an unrestricted archive `extractall`.
 
+Before parsing archive members, restore SHALL verify the detached certification
+against the current trusted policy/key registry and the intended target
+environment. Parsing and extraction SHALL be streaming and use checked integer
+counters. V1 hard refusal ceilings SHALL be 64 MiB encoded canonical manifest,
+100,000 members, 2 TiB archive bytes, 2 TiB declared and actual extracted bytes,
+4,096 UTF-8 bytes/128 normalized segments per path and 100:1 aggregate actual
+extracted-to-archive byte ratio; implementation `CapacityProfile` values SHALL
+be lower finite values established by fixture evidence. Restore SHALL reject an
+unknown compressed size, counter overflow, archive read beyond the encoded-byte
+bound, actual member/aggregate bytes beyond declarations or policy, and any
+expansion-ratio breach at the first observed byte.
+
+Before creating the staged root, restore SHALL reserve or prove available space
+for the profile's bounded archive download when needed, maximum staged
+extraction, verification scratch, journal/WAL growth and preserved prior-
+generation rollback margin, plus an explicit nonzero safety reserve. It SHALL
+recheck available and consumed bytes during streaming extraction and stop
+without activation when the reserve would be crossed. Sparse-file logical size
+and allocated size SHALL both be bounded; quotas and filesystem errors SHALL
+remain explicit unavailable/verification outcomes.
+
 The core state path SHALL be:
 `prepared -> staged_verified -> writers_fenced -> activated ->
 health_verified -> committed`.
@@ -62,26 +103,40 @@ are terminal. Every transition SHALL be durable and idempotent.
 - **WHEN** staged bytes do not match the manifest SHA-256 or size
 - **THEN** restore rejects the generation, preserves mismatch evidence and exposes no restored reader
 
+#### Scenario: Compressed bytes expand beyond policy
+- **WHEN** actual extracted bytes exceed a declared member/aggregate bound or the 100:1 hard expansion ceiling while streaming
+- **THEN** extraction stops, partial staging remains non-authoritative, restore records `verification_failed` and no writer is fenced
+
+#### Scenario: Disk reserve becomes insufficient
+- **WHEN** preflight or an in-progress checked extraction cannot preserve staging, verification, journal/WAL, prior-generation rollback and safety-reserve bytes
+- **THEN** restore stops with an explicit resource-unavailable outcome before activation and does not delete the prior generation to create space
+
 #### Scenario: Restore restarts after staged verification
 - **WHEN** the process crashes with a durable `staged_verified` operation
 - **THEN** reconciliation revalidates the staged identity and resumes fencing without re-downloading or activating unverified bytes
 
 ### Requirement: Activation SHALL be one fenced generation compare-and-swap
 
-After staged verification, `MigrationCoordinator` SHALL close new writer
-admission, drain or durably fence existing writers under one finite deadline and
-record the current active generation. Platform Backup SHALL append one activation
-journal entry that compare-and-swaps the expected prior generation to the verified
-target. Runtime readers/writers SHALL rebind only to the journal-selected
-generation and only after schema capability, repository probes and required
-artifact/reference checks pass.
+After staged verification, Platform Backup SHALL request the sole Platform
+Persistence `GenerationActivationCapability`. That capability SHALL acquire one
+database-scoped activation lease, close new writer admission, acquire/revoke the
+immutable required-owner set in ascending canonical owner-namespace order, drain
+or durably retain each writer under one finite deadline and compare-and-swap the
+activation journal from expected prior generation to verified target. Platform
+Backup SHALL not write the journal or acquire owner writer leases directly.
+Runtime readers/writers SHALL rebind only to the journal-selected generation and
+only after schema capability, repository probes and required artifact/reference
+checks pass.
 
 Activation SHALL never expose two writable generations. A crash before journal
 commit leaves the prior generation active; a crash after journal commit is
 reconciled from the journal and operation state. A bounded health window SHALL
 either move to `health_verified`/`committed` or activate the preserved prior
 generation and record `rolled_back`. Writer fences SHALL not reopen merely
-because an HTTP/CLI observation timed out.
+because an HTTP/CLI observation timed out. Acquisition SHALL follow the
+Persistence canonical order and release in reverse order. Admission SHALL remain
+closed and the global activation lease SHALL remain held until either target or
+rolled-back prior generation is rebound and readiness-verified.
 
 #### Scenario: Activation loses power before compare-and-swap
 - **WHEN** writers are fenced but the activation journal does not contain the target commit
@@ -95,6 +150,10 @@ because an HTTP/CLI observation timed out.
 - **WHEN** a runtime holding the pre-restore fence attempts a transaction after target activation
 - **THEN** the transaction is rejected and cannot mutate either generation
 
+#### Scenario: Another activation starts during restore
+- **WHEN** migration or another restore attempts activation while the database-scoped activation lease is held
+- **THEN** it receives a bounded conflict/unavailable receipt and cannot acquire owner leases or append a competing journal generation
+
 ### Requirement: Backup and restore evidence SHALL be immutable and operator-visible
 
 Platform SHALL store immutable backup certification, remote publication,
@@ -102,8 +161,10 @@ restore transition, activation, health and rollback receipts. An authorized
 operator query SHALL distinguish preparing, verified, published, corrupt,
 incompatible, restoring, active, rolled-back and unavailable states without
 reading archive bytes. It SHALL expose manifest/archive digests, generation,
-capability range, bounded member/count/size summary, current state/step, last
-safe failure, timestamps and permitted control actions.
+capability range, trust-policy/signing-key identity and verification status,
+bounded member/count/declared/actual/compressed size and expansion/disk-reserve
+summary, current state/step, last safe failure, timestamps and permitted control
+actions.
 
 Logs, metrics and public errors SHALL not expose credentials, service-account
 paths, archive contents or arbitrary exception text. Remote drivers SHALL have

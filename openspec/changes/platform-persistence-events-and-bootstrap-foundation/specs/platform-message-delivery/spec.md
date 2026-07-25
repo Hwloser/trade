@@ -6,13 +6,25 @@ Platform command ingress SHALL accept only the approved framework-free Kernel
 `CommandEnvelope[T]` carrying a trusted `ActorContext`, correlation and causation
 identities, canonical command fingerprint, scoped idempotency fingerprint and finite
 monotonic deadline. The owning ingress repository SHALL use the approved bounded
-key-generation admission algorithm and one local transaction to either:
+key-generation admission algorithm from strict-approved Kernel artifact
+`sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`.
+One admission SHALL share the command's remaining monotonic deadline across at most
+three claim attempts, each with at most one claim transaction, plus at most one
+separate refusal-audit transaction after the final claim attempt ends. A generation
+change SHALL roll back and end the current claim attempt; candidate re-derivation
+SHALL occur only in a later attempt. A stable claim transaction SHALL either:
 
 - create one immutable operation identity plus initial `OperationReceipt` and owner
   command outbox record;
 - return the existing receipt for a command-equivalent duplicate; or
-- return the approved conflict, corrupt-claim, contention or audit-unavailable
-  `ErrorEnvelope` without fabricating an operation.
+- produce a provisional conflict, corrupt-claim or contention refusal without
+  fabricating an operation.
+
+Ingress SHALL return a provisional refusal only after its bounded refusal audit
+commits within the same remaining deadline. When no audit-start/commit budget remains
+or that transaction fails, `IDEMPOTENCY_AUDIT_UNAVAILABLE` SHALL take precedence.
+Neither path SHALL create a claim, operation, receipt, dispatch, retry or background
+continuation. Refusal telemetry SHALL retain the Kernel one-shot/no-background bounds.
 
 Ingress SHALL NOT synchronously execute a Context use case, call a provider, dispatch
 an in-memory handler, expose raw command payload/idempotency secret or keep an HTTP,
@@ -30,6 +42,14 @@ CLI or scheduler caller attached to the eventual workflow. A formal
 #### Scenario: The caller deadline expires before admission commits
 - **WHEN** the shared monotonic deadline is exhausted before durable admission and required refusal audit complete
 - **THEN** ingress returns the approved unavailable/deadline error, rolls back the claim attempt and leaves no operation, receipt or dispatch
+
+#### Scenario: Rotation changes generation in every attempt
+- **WHEN** generation changes during each of the three claim transactions and the separate contention refusal audit commits within the remaining deadline
+- **THEN** ingress returns `IDEMPOTENCY_KEYSET_CONTENTION` after no more than three claim transactions plus one refusal-audit transaction and creates no operation, receipt or background continuation
+
+#### Scenario: Refusal audit has no remaining budget
+- **WHEN** a conflict, corruption or contention claim attempt ends but the shared deadline cannot start and commit its audit
+- **THEN** ingress returns `IDEMPOTENCY_AUDIT_UNAVAILABLE`, starts no additional transaction and does not report the provisional reason as durably recorded
 
 ### Requirement: Outbox dispatch SHALL use durable leases and bounded outcomes
 
@@ -67,18 +87,37 @@ Before invoking an owner use case, a consumer adapter SHALL validate the envelop
 schema, payload digest, target owner, message kind and deadline. The owner local
 transaction SHALL insert or compare a durable inbox identity and atomically commit
 the effective owner transition, owner audit/receipt, ordered-consumer head and
-outgoing outbox. The inbox identity SHALL be `(consumer_namespace,
-consumer_contract_version, message_id)` and SHALL store the immutable payload digest
-and first effective receipt.
+outgoing outbox. The inbox identity SHALL be `(consumer_effect_namespace,
+message_id)`, where `consumer_effect_namespace` is an immutable owner-qualified
+identity for one effective transition and is not an implementation, deployment or
+schema version. It SHALL store target owner, message kind, schema, immutable payload
+digest, first consumer contract version, effect-contract digest,
+compatibility-policy digest and first effective receipt. Contract version and
+compatibility-policy digest SHALL NOT participate in uniqueness.
 
-An exact duplicate SHALL return the existing receipt without invoking the transition.
-A duplicate identity with another payload digest, target or schema SHALL be
-quarantined as corruption. Handler code SHALL not acknowledge outside the owner
-transaction and SHALL not embed cross-Context orchestration.
+An exact duplicate under the same contract version, or a duplicate whose current
+consumer version declares the recorded version compatible through the pinned
+owner compatibility policy and unchanged effect-contract digest, SHALL return the
+existing receipt without invoking the transition. A duplicate identity with an
+incompatible consumer version, another effect-contract digest, payload digest,
+target, message kind or schema SHALL be quarantined as corruption. A compatible
+binary upgrade SHALL preserve the effect namespace. An intentionally different
+effect SHALL use a new owner-defined effect namespace and an explicit owner/process
+migration; incrementing a version SHALL never reapply old messages. Handler code
+SHALL not acknowledge outside the owner transaction and SHALL not embed
+cross-Context orchestration.
 
 #### Scenario: An exact message is delivered twice
 - **WHEN** the same consumer receives the same message ID and payload digest after the first local commit
 - **THEN** the second delivery returns the recorded inbox receipt and performs no owner write or child emission
+
+#### Scenario: A compatible consumer binary is deployed
+- **WHEN** a newer consumer contract version receives a message already applied by a recorded compatible version under the same effect namespace, effect digest and pinned compatibility policy
+- **THEN** it returns the first receipt and performs no owner write even though the implementation version changed
+
+#### Scenario: A consumer changes effective semantics
+- **WHEN** a consumer version is not compatible with the recorded effect contract or attempts to reuse its effect namespace for another effect digest
+- **THEN** delivery quarantines the mismatch and does not treat a version change as permission to invoke the owner again
 
 #### Scenario: A duplicate identity has different bytes
 - **WHEN** a message ID already exists for the consumer but schema, target or payload digest differs
@@ -104,6 +143,19 @@ produce explicit receipt, retry, quarantine, reconciliation or dead-letter outco
 No implementation SHALL keep the only gap state in process memory or allow one key
 to monopolize all dispatcher capacity.
 
+Dead-lettering sequence N SHALL retain the durable consumer head at N and SHALL NOT
+make N+1 eligible. Redelivery of N SHALL create a new delivery attempt generation
+while preserving N's original producer epoch and sequence. The head SHALL advance
+only when N commits effectively or an authorized owner issues
+`ResolveOrderingGap(expected_head=N, dead_letter_generation, ordering_contract_digest,
+reason, deadline)`. That command SHALL be allowed only when the pinned
+head-of-line policy explicitly permits `skip_with_tombstone`; it SHALL compare-and-swap
+the expected head and dead-letter generation and atomically append an immutable
+resolution/tombstone receipt before setting expected sequence to N+1. Platform SHALL
+reject the command when skip is forbidden, evidence changed, authorization is absent
+or another resolution won. It SHALL never infer skip from timeout, DLQ presence or
+operator query.
+
 #### Scenario: N+1 arrives before N after restart
 - **WHEN** durable expected sequence is N and N+1 is delivered first
 - **THEN** the consumer records a bounded gap outcome, does not invoke the owner transition for N+1 and waits/reconciles only until the contract's finite limit
@@ -114,7 +166,15 @@ to monopolize all dispatcher capacity.
 
 #### Scenario: A gap exhausts its policy
 - **WHEN** N never arrives before the finite gap timeout or buffer budget
-- **THEN** the head-of-line policy deterministically dead-letters or requests audited reconciliation without silently applying N+1
+- **THEN** the head-of-line policy deterministically dead-letters N or requests audited reconciliation, retains expected sequence N and does not silently apply N+1
+
+#### Scenario: An ordered dead letter is redelivered
+- **WHEN** an operator redelivers dead-lettered sequence N
+- **THEN** a new attempt uses the original producer epoch and sequence N, and N+1 remains blocked until N commits effectively
+
+#### Scenario: An owner resolves an allowed permanent gap
+- **WHEN** the pinned ordering contract permits `skip_with_tombstone` and an authorized command matches expected sequence N and the current dead-letter generation
+- **THEN** Platform atomically records the immutable resolution, advances expected sequence to N+1 once and exposes the skipped position in audit/status
 
 ### Requirement: Dead-letter and redelivery SHALL be explicit operator controls
 
@@ -130,6 +190,10 @@ deadline. It SHALL create a new delivery attempt linked to the immutable origina
 it SHALL NOT modify the original payload, rewind a business aggregate, refetch an
 external source or combine `redeliver_message` with
 `replay_immutable_input`/`request_new_external_interaction`.
+For an ordered message, redelivery SHALL preserve the original epoch and sequence and
+SHALL NOT itself resolve the head. `ResolveOrderingGap` SHALL be a separate audited
+owner-authorized command with the ordering restrictions above; generic DLQ operators
+SHALL not receive implicit skip authority.
 
 #### Scenario: An operator inspects the DLQ
 - **WHEN** an authorized Platform query lists dead letters

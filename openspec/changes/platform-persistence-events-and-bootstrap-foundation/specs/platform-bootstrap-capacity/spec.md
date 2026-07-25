@@ -145,9 +145,14 @@ processes directly.
 
 Foundation implementation SHALL begin only after this change has current
 digest-bound six-role approval and strict design-check, and after the strict-approved
-`kernel-and-public-contracts` change is merged or otherwise present at the exact
-reviewed artifact generation. Architecture guardrails SHALL be updated with the
-exact target legacy bridge and Platform table bindings before those paths write.
+`kernel-and-public-contracts` change is merged or otherwise present at reviewed
+commit `cbc5f671335b7347b6beee5cfeca383c5e7d8ad9` and portable artifact digest
+`sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`.
+An equivalent later commit is acceptable only when the governed Kernel artifact
+digest remains exact; any digest change requires an explicit compatibility
+review, an update to this prerequisite and renewed Platform review/strict
+approval. Architecture guardrails SHALL be updated with the exact target legacy
+bridge and Platform table bindings before those paths write.
 
 No current runtime may adopt formal owner shutdown/control behavior before
 `runtime-owner-shutdown-and-recovery-hardening-v1` passes strict approval and its
@@ -157,8 +162,12 @@ emit formal outbox or accept formal ingress until Platform transaction, inbox,
 lease recovery and duplicate/crash fixtures pass.
 
 #### Scenario: Kernel contracts are not merged
-- **WHEN** an implementation PR cannot consume the exact approved Kernel contracts
+- **WHEN** an implementation PR cannot consume the exact approved Kernel artifact digest
 - **THEN** it remains blocked and does not recreate local IDs, envelopes, actors, receipts or errors
+
+#### Scenario: Kernel prose or contracts drift
+- **WHEN** the available Kernel artifact digest differs even though its change name or branch is unchanged
+- **THEN** Platform implementation remains blocked until compatibility is dispositioned and this design regains digest-bound review and strict approval
 
 #### Scenario: A Context wants to migrate first
 - **WHEN** Capture or another Context proposes a durable command/outbox before the Platform foundation passes its implementation gates

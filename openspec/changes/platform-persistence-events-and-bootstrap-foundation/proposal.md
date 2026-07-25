@@ -27,17 +27,21 @@ migration and runtime-concurrency design-quality profiles.
   and outbox records without exposing a cross-Context transaction.
 - Define durable command ingress against the approved Kernel
   `CommandEnvelope`, `ActorContext`, idempotency fingerprint,
-  `OperationReceipt` and `ErrorEnvelope` contracts.
+  `OperationReceipt` and `ErrorEnvelope` contracts, including its bounded
+  three-claim-plus-one-audit transaction product and refusal outcome priority.
 - Define generic outbox/inbox delivery, lease/ack recovery, bounded retry,
   dead-letter/redelivery, explicit unordered delivery and a durable
-  `OrderingContract` for ordered streams.
+  `OrderingContract` for ordered streams. Stable consumer effect identity
+  survives compatible binary upgrades; ordered dead letters cannot implicitly
+  advance the head.
 - Define an additive `DatabaseRuntime`, `MigrationCoordinator` and exact
   `LegacySchemaBootstrapAdapter` bridge so schema changes no longer occur as an
   implicit query-side effect. Existing `TradeDB` history remains intact until
   each owner migration replaces its registration.
-- Define verified backup manifests and the staged, writer-fenced,
-  generation-CAS `RestoreOperation` state machine. Unsafe, corrupt or
-  incompatible archives fail before activation.
+- Define trust-policy-signed backup certification and the bounded streaming,
+  staged, writer-fenced, generation-CAS `RestoreOperation` state machine.
+  Untrusted, unsafe, corrupt, resource-exhausting or incompatible archives fail
+  before fencing or activation.
 - Define one target `trade.bootstrap` composition root and a versioned
   `CapacityEnvelope` so CLI, HTTP, worker, scheduler and later Context children
   share runtime capabilities and comparable 1x/10x evidence.
@@ -100,6 +104,8 @@ or current production contracts.
   gates and generation rollback. No table deletion or bulk data migration is
   authorized by this proposal.
 - Implementation prerequisites are the merged strict-approved
-  `kernel-and-public-contracts` artifact and the already merged architecture
-  guardrails. Production runtime activation additionally requires the strict
-  shutdown/recovery hardening child.
+  `kernel-and-public-contracts` artifact at portable digest
+  `sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`
+  and the already merged architecture guardrails. Any Kernel artifact drift
+  requires renewed compatibility review. Production runtime activation
+  additionally requires the strict shutdown/recovery hardening child.

@@ -12,11 +12,15 @@ This child is the third prerequisite in the strict-approved
 5. Capture, Datasets and Studies boundaries.
 
 The architecture guardrails are merged at repository commit `4fa6113`. The
-`kernel-and-public-contracts` change has strict design approval but is still an
-implementation/merge prerequisite. This child consumes that change's
-framework-free IDs, envelope metadata, `ActorContext`, `CommandEnvelope`,
-`OperationReceipt`, `ErrorEnvelope`, policy references and shutdown/control
-contracts. It does not duplicate them.
+`kernel-and-public-contracts` change has strict design approval at reviewed
+commit `cbc5f671335b7347b6beee5cfeca383c5e7d8ad9` and portable artifact digest
+`sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`,
+but is still an implementation/merge prerequisite. This child consumes that
+exact generation's framework-free IDs, envelope metadata, `ActorContext`,
+`CommandEnvelope`, `OperationReceipt`, `ErrorEnvelope`, policy references and
+shutdown/control contracts. It does not duplicate them. Any prerequisite
+artifact digest change invalidates this design review and requires an explicit
+compatibility disposition before implementation.
 
 This is a design-only round. The audit read repository source and temporary
 test fixtures only. It did not open real `data/`, a live SQLite database,
@@ -111,21 +115,29 @@ The design is accepted only when:
    behavior with crash injection;
 3. duplicate command and duplicate message fixtures produce one effective
    transition, while identity/payload conflict fails closed;
-4. lease expiry, stale fence, retry exhaustion, DLQ and redelivery are durable;
-5. ordered N+1-before-N, stale epoch and gap exhaustion fixtures never reorder;
-6. read-only startup creates or mutates nothing;
-7. migration leader/follower, interrupted checkpoint and legacy-unfenced-writer
+4. command admission never exceeds three claim transactions plus one optional
+   refusal-audit transaction under one shared monotonic deadline;
+5. a consumer contract-version upgrade cannot reapply an already effective
+   message and incompatible effect semantics require a new stable effect identity;
+6. lease expiry, stale fence, retry exhaustion, DLQ and redelivery are durable;
+7. ordered N+1-before-N, stale epoch, gap exhaustion, DLQ and explicit
+   head-of-line resolution fixtures never reorder or implicitly skip;
+8. read-only startup creates or mutates nothing;
+9. migration leader/follower, interrupted checkpoint and legacy-unfenced-writer
    fixtures fail safely;
-8. corrupt, unsafe and incompatible archives fail before extraction/activation;
-9. crash injection at every restore transition reconciles to one active writable
+10. certification-key, signature, compression-ratio, actual-byte and disk-reserve
+    failures reject a backup before extraction or activation;
+11. crash injection at every restore transition reconciles to one active writable
    generation and a truthful receipt;
-10. Bootstrap architecture fixtures show one concrete composition root and
+12. restore fence fixtures prove one global activation authority, canonical
+    lock order and no reopening before target/prior readiness;
+13. Bootstrap architecture fixtures show one concrete composition root and
     preserve non-delegated legacy entrypoints;
-11. 1x/10x delivery/migration/restore fixtures emit valid CapacityEnvelopes;
-12. legacy CLI/HTTP/EventBus/backup behavior is unchanged until its selected
+14. 1x/10x delivery/migration/restore fixtures emit valid CapacityEnvelopes;
+15. legacy CLI/HTTP/EventBus/backup behavior is unchanged until its selected
     compatibility slice passes;
-13. diagnostic design-check, six-role review and strict approval pass; and
-14. actual runtime adoption remains blocked until shutdown hardening passes.
+16. diagnostic design-check, six-role review and strict approval pass; and
+17. actual runtime adoption remains blocked until shutdown hardening passes.
 
 The implementation PRs, not this design PR, own the behavior tests above. This
 change is complete when those obligations are specified, reviewable and strict
@@ -177,10 +189,10 @@ Only Bootstrap imports concrete Platform adapters and legacy bridge code.
 |---|---|---|---|
 | Connection/runtime | Platform Persistence | DB identity, mode, capability range, fence/lease, transaction primitive | business SQL, aggregate state |
 | Context persistence | owning Context adapter | tables, repositories, state invariants, migrations | Platform delivery tables or another Context |
-| Command admission | Platform execution/ingress | idempotency claim, operation identity/receipt, command outbox | command business execution |
+| Command admission | Platform Execution Operation Control | idempotency claim, operation identity/receipt, refusal audit, command outbox | command business execution or generic persistence ownership |
 | Message delivery | Platform Events | outbox lease, delivery attempts, inbox protocol, ordering heads, DLQ | business topic meaning/handler logic |
 | Process flow | Processes child | cross-Context process state and command choices | Context state transitions or Platform transport |
-| Backup/restore | Platform Backup | certification, staging, restore operation, activation journal | business interpretation or data repair |
+| Backup/restore | Platform Backup | certification, staging, restore operation and requests to the Persistence activation capability | activation journal, writer leases, business interpretation or data repair |
 | Composition | Bootstrap | concrete graph, profiles, lifecycle and compatibility selection | business behavior or response mapping |
 | Interfaces | CLI/HTTP/SDK/event/schedule adapters | parsing, auth, DTO mapping, response shape | DB/provider access or full workflow |
 
@@ -255,18 +267,17 @@ asynchronously; it cannot call the central Platform DB in the same transaction.
 
 #### Command admission state
 
-The Kernel child owns the operation state graph. This child only persists it:
-
-```text
-requested -> accepted | failed | cancelled | deadline_exceeded
-accepted  -> running | waiting | retry_scheduled | blocked
-          -> completed | failed | cancelled | deadline_exceeded
-```
-
-Duplicate equivalent admission returns the existing receipt. Conflict/corrupt
-claim/contention/audit unavailable creates no operation. Refusal-audit outcome
-priority, transaction count and key rotation follow the exact approved Kernel
-contract.
+The exact strict-approved Kernel artifact named in **Context** exclusively owns
+the operation state graph, refusal error product, key rotation algorithm and
+admission bounds. Platform Execution Operation Control persists those contracts without publishing
+a second state graph. In particular, one admission shares one monotonic
+deadline across at most three claim attempts/transactions and one optional
+post-attempt refusal-audit transaction. A generation change rolls back and ends
+the current claim attempt; re-derivation can occur only in a later attempt.
+Conflict, corruption and contention remain provisional until the bounded
+refusal audit commits. Audit start/commit failure or exhausted audit budget
+returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` and creates no claim, operation,
+receipt, dispatch, retry or background continuation.
 
 #### Delivery state
 
@@ -286,13 +297,25 @@ or fence cannot ack or terminalize.
 
 #### Inbox state
 
-The inbox effective identity is `(consumer_namespace,
-consumer_contract_version, message_id)`:
+The inbox effective identity is `(consumer_effect_namespace, message_id)`.
+`consumer_effect_namespace` is an immutable, owner-qualified identity for one
+effective transition and is not an implementation, deployment or schema
+version:
 
 - absent: owner transition may run;
-- present with same target/schema/digest: return first effective receipt;
-- present with any mismatch: corruption/quarantine;
+- present with same target/message kind/digest and a declared compatible
+  contract version: return the first effective receipt;
+- present with an incompatible contract version or any target/schema/digest
+  mismatch: corruption/quarantine without invoking the owner;
 - owner transaction rollback: inbox remains absent.
+
+The first receipt stores the observed consumer contract version and
+compatibility-policy digest for diagnosis, but neither is part of the uniqueness
+key. A compatible implementation upgrade preserves the effect namespace and
+registers its accepted prior versions. A change that intentionally creates a
+different business effect must allocate a new effect namespace and use an
+owner/process migration contract; changing a version number cannot replay old
+messages.
 
 This is exactly-once effective application, not exactly-once delivery.
 
@@ -303,6 +326,11 @@ An ordered consumer maintains `(consumer, scope_digest, producer_epoch,
 expected_sequence)`. Sequence is allocated with outbox append. Expected
 sequence advances with inbox plus owner transition. N+1 never applies while N
 is required. Gap state is durable and bounded by count, bytes and time.
+Dead-lettering N does not advance the consumer head or make N+1 eligible.
+Redelivery retains N's original producer epoch and sequence. The head advances
+only after N is effectively applied or an explicit, owner-authorized
+`ResolveOrderingGap` command compare-and-swaps expected N to N+1 and records an
+immutable skip/tombstone receipt permitted by the pinned ordering contract.
 Unordered messages explicitly carry `unordered`; absence is invalid.
 
 #### Migration state
@@ -352,10 +380,10 @@ an extracted archive or a legacy `status=restored` row cannot select it.
 | `MigrationRegistration/Plan/View` | owner, migration/digest, generations, dependencies, checkpoint/cutover/rollback | registration identity immutable; changed digest rejected |
 | `OutboxEnvelopeRecord` | Kernel envelope plus owner, digest/ref, ordering, deadline, retry policy | payload schema remains owner-owned |
 | `DeliveryLease/Receipt` | dispatcher owner/fence/token/expiry, attempt and closed outcome | stale token/fence rejected |
-| `InboxReceipt` | consumer/version/message/digest/effective receipt | mismatch is corruption |
+| `InboxReceipt` | stable consumer effect namespace, message, observed contract version/policy, digest/effective receipt | version is not the uniqueness key; incompatible effect is corruption |
 | `OrderingContract/Ref` | scope/key, epoch, sequence, expected sequence, gap/HOL policy | contract digest pinned per envelope |
 | `DeadLetterView/RedeliverMessage` | bounded safe evidence and audited control | redelivery creates new attempt |
-| `BackupManifest/Certification` | generation, capability, archive/member hashes | old manifest not silently upgraded |
+| `BackupManifest/Certification` | generation, capability, archive/member hashes, trust-policy/key/signature evidence | hashes prove integrity; trusted detached certification proves authenticity |
 | `RestoreOperation/View` | state/step, source/prior/target generation, fence/journal/health | transition append-only |
 | `CapacityEnvelope` | fixture/resource/load/latency/backlog/threshold/outcome | versioned and deterministic |
 | `BootstrapProfile/Capabilities` | concrete graph requirements and compatibility selections | internal developer/runtime contract |
@@ -394,9 +422,9 @@ if ownership and requirements remain unchanged and review is refreshed.
 | `platform_schema_capabilities` | Platform Persistence | capability repository | Bootstrap/operators | MigrationCoordinator | capability activation | Platform |
 | `platform_migration_runs` | Platform Persistence | migration repository | Bootstrap/operators | MigrationCoordinator | one transition/checkpoint | Platform |
 | `platform_writer_leases` | Platform Persistence | fence repository | owner transactions | DatabaseRuntime | claim/renew/revoke CAS | Platform |
-| `platform_operation_claims` | Platform execution/ingress | ingress repository | operation query | ingress only | idempotency admission | Platform |
-| `platform_operation_receipts` | Platform execution/ingress | receipt repository | Interfaces/Processes | ingress/owner transition | operation transition | Platform |
-| `platform_refusal_audits` | Platform execution/ingress | operator audit repository | authorized operators | ingress audit only | bounded refusal audit | Platform |
+| `platform_operation_claims` | Platform Execution Operation Control | ingress repository | operation query | ingress only | one bounded claim attempt | Platform Execution |
+| `platform_operation_receipts` | Platform Execution Operation Control | receipt repository | Interfaces/Processes | ingress/authorized operation transition | operation transition | Platform Execution |
+| `platform_refusal_audits` | Platform Execution Operation Control | operator audit repository | authorized operators | ingress audit only | one optional post-attempt audit | Platform Execution |
 | `platform_outbox` | Platform Events | outbox repository | dispatcher/operator | owner local transaction | owner state + outbox | Platform |
 | `platform_delivery_attempts` | Platform Events | delivery repository | dispatcher/operator | dispatcher | lease/ack/retry terminalization | Platform |
 | `platform_inbox_receipts` | Platform Events | inbox protocol repository | owner/dispatcher | owner local transaction | inbox + owner state | Platform |
@@ -407,7 +435,7 @@ if ownership and requirements remain unchanged and review is refreshed.
 | `platform_backup_manifests` | Platform Backup | backup repository | operator/restore | backup certification | certification commit | Platform |
 | certified archive/staged root | Platform Backup | artifact adapter | restore/operator verifier | backup/restore only | stage/verify/commit marker | Platform |
 | `platform_restore_operations` | Platform Backup | restore repository | Bootstrap/operators | restore coordinator | one restore transition | Platform |
-| `platform_activation_journal` | Platform Backup/Persistence | activation repository | DatabaseRuntime/Bootstrap | restore coordinator | generation CAS | Platform |
+| `platform_activation_journal` | Platform Persistence | activation repository | DatabaseRuntime/Bootstrap/Backup | Platform Persistence activation capability only | global generation CAS | Platform Persistence |
 | `platform_capacity_results` | Platform status | capacity repository | operators/children | harness only | immutable result append | Platform |
 
 Each table has one writer API. Interfaces and Contexts never query it directly.
@@ -417,15 +445,16 @@ The physical SQLite file may remain shared during transition.
 
 - **Authoritative writer:** named repository above; no `TradeDB` replacement
   facade.
-- **Idempotency:** command fingerprint/claim, message ID/inbox, registration
-  ID+digest, backup ID+manifest digest, restore ID+generation CAS.
+- **Idempotency:** exact Kernel-bounded command claim, stable consumer effect
+  namespace+message ID inbox, registration ID+digest, backup ID+certified
+  manifest/archive/trust-policy identity, restore ID+generation CAS.
 - **Concurrency:** `BEGIN IMMEDIATE` or an equivalent SQLite CAS only inside
   repository methods; fence/lease tokens are compared on every mutation.
 - **Staging:** migrations use additive/checkpointed generations; backups and
   restore use no-follow temporary staging and digest verification.
 - **Visibility:** owner state/outbox and inbox/owner transition are atomic;
-  backup becomes certified only after hash; restore becomes active only through
-  journal CAS.
+  backup becomes certified only after hash and trusted detached signature;
+  restore becomes active only through the Persistence journal CAS.
 - **Crash windows:** every externally visible transition has a durable state
   and restart reconciliation rule. No directory scan becomes authority.
 - **Corrupt predecessor:** digest/schema/claim mismatch quarantines or blocks;
@@ -434,8 +463,9 @@ The physical SQLite file may remain shared during transition.
   states; no success with missing evidence.
 - **Reader consistency:** old readers remain selected until dual-read parity;
   target readers bind one schema/active generation.
-- **Backup/hash verification:** per-member plus archive digest and SQLite
-  capability validation before activation.
+- **Backup certification:** per-member plus archive digest, trusted detached
+  signature/key-policy verification and SQLite capability validation before
+  extraction or activation.
 - **Sample verification:** all migration/restore rehearsals use temporary roots
   with representative legacy v2-v22 fixtures.
 - **Rollback:** previous generation and legacy selection remain available;
@@ -518,14 +548,18 @@ sequenceDiagram
   participant O as Outbox
 
   I->>G: CommandEnvelope + actor + deadline
-  G->>C: bounded idempotency admission
+  loop at most 3 claim attempts, one transaction each
+    G->>C: derive/query/revalidate under shared deadline
+    C-->>G: stable result or rolled-back generation change
+  end
   alt equivalent duplicate
     C-->>G: existing OperationReceipt
   else new
     C->>O: same transaction command outbox
     C-->>G: accepted OperationReceipt
-  else conflict/unavailable
-    C-->>G: ErrorEnvelope, no operation
+  else provisional conflict/corruption/contention
+    G->>C: at most 1 separate refusal-audit transaction
+    C-->>G: audited reason or IDEMPOTENCY_AUDIT_UNAVAILABLE
   end
   G-->>I: receipt or safe error
 ```
@@ -568,7 +602,14 @@ sequenceDiagram
   alt N arrives in time
     D->>C: apply N, then eligible N+1
   else gap limit expires
-    O->>O: dead-letter/reconciliation outcome
+    O->>O: dead-letter N; keep expected N
+    Note over O,C: N+1 remains blocked
+    alt owner permits explicit skip/tombstone
+      C->>O: ResolveOrderingGap(expected N, policy digest)
+      O->>O: CAS head to N+1 + immutable resolution
+    else redeliver
+      O->>O: new attempt with original epoch/sequence N
+    end
   end
 ```
 
@@ -579,22 +620,25 @@ sequenceDiagram
   participant OP as Operator
   participant B as Backup restore
   participant S as Staging verifier
-  participant M as Migration/Writer fence
+  participant M as Persistence activation authority
   participant J as Activation journal
   participant BS as Bootstrap runtime
 
   OP->>B: Restore command
-  B->>S: validate manifest/archive before extraction
+  B->>S: verify trusted certification + bounded archive before extraction
   S-->>B: staged_verified
-  B->>M: fence writers
+  B->>M: acquire global activation lease
+  M->>M: close admission; fence owners in canonical order; drain
   B->>J: CAS prior -> target generation
   J->>BS: rebind target
   alt health passes
     BS-->>B: health_verified
+    M->>M: reopen target admission; release activation lease
     B-->>OP: committed receipt
   else health fails
     B->>J: CAS target -> prior
     J->>BS: rebind prior
+    M->>M: reopen prior admission; release activation lease
     B-->>OP: rolled_back receipt
   end
 ```
@@ -609,13 +653,15 @@ sequenceDiagram
 | owner tx fails | rollback state/audit/inbox/outbox | owning Context |
 | dispatcher dies pre-ack | lease expiry and reclaim | Platform Events |
 | consumer duplicate | existing inbox receipt, no transition | owner adapter |
+| consumer binary/version upgrade | stable effect identity returns first receipt or incompatible version quarantines | owner adapter |
 | payload identity conflict | quarantine/dead-letter corruption | Platform Events/operator |
 | sequence gap | bounded wait then contract outcome | Platform Events/operator |
+| ordered item dead-lettered | retain head; redeliver same position or audited policy-authorized resolution | Platform Events/owner operator |
 | retry exhaustion | dead-letter, no silent drop | Platform Events |
 | ack persistence outage | stop at deadline, retain residual/lease | Platform Events |
 | migration interruption | digest/checkpoint resume or rollback | MigrationCoordinator |
-| corrupt/unsafe archive | verification_failed before extraction | Platform Backup |
-| crash after writer fence | activation journal reconciliation | Platform Backup/Persistence |
+| untrusted/corrupt/unsafe/archive-bomb input | verification_failed before extraction | Platform Backup |
+| crash after writer fence | activation journal reconciliation | Platform Persistence activation authority with Platform Backup coordinator |
 | target health fails | CAS prior generation and rebind | Platform Backup/Bootstrap |
 | partial Bootstrap startup | reverse unwind acquired generation | Bootstrap |
 | current runtime shutdown tail | legacy behavior; hardening child required | runtime hardening child |
@@ -642,6 +688,9 @@ ceilings and requires each deployment profile to reserve lower measured limits.
 | one dispatcher policy attempts | 100 | schema ceiling; normal profile lower |
 | one lease duration | 1 second to 15 minutes | rejects zero/unbounded leases |
 | one restore manifest | 100,000 members, 2 TiB declared bytes | pre-allocation refusal ceiling; deployment lower |
+| restore manifest encoded bytes | 64 MiB | streaming parser hard ceiling; deployment lower |
+| archive encoded bytes | 2 TiB | checked streaming read ceiling; deployment lower |
+| archive expansion ratio | 100:1 | hard refusal ceiling over actual extracted/archive bytes |
 | one restore path | 4,096 UTF-8 bytes, 128 normalized segments | archive parser bound |
 | one CapacityEnvelope | 256 KiB canonical bytes | bounded evidence |
 
@@ -661,9 +710,11 @@ The 1x/10x event fixture measures:
 - CPU, RSS, disk and DB/WAL growth.
 
 Migration measures lock acquisition, checkpoint throughput, old/new reader
-latency and recovery. Backup/restore measures staging bytes/sec, CPU/RSS/disk,
-manifest parse, hash, fence, rebind, health and rollback. Results are `pass`,
-`defer` or `overload`; missing measurement is `defer`, never zero/pass.
+latency and recovery. Backup/restore measures streaming manifest/archive parse,
+signature/hash, declared/actual/compressed bytes, expansion ratio, disk
+preflight/peak, staging bytes/sec, CPU/RSS, fence, rebind, health and rollback.
+Results are `pass`, `defer` or `overload`; missing measurement is `defer`, never
+zero/pass.
 
 ### Observability and operations
 
@@ -676,6 +727,7 @@ Low-cardinality metrics:
 - inbox duplicate/conflict and ordering gap/expiry;
 - migration generation/state/checkpoint/fence conflicts;
 - backup certification/corruption/remote publication;
+- backup trust-policy/key/signature outcome and restore byte/disk refusal;
 - restore state, activation/rollback and health duration;
 - Bootstrap profile lifecycle/residual owner;
 - CapacityEnvelope pass/defer/overload.
@@ -709,8 +761,10 @@ executes the action.
 - startup mode and read-only no-side-effect contracts;
 - transaction owner/fence and allowed participant set;
 - exact state transition products;
-- envelope/payload digest, inbox conflict and ordering arithmetic;
-- safe archive path/member parser and manifest bounds;
+- envelope/payload digest, stable inbox effect identity/version compatibility
+  and ordering arithmetic;
+- safe streaming archive path/member parser, certification signature, encoded/
+  extracted/ratio bounds and disk reservation;
 - CapacityEnvelope invariants and unavailable measurement.
 
 #### Integration and crash fixtures
@@ -718,14 +772,18 @@ executes the action.
 - temporary SQLite owner transition + audit/inbox/outbox atomicity;
 - duplicate ingress across two connections;
 - dispatcher crash before/after lease, consumer commit and ack;
-- exact duplicate, digest conflict and stale fence;
-- N+1-before-N, epoch regression, gap timeout and hot-key fairness;
+- exact duplicate across consumer version upgrade, incompatible version,
+  digest conflict and stale fence;
+- N+1-before-N, epoch regression, gap timeout, ordered DLQ, original-position
+  redelivery, authorized/unauthorized head resolution and hot-key fairness;
 - retry exhaustion, DLQ and concurrent redelivery CAS;
 - migration leader race, interrupted checkpoint, changed registration and
   legacy-unfenced-writer block;
 - v2-v22 legacy bootstrap fixture with no query-side bootstrap;
-- malicious/corrupt/incompatible archive, crash at each restore state,
-  activation/rebind health rollback and stale writer;
+- altered manifest+archive, untrusted/revoked certification, malicious/corrupt/
+  incompatible/compression-bomb/archive disk exhaustion, crash at each restore
+  state, canonical fence acquisition/release, activation/rebind health rollback
+  and stale writer;
 - Bootstrap partial startup/reverse cleanup and sole-root architecture tests.
 
 #### Compatibility
@@ -814,15 +872,25 @@ allow tailored graphs while preserving one composition authority.
 - **Legacy and target delivery can duplicate work.** -> One-way bridge identity,
   digest comparison and one selected route per message family.
 - **Ordered hot keys cause head-of-line blocking.** -> Per-key bounded buffers,
-  fair dispatcher scheduling, explicit gap expiry/DLQ and 10x hot-key fixture.
+  fair dispatcher scheduling, explicit gap expiry/DLQ, owner-authorized
+  resolution without implicit skip and 10x hot-key fixture.
 - **Retry/DLQ policy may classify business errors incorrectly.** -> Platform
   owns technical classes; owner contracts supply stable failure category and
   policy ref. Unknown fails to dead-letter/operator review, not infinite retry.
 - **Backup consistency across SQLite and external artifacts is complex.** ->
   Manifest one committed generation/ref per owner; no live recursive copy as
   authority.
+- **An attacker can replace both an archive and its hashes.** -> Detached
+  certification binds canonical manifest/archive/generation to an independently
+  configured trust policy and signing key; an unsigned or untrusted backup is
+  never automatically restorable.
+- **Compressed input can exhaust disk despite declared metadata.** -> Bound
+  encoded, declared and actual bytes plus expansion ratio, use checked counters,
+  pre-reserve staging/validation/rollback margin and stop extraction on the first
+  overrun.
 - **Restore activation can strand writers.** -> Durable fence, journal CAS,
-  restart reconciliation, prior-generation rollback and bounded health window.
+  one Persistence activation authority, canonical owner lock order, restart
+  reconciliation, prior-generation rollback and bounded health window.
 - **Bootstrap can become a service locator.** -> Expose typed immutable profile
   handles, no arbitrary lookup/global mutation, architecture guard.
 - **Foundation scope can grow into Processes.** -> Platform transports and
@@ -845,7 +913,8 @@ allow tailored graphs while preserving one composition authority.
 4. `platform-command-and-delivery-store`: add ingress/outbox/inbox/order/DLQ
    repositories and crash fixtures; no legacy topic rerouting.
 5. `platform-backup-certification-and-restore`: add certified temporary-root
-   create/restore and activation journal; legacy CLI remains selected.
+   create/restore and request the Persistence-owned activation journal; legacy
+   CLI remains selected.
 6. `platform-bootstrap-profiles`: compose target test/worker profiles; current
    entrypoints remain compatibility paths.
 7. Strictly approve and implement
@@ -907,7 +976,8 @@ select and review:
 
 1. the initial measured `CapacityProfile` worker/queue/retry/gap values;
 2. whether SQLite activation uses a generation-directory pointer or another
-   atomic same-filesystem indirection, while preserving the journal contract;
+   atomic same-filesystem indirection, while preserving the sole Persistence
+   activation authority, canonical lock order and journal contract;
 3. the first pilot command/message family after Capture contracts exist; and
 4. the final owner split for legacy `job_runs`, `settings`, `pipeline_dag` and
    `agenda_queue`, which remains deferred rather than guessed here.

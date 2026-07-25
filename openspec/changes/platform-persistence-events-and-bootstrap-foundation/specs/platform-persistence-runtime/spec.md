@@ -131,11 +131,15 @@ last registration satisfies its retirement window.
 ### Requirement: Platform persistence metadata SHALL have one logical owner
 
 The eventual additive Platform schema SHALL make Platform Persistence the sole
-writer of schema capabilities, migration runs/checkpoints, writer leases and
-operation/idempotency admission metadata. Platform Events SHALL be the sole writer
-of outbox routing/delivery, inbox receipt, ordering and dead-letter metadata.
-Platform Backup SHALL be the sole writer of backup certification, restore operation
-and activation-journal metadata.
+writer of schema capabilities, migration runs/checkpoints, writer leases, the
+global activation lease and activation journal. Platform Execution Operation
+Control SHALL be the sole writer of operation claims, operation receipts and
+refusal-audit metadata and SHALL consume Platform Persistence transaction
+primitives without transferring logical ownership. Platform Events SHALL be the
+sole writer of outbox routing/delivery, inbox receipt, ordering, gap-resolution
+and dead-letter metadata. Platform Backup SHALL be the sole writer of backup
+certification and restore-operation metadata and SHALL request generation
+activation only through the Platform Persistence activation capability.
 
 Existing `event_log`, `event_handler_runs`, `schema_migrations`,
 `backup_snapshots`, `settings`, `job_runs` and `pipeline_dag` SHALL remain legacy
@@ -155,3 +159,55 @@ receipts or projections and SHALL NOT query Platform tables or `_conn` directly.
 #### Scenario: Physical SQLite remains shared
 - **WHEN** Platform and a Context temporarily use the same SQLite file
 - **THEN** each table and transaction still has one logical owner and no shared physical file is interpreted as cross-owner write authority
+
+#### Scenario: Ingress stores an operation receipt
+- **WHEN** command admission creates or transitions Platform operation metadata
+- **THEN** Platform Execution Operation Control remains the sole logical writer while Platform Persistence supplies only the fenced transaction primitive
+
+#### Scenario: Backup requests activation
+- **WHEN** a staged restore is ready to fence writers and change active generation
+- **THEN** Platform Backup drives the restore workflow through the sole Platform Persistence activation capability and does not write the activation journal directly
+
+### Requirement: Generation activation SHALL use one global fenced authority
+
+Platform Persistence SHALL expose one internal `GenerationActivationCapability`
+as the sole writer of the global activation lease, writer-admission gate and
+activation journal. Platform Backup and `MigrationCoordinator` SHALL request
+activation through that capability; neither SHALL acquire owner writer leases or
+write activation state independently.
+
+One activation attempt SHALL use a finite shared monotonic deadline and this
+canonical acquire order:
+
+1. compare-and-swap one database-scoped activation lease/fence;
+2. close new compatible-writer admission for the expected active generation;
+3. enumerate the immutable required-owner set from the verified restore/
+   migration plan and acquire or revoke owner writer leases in ascending
+   canonical owner-namespace bytes;
+4. drain or durably retain every admitted owner under its fence;
+5. compare-and-swap the activation journal from the expected prior generation
+   to the verified target generation; and
+6. rebind and verify the selected generation before reopening admission.
+
+Every contender SHALL acquire only in that order and release in reverse order.
+A failure before journal commit SHALL retain/select the prior generation. A
+failure after target journal commit SHALL keep admission closed while recovery
+either verifies target readiness or compare-and-swaps back to the prior
+generation. Owner leases SHALL not reopen and the activation lease SHALL not be
+released until the journal-selected target or prior generation has passed
+required readiness probes. A stale activation or owner fence SHALL be rejected
+inside the attempted write transaction. No Interface timeout, directory
+presence, legacy status row or process-local lock SHALL override the durable
+authority.
+
+#### Scenario: Restore and migration race
+- **WHEN** Platform Backup and MigrationCoordinator concurrently request activation for one database
+- **THEN** one database-scoped activation fence wins, the loser receives an explicit conflict/unavailable receipt and no owner lease or journal state is partially changed
+
+#### Scenario: Owner fences are acquired concurrently
+- **WHEN** an activation plan requires several owner namespaces
+- **THEN** all contenders acquire them in the same ascending canonical order and a partial acquisition releases in reverse order before retry or failure
+
+#### Scenario: Target health fails after journal commit
+- **WHEN** the activation journal selects target but required readiness cannot pass
+- **THEN** admission stays closed, the capability compare-and-swaps to the verified prior generation, rebinds and verifies it, then reopens prior admission and releases fences
