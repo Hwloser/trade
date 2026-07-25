@@ -94,8 +94,8 @@ At entry the supervisor SHALL convert that anchor once to `CLOCK_BOOTTIME`, reco
 clock ID and kernel boot ID, and use only that clock domain for event order, elapsed
 time, deadlines, leases, and timeout decisions. UTC SHALL be display/retention
 metadata only; a boot-ID change SHALL invalidate a lease rather than compare monotonic
-values across boots. The supervisor SHALL create one run ID, atomic
-`trade.mutation.invocation.v1` receipt, child-subreaper/watchdog, and absolute
+values across boots. The supervisor SHALL create one run ID, atomic mutable
+`trade.mutation.invocation-state.v1`, child-subreaper/watchdog, and absolute
 `CLOCK_BOOTTIME` deadline passed unchanged through bootstrap and the full controller. It
 SHALL parent every `uv` handoff in an owned session and include
 dependency preparation/verification, Git discovery, source parsing, coverage
@@ -119,15 +119,17 @@ SHALL be at most 2048 files and 32 MiB, with at least 512 MiB free after reserva
 Every discovery, copy, and parse loop SHALL check the same monotonic deadline.
 
 The supervisor SHALL use pidfds where available, cgroup kill, process-group
-TERM/KILL, bounded observable-reap polling, and its sole fallback writer.
+TERM/KILL, and bounded observable-reap polling; its closed finalizer SHALL be the sole
+fallback writer.
 A task still present after its cleanup sub-budget SHALL receive orthogonal cleanup
 status `unconfirmed`. Its provisional terminal SHALL be replaced by
 `infrastructure_error_test_started` when a test started or
 `infrastructure_error_pre_test` otherwise; the run SHALL be
 `degraded_infrastructure`, score/cache SHALL be disabled for the affected record and
-run, and no provisional killed/survived/timeout/cancelled count SHALL remain. The
-receipt SHALL retain pidfd/cgroup evidence while the supervisor continues cleanup
-attempts until the outer CI timeout. An unreturning filesystem operation SHALL create no claimed
+run, and no provisional killed/survived/timeout/cancelled count SHALL remain. Mutable
+invocation state and the eventual immutable sealed core SHALL retain pidfd/cgroup
+evidence while the supervisor continues cleanup attempts until the outer CI timeout.
+An unreturning filesystem operation SHALL create no claimed
 generation. CI timeouts of 15/45/110 minutes SHALL be the final containment for
 uninterruptible kernel/filesystem stalls and SHALL exceed the 600/1800/5400-second
 controller budgets. Capacity qualification SHALL fail if ordinary cancellation,
@@ -387,6 +389,17 @@ Each attestation entry SHALL be canonical UTF-8 JSON no larger than 4096 bytes a
 SHALL bind schema, run ID, contiguous sequence, previous-entry digest, canonical byte
 length, event payload digest, and entry digest. The changed/core/full journal limits
 SHALL respectively be 2048/12288/61440 entries and 8/48/192 MiB including framing.
+Ordinary progress entries SHALL contain at most 1024 bytes canonical JSON and 1029
+bytes with framing. One run SHALL append at most 128 ordinary invocation entries and
+ten ordinary entries per selected mutant. Normal allowed syscall decisions SHALL
+update a supervisor-memory hash/count accumulator and end in one bounded worker audit
+summary rather than append one journal entry per syscall; the first denied decision
+SHALL close worker admission and terminal drain decisions use the reserve below.
+Therefore the 150/1000/5000 mutant ceilings SHALL require at most
+1932/10432/50432 total entries and 2,921,916/11,668,416/52,828,416 bytes including
+the maximum terminal reserve. Configuration and qualification SHALL recompute these
+formulas and reject any event schema, per-run/per-mutant bound, or mode cap that exceeds
+the corresponding entry or byte limit.
 One encoded frame SHALL be at most 4101 bytes including its 4-byte length prefix and
 one record delimiter. With `workers <= 4`, `pids.max=64`, and at most 64 outstanding
 notifications per worker, terminal reserve SHALL be
@@ -407,20 +420,24 @@ durably append within the derived reserve SHALL be `incomplete_evidence`, not a
 truncated success. Qualification SHALL exercise the maximum concurrent forced-close
 event equation and fail when either the derived entry or framing-inclusive byte
 reserve does not fit. The supervisor SHALL append each entry before acknowledging its
-fact and SHALL `fdatasync` before a forced-close boundary acknowledgement, fallback,
-and the terminal seal. A process crash before that seal cannot produce valid evidence.
+fact and SHALL `fdatasync` before a forced-close boundary acknowledgement,
+fallback-decision boundary, and the terminal seal. A process crash before that seal
+cannot produce valid mutation outcome evidence.
 
-After all listener, guard, wait, OOM, and cleanup facts are final, the supervisor
-SHALL append exactly one terminal seal entry, `fdatasync` the journal, and atomically
-bind `journal_schema`, `journal_head_sha256`, `journal_entry_count`,
-`journal_final_sequence`, `journal_byte_size`, and `journal_sealed=true` into the
-invocation receipt and any fallback. No entry or byte MAY follow the seal. A torn
+After containment reaches a terminal observation, the supervisor SHALL write exactly
+one immutable `trade.mutation.sealed-receipt-core.v1` binding `journal_schema`,
+observed `journal_head_sha256`, `journal_entry_count`, `journal_final_sequence`,
+`journal_byte_size`, and `journal_sealed=true|false`. It SHALL set true only after all
+listener, guard, wait, OOM, and cleanup facts are final, exactly one terminal seal
+entry has been appended and the journal has been `fdatasync`ed. No entry or byte MAY
+follow a true seal. A false value SHALL permit only a finalizer-owned wrapper-bound
+fallback and SHALL NOT validate a mutation outcome. A torn
 frame, valid-prefix truncation, missing/extra/reordered entry, sequence/digest/length
-mismatch, absent seal, receipt/fallback anchor mismatch, or post-seal data SHALL be
+mismatch, false/absent seal for a report, sealed-core anchor mismatch, or post-seal data SHALL be
 `incomplete_evidence`; recovery SHALL preserve the bytes and SHALL NOT silently
 truncate or synthesize a seal. Reports SHALL reference attestation entry digests;
-receipts and CI bundles SHALL contain and independently verify the complete sealed
-journal against this final anchor. Workers SHALL NOT inherit the channel
+invocation wrappers and CI bundles SHALL contain the sealed core and independently
+verify the complete sealed journal against this final anchor. Workers SHALL NOT inherit the channel
 capability or supervisor-owned descriptors; reconnect and a second client SHALL be
 rejected. Packets SHALL be at most 64 KiB, JSON at most 48 KiB, and carry at most
 eight role-labelled FDs. One controller multiplexer SHALL allow at most `workers`
@@ -481,7 +498,7 @@ whose first observed event is provisional. Integrity causes
 protocol_failure|incomplete_evidence` SHALL be sticky and dominant regardless of
 event sequence. No provisional control result SHALL terminalize until the seccomp
 notification queue drains, listener state closes, and both authenticated evidence
-streams complete or a valid supervisor forced-close receipt substitutes for child
+streams complete or a valid supervisor forced-close attestation substitutes for child
 completion. Any integrity cause observed during finalization SHALL replace the
 provisional result with phase-appropriate infrastructure error. Cleanup status SHALL
 be evaluated last and `unconfirmed` SHALL perform the same override and disable run
@@ -622,7 +639,8 @@ On timeout, cancellation, or global deadline, the controller SHALL request termi
 by opaque worker handle. The supervisor SHALL terminate that worker cgroup/process
 group, wait a bounded observable grace period, escalate to kill, and reap before
 returning. A timeout SHALL be `timeout_test_started`, not `killed`. Failure to confirm
-cleanup SHALL set receipt cleanup status `unconfirmed` and replace the provisional
+cleanup SHALL set mutable-state and sealed-core cleanup status `unconfirmed` and
+replace the provisional
 terminal with phase-appropriate infrastructure error, never a kill. Failure to launch,
 copy, mutate, parse, collect, or execute infrastructure SHALL be
 `infrastructure_error`, not `killed`.
@@ -692,7 +710,8 @@ counters, absent membership, or an ambiguous delta SHALL be `unknown_sigkill`, n
 OOM. `proven_oom|unknown_sigkill` SHALL be closed infrastructure reasons mapped to
 `infrastructure_error_test_started` when the test-start fact is true and
 `infrastructure_error_pre_test` otherwise, using the normative phase/cleanup table.
-Controller OOM/SIGKILL SHALL produce supervisor-owned `controller_lost` fallback,
+Controller OOM/SIGKILL SHALL make the supervisor write a terminal core and the
+finalizer produce a `controller_lost` fallback,
 not a mutant terminal. Tests SHALL cover both exit/cancel race orders, late integrity after natural
 exit, both evidence-stream completion orders, cleanup override, hung `uv`,
 bootstrap/controller crash, proven OOM/unknown SIGKILL, wrapper SIGTERM, cgroup/
@@ -718,29 +737,49 @@ repository data, DB, model, Parquet, generated-artifact roots, path escapes, and
 unrelated existing directories SHALL fail before a lock or write.
 
 At supervisor entry, each invocation SHALL atomically create
-`invocations/<run_id>.json` using schema `trade.mutation.invocation.v1` with run ID,
+`invocation-state/<run_id>.json` using schema
+`trade.mutation.invocation-state.v1` with run ID,
 mode, `/proc/uptime` anchor, `CLOCK_BOOTTIME` value/clock ID, kernel boot ID, absolute
 deadlines, supervisor identity, lifecycle/projection states, and exact expected
-staging, final, fallback, and bundle paths. Bootstrap/controller SHALL send bounded
+sealed-core, invocation-wrapper, staging, final, fallback, and bundle paths. The
+immutable wrapper path `invocations/<run_id>.json` SHALL be known and exported before
+the first child but SHALL NOT exist until finalization. Bootstrap/controller SHALL send bounded
 authenticated transitions over one inherited supervisor channel; the supervisor SHALL
 validate run ID, child PID/start token, sequence, schema and forward state before it
-alone atomically rewrites the receipt. The receipt SHALL be a bounded phase journal
+alone atomically rewrites invocation state. That state SHALL be a bounded phase journal
 that records plan digest, selected count, mutation/test phase facts, controller exit,
-cleanup evidence, last durable phase, expected report root/report sequence and
-projection state, plus the sealed attestation journal schema/head/count/final-
-sequence/byte-size fields defined above. The receipt SHALL be at most 2 MiB with at
+cleanup evidence, last durable phase, and expected evidence kind. It SHALL be at
+most 2 MiB with at
 most 512 phase transitions; the final 16 transitions and 64 KiB SHALL be reserved for
-cleanup, journal seal, fallback, and terminal state. The supervisor SHALL be the sole
-writer of the receipt and every
-fallback. A controller SHALL only submit one authenticated bounded
+cleanup, journal seal, fallback request, and terminal state. The supervisor SHALL be
+the sole writer of mutable invocation state and the immutable sealed core;
+`evidence_finalizer.py` SHALL be the sole fallback and immutable-wrapper writer. A
+controller SHALL only submit one authenticated bounded
 `fallback_request`; it SHALL NOT open or replace a fallback path. If the controller
 exits unexpectedly, is SIGKILLed, or is proven OOM-killed by the unique-cgroup rule,
-the surviving supervisor SHALL clean descendants, validate
-any already-published run-ID root, and bind that root or atomically write a
-`controller_lost` fallback. Unknown SIGKILL SHALL NOT be labelled OOM. CI SHALL consume the receipt path
+the surviving supervisor SHALL clean descendants, validate any already-published
+run-ID root, and write the terminal core; the finalizer SHALL bind that root or
+atomically write a `controller_lost` fallback and wrapper. Unknown SIGKILL SHALL NOT
+be labelled OOM. CI SHALL consume the immutable wrapper path
 exported through `$GITHUB_OUTPUT`,
-validate the run ID and referenced evidence, and SHALL NOT infer this invocation from
-global `current.json`, timestamps, or newest-file globbing.
+validate the run ID, referenced sealed core, journal and evidence, and SHALL NOT infer
+this invocation from global `current.json`, timestamps, or newest-file globbing.
+
+After containment reaches a terminal observation, the supervisor SHALL write
+exactly one canonical immutable `trade.mutation.sealed-receipt-core.v1` containing
+run/boot/mode/deadline identity, plan/cohort/controller-exit/lifecycle/cleanup facts,
+candidate identity or absence plus a closed failure code, and the observed terminal
+journal anchor including `sealed=true|false`; it SHALL NOT reference a future report,
+fallback, wrapper, or projection. It SHALL fsync and
+read back the core before finalization. The standard-library finalizer SHALL then write
+exactly one immutable `trade.mutation.invocation.v1` wrapper containing the run ID,
+sealed-core path/digest, exact final report root/report sequence or fallback
+path/digest, bundle expectation, and
+`projection_expectation=scheduled_required|not_applicable`. The report SHALL bind only
+the sealed-core digest, never the wrapper digest. The wrapper SHALL bind both sealed
+core and report/fallback, forming directed equations
+`report -> sealed_core` and `wrapper -> sealed_core + report_or_fallback` with no
+back-edge or hash cycle. Neither object may be rewritten.
 
 Bootstrap SHALL own discovery only and SHALL NOT create, stage, render, publish, or
 repair a report, fallback, cache, trend, or pointer. It SHALL emit exactly one bounded
@@ -751,7 +790,8 @@ entrypoint, and SHA-256; this field SHALL be named `application_entrypoint` and 
 `trade_py.devtools.mutation_testing.application` and SHALL NOT be `cli.py`. It SHALL
 contain no writable filesystem descriptor. The
 supervisor SHALL verify bootstrap PID/start token, schema, size, digest, identity, and
-EOF; anchor the DTO digest and bootstrap exit in the receipt; copy the exact bytes
+EOF; anchor the DTO digest and bootstrap exit in mutable state and the eventual sealed
+core; copy the exact bytes
 into a sealed read-only memfd; close the transition channel; and pass that memfd to
 exactly one application child. `application.py` SHALL verify the seal and
 digest, consume the DTO once, coordinate the corresponding zero-work/deferred/
@@ -763,20 +803,25 @@ per-worker attestation/cleanup digests; the candidate therefore contains final w
 outcomes but no claim that the invocation journal is sealed. It SHALL submit the
 candidate root/digest through one authenticated completion message and exit. The
 supervisor SHALL confirm cleanup/reap of the application and every spawned registry
-entry, seal the attestation journal, and only then use its
+entry, seal the attestation journal, write/read-back the immutable sealed core, and
+only then use its
 standard-library-only `evidence_finalizer` to validate the candidate, bind the sealed
-journal anchor and receipt digest, create the final manifest, reserve the report
-sequence, and atomically publish the generation/current pointer. The finalizer owns a
+journal anchor and sealed-core digest, create the final manifest, reserve the report
+sequence, publish the immutable generation, write and read-back verify the immutable
+wrapper, then atomically advance `current.json` and build the local CI bundle. A typed
+fallback SHALL be written before a fallback wrapper, and a fallback wrapper SHALL
+never advance `current.json`. The finalizer owns a
 single-use immutable candidate capability and SHALL NOT execute tests, render new
 business content, call adapters, or accept a second candidate. Application,
-bootstrap, and `report_store.py` SHALL NOT publish a pointer, receipt, fallback, or CI
-bundle. The supervisor SHALL also be the sole local bundle builder; CI validation and
+bootstrap, and `report_store.py` SHALL NOT publish a pointer, state/core/wrapper,
+fallback, or CI bundle, reserve a report sequence, or rename a final generation. CI validation and
 remote carrier operations are delegated later to the credentialed carrier adapter.
 The
 zero-work/deferred application path SHALL use only the base frozen environment and
 lazy imports; an eligible path SHALL use the prepared mutation extra. A missing,
 duplicate, trailing, oversized, unsealed, identity-mismatched, or replayed bootstrap
-DTO SHALL produce supervisor-owned fallback and no report. No application child may
+DTO SHALL make the supervisor write a terminal core and the finalizer produce a
+fallback, with no report. No application child may
 be started twice from one DTO, and neither supervisor nor bootstrap may synthesize
 report content; the supervisor may only finalize the exact candidate bytes through
 the closed finalizer schema.
@@ -794,15 +839,21 @@ fsync of files and the staged directory, the application SHALL hash the candidat
 manifest and relinquish mutation authority over it. After application exit, worker
 cleanup, and journal seal, the supervisor finalizer SHALL copy or reflink those exact
 members into a fresh final staging directory, add only `evidence-anchor.json` binding
-the sealed receipt/journal/candidate roots, and write `manifest.json` over every final
+the sealed-core/journal/candidate roots, and write `manifest.json` over every final
 member except itself. Under the output lock, it SHALL reserve and fsync the next
 `report_sequence` in
 `report-sequence.json`, binding run ID and expected manifest digest, before atomically
-replacing one `current.json` pointer containing run ID, manifest SHA-256, manifest
-byte size and reserved report sequence. The supervisor SHALL write the same
-root/report sequence into the invocation receipt. Readers and
-CI SHALL validate the root before member hashes. A crash SHALL expose either the
-previous complete generation or the new complete generation, never mixed files. On
+renaming the final staging directory to its immutable generation path. It SHALL then
+write and read-back verify the immutable invocation wrapper that binds the sealed core
+and that root/report sequence. Only after the wrapper is durable SHALL it atomically
+replace one `current.json` pointer containing run ID, wrapper digest, manifest
+SHA-256, manifest byte size and reserved report sequence, and then build the local
+bundle. A fallback SHALL be written before its immutable wrapper and SHALL NOT advance
+`current.json`. Readers and CI SHALL validate wrapper, core, root, then member hashes.
+A crash SHALL expose either the previous complete generation or a new complete
+generation with an already durable wrapper, never mixed files. An unreferenced final
+directory or wrapper SHALL be repairable staging and SHALL NOT be inferred as current.
+On
 the next locked operation an unresolved report reservation SHALL be reconciled before
 any new report sequence. It SHALL commit only if `current.json` exactly binds the same
 run ID, report sequence, manifest digest, manifest size, and valid generation root;
@@ -829,12 +880,18 @@ SHALL remain distinct. If a complete candidate cannot be validated and submitted
 application SHALL preserve owned staging, return exit 2, and submit one bounded
 authenticated fallback request. If post-application finalization cannot publish a
 complete generation, the supervisor SHALL preserve the candidate/final staging and
-write the fallback directly. The supervisor alone SHALL atomically write one
+invoke its closed finalizer. `evidence_finalizer.py` alone SHALL atomically write one
 `fallback-<run_id>.json` diagnostic using schema
 `trade.mutation.fallback.v1` with redacted stable `error_code`, failed stage,
-retryability, message, remediation command, receipt path, and exact evidence paths
-outside `current.json`; fallback is not a report generation. A malformed, replayed,
-or unauthenticated request SHALL produce a supervisor-owned protocol-error fallback.
+retryability, message, remediation command, mutable-state/sealed-core/wrapper paths
+when available, and exact evidence paths outside `current.json`; fallback is not a
+report generation. After the sealed core exists, the finalizer SHALL write one
+immutable wrapper referencing that exact fallback. If core/wrapper persistence itself
+fails, CI SHALL classify invalid/missing/hard-loss evidence and SHALL NOT infer stale
+`current.json`. A malformed, replayed, or unauthenticated request SHALL make the
+supervisor close admission and write a terminal core; the finalizer SHALL produce the
+protocol-error fallback. Failure to persist the terminal core SHALL be hard loss and
+SHALL NOT be hidden by an unbound fallback.
 
 A missing `current.json` before the first successful generation SHALL be normal.
 Under the publication lock, a malformed or symlinked pointer, missing referenced
@@ -863,9 +920,9 @@ MUST NOT serialize unreachable states:
 | `bundle` | `unsafe > internal_error > bundle_invalid > evidence_expired > bundle_valid` | 2 for unsafe/internal/bundle_invalid; 1 for evidence_expired; 0 for bundle_valid |
 
 A run-root state SHALL derive only from ownership marker, explicit run ID, lease,
-receipt/tombstone, pointer, generation, and expected digest facts under the named
+state/core/wrapper/tombstone, pointer, generation, and expected digest facts under the named
 root. A bundle state SHALL derive only from the explicit downloaded bytes, expected
-manifest digest when provided, member safety, receipt/journal/evidence roots, and
+manifest digest when provided, member safety, wrapper/core/journal/evidence roots, and
 retention tombstone. `first_run|repairable|active_lease|stale_expected_digest` SHALL
 never appear for a bundle; `bundle_valid|bundle_invalid` SHALL never appear for a run
 root. Every state SHALL carry its complete observed fact vector, precedence winner,
@@ -902,8 +959,14 @@ stale-epoch, and 2 for unsafe/internal failure.
 
 One safe-error layer SHALL redact configured credential values,
 credential-looking environment values, URL userinfo, and controlled home/temp roots
-from console, JSON, Markdown, HTML, fallback, cache/trend recovery diagnostics, and
-retained staging before persistence.
+plus runner-specific absolute roots before any durable append or rendering. This
+SHALL cover mutable invocation state, sealed core and invocation wrapper, every
+attestation-journal payload including brokered path facts, candidate/final JSON,
+Markdown and HTML, fallback, bundle-validation records, projection and carrier
+receipts, cache/trend recovery diagnostics, console output, and retained staging.
+Clear sensitive paths SHALL NOT be persisted; a path digest MAY be retained only when
+the clear path is absent. Tests SHALL scan every bundle member and durable surface for
+credentials, URL userinfo, controlled home/temp paths, and runner-specific roots.
 
 Every structured error SHALL carry a remediation argv array as well as rendered text.
 The registry SHALL use typed argv factories, not string templates. Each factory SHALL
@@ -935,7 +998,10 @@ worker-registered/test-started counts,
 killed, survived, timeout, no-coverage, baseline-unavailable, invalid,
 infrastructure-error, equivalent-exception and not-run counts, factual numerator,
 denominator, `run_score_eligible`, closed score-ineligibility reason, mutation score,
-budget-exhausted state/reason, elapsed time, and every selected mutant's path,
+`score_scope=reviewed_matrix`, informational `mutation_coverage_ratio`, a low-coverage
+warning threshold of 70 percent, structured baseline comparability/reason,
+budget-exhausted state/reason plus phase/configured-limit/unit/observed-value/
+scanned-state/remediation, elapsed time, and every selected mutant's path,
 line/column, definition, operator, related tests, status, duration, and bounded
 diagnostic, original/mutated digest, planned/observed span, and cache identity.
 
@@ -1032,7 +1098,13 @@ SHALL be recomputable as follows:
 - mutation score SHALL be `null` when `run_score_eligible=false`, otherwise
   `score_numerator / score_denominator`. Factual counts are never erased by an
   override, but an ineligible run SHALL NOT establish/compare a baseline, append an
-  authoritative trend score, or commit outcome cache entries.
+  authoritative trend score, or commit outcome cache entries;
+- `mutation_coverage_ratio` SHALL be `null` when
+  `killed + survived + no_coverage_line = 0`, otherwise
+  `(killed + survived) / (killed + survived + no_coverage_line)`. It SHALL be
+  reported independently from mutation score and SHALL never change numerator,
+  denominator, score eligibility, or outcome classification. A value below 0.70
+  SHALL emit an advisory warning, not a gate.
 
 Timeout, cancellation, no-coverage, baseline-unavailable, invalid,
 infrastructure-error, exception, and not-run outcomes SHALL NOT improve the score or
@@ -1048,7 +1120,7 @@ trend, or aggregate authority.
 Console, Markdown, and HTML SHALL all expose factual run status, controller exit code,
 stop reason, deferred paths, every aggregate above, numerator/denominator, baseline
 comparability and reason, cache freshness, projection state/gaps, cleanup/orphan
-result, stable remediation command, and exact receipt/report/fallback paths. Exit zero
+result, stable remediation command, and exact state/core/wrapper/report/fallback paths. Exit zero
 SHALL NOT hide `budget_partial`, timeout, no-coverage, or deferred work.
 
 `--plan-only` SHALL validate config/tool APIs, enumerate and select candidates, read no
@@ -1093,7 +1165,7 @@ identity-mismatched, or entries without a valid completed-run commit marker SHAL
 ignored.
 
 After an eligible report publication, scheduled core/full alone SHALL expose eligible
-cache markers, commit one
+cache markers through a distinct post-validation projection process, commit one
 content-addressed immutable compact
 `trend-sources/<trend_sequence>-<run_id>-<digest>.json` after reserving an independent
 core/full `trend_sequence`, advance the trend high-water with its digest, then
@@ -1113,17 +1185,17 @@ The trend-source ledger SHALL retain at most 365 records, 32 MiB, and 400 days;
 Result cache
 retention SHALL be at most 20000 entries and 512 MiB. Under the output publication
 lock, deterministic eviction SHALL remove oldest `created_at,key` records first and
-record evicted counts, bytes, and range. Immutable generations SHALL be at most 30
+record evicted counts, bytes, and range in the scheduled projection receipt. Immutable generations SHALL be at most 30
 entries, 2 GiB, and 30 days; fallback, quarantine, and failed-staging evidence SHALL
-be at most 50 entries, 512 MiB, and 14 days. Invocation receipts SHALL be at most 400
+be at most 50 entries, 512 MiB, and 14 days. Invocation state/core/wrapper records SHALL be at most 400
 entries, 64 MiB, and 400 days. Eviction SHALL protect `current`, active leases, and
-current failure evidence. Each receipt SHALL carry
+current failure evidence. Each immutable wrapper SHALL carry
 `bundle_expectation=required_ci|not_applicable_local` and an exact expected-member
-manifest. Raw evidence is one `receipt + supervisor-attestation-journal +
+manifest. Raw evidence is one `wrapper + sealed-core + supervisor-attestation-journal +
 report-or-fallback + expected bundles` unit: CI requires exactly one named bundle,
 while a local invocation records no expected bundle. A missing/corrupt required
 member SHALL NOT be confused with a local `not_applicable` member. The unit SHALL be
-evicted synchronously or the receipt SHALL become
+evicted synchronously or the wrapper/core pair SHALL become
 `trade.mutation.evidence-tombstone.v1` binding former roots/sequences, reason, time,
 and `detail_evidence=expired`. Compact trend sources and aggregates are separate
 digest-bound derived records that MAY outlive raw evidence while retaining only
@@ -1138,6 +1210,18 @@ schema/tool/config prefixes and newest valid numeric `(workflow_run_id, run_atte
 validate entries/commit markers, and save one bounded run-specific immutable archive
 with seven-day retention.
 Cache SHALL remain disposable and SHALL NOT be treated as trend evidence.
+
+The scheduled workflow SHALL invoke `projection.py` only after the immutable factual
+bundle has passed local and fresh-directory validation. The process SHALL validate the
+invocation wrapper, sealed core, report root, bundle manifest, workflow/run/attempt
+identity, and every immutable carrier-adapter receipt before taking the output lock.
+It SHALL be the sole local writer of cache commit markers, trend sequence/source,
+checkpoint, high-water and projection state, and SHALL always publish one immutable
+`trade.mutation.projection-receipt.v1` containing all input digests, before/after
+high-water, lock transaction, cache/trend outcomes and
+`complete|projection_degraded`. It SHALL NOT rewrite the immutable invocation wrapper,
+sealed core or report. Changed and ordinary manual core/full SHALL never launch or
+import this process.
 
 Only scheduled core and full SHALL own shared authoritative trend restore,
 `trend_sequence` reservation, source/tombstone append, high-water advance, cache/
@@ -1212,8 +1296,10 @@ job MAY download that exact named factual bundle through the same action. Those
 evidence transfers grant no shared-carrier list, restore, quota, ref, cache, trend,
 genesis, or aggregate authority.
 Post-publication projection failure SHALL be
-recorded as `projection_degraded` in the invocation receipt, leave the factual report
-valid, leave uncommitted cache unreadable, and expose a trend gap until reconciliation.
+recorded as `projection_degraded` in the immutable projection receipt, leave the
+factual report and invocation wrapper valid, leave uncommitted cache unreadable, and
+expose a trend gap until reconciliation. Carrier operations SHALL produce separate
+immutable request/receipt objects and SHALL NOT mutate the projection receipt.
 Score regression is comparable only over identical complete unambiguous comparison
 cohorts, identical killed/survived denominator key sets, and identical exception/no-
 coverage memberships with unchanged normalized node text and policy; numerator and
@@ -1221,6 +1307,13 @@ denominator key-set digests SHALL persist. Any timeout, infrastructure, cancella
 invalid, baseline-unavailable, differing exception/no-coverage membership, partial
 run, ambiguous/added/deleted/changed candidate, or cohort difference SHALL be
 non-comparable. Execution IDs remain source-exact.
+Every non-comparable decision SHALL use one closed structured reason:
+`cohort_added|cohort_deleted|node_changed|candidate_ambiguous|policy_changed|
+score_eligible_set_changed|denominator_changed|exception_membership_changed|
+no_coverage_membership_changed|timeout_present|infrastructure_present|
+cancellation_present|invalid_present|baseline_unavailable_present|partial_run|
+trend_epoch_changed`. Scheduled projection receipts SHALL retain bounded reason counts
+for trend analysis; comparison SHALL never fall back to a convenient intersection.
 
 Raw subprocess output SHALL be capped at 64 KiB per mutant, but JSON SHALL retain at
 most 8 KiB diagnostic and 8 KiB diff excerpts per detailed mutant. Mode-level detail
@@ -1233,7 +1326,8 @@ complete staged generation at 48/96/192 MiB, and peak report-renderer memory at
 64/128/256 MiB. Renderers SHALL stream structural records and reuse the same bounded
 detail rather than embed an unrestricted JSON copy. Worst-case escaped output SHALL be
 reserved before admission. The complete immutable CI bundle, including report or
-fallback, sealed attestation journal, receipt, validation, and manifest, SHALL be
+fallback, sealed attestation journal, invocation wrapper, sealed core, validation,
+and manifest, SHALL be
 capped at 64/160/416 MiB for changed/core/full. Disk and upload admission SHALL
 use the closed peak formula
 `generation_cap + original_journal_cap + 2 * bundle_cap +
@@ -1251,19 +1345,22 @@ reservation. No journal, bundle member, scratch directory, restore, or private t
 root is unbounded.
 
 For CI, a standard-library validator SHALL create exactly one immutable
-`trade.mutation.bundle.v1` directory from the exported receipt and its one referenced
-generation or fallback. It SHALL contain the exact receipt bytes, complete referenced
-evidence, complete supervisor-attestation journal, `validation.json` using schema
+`trade.mutation.bundle.v1` directory from the exported invocation wrapper, its sealed
+core, and its one referenced generation or fallback. It SHALL contain the exact
+wrapper and core bytes, complete referenced evidence, complete
+supervisor-attestation journal, `validation.json` using schema
 `trade.mutation.bundle-validation.v1`, and `bundle-manifest.json` with size/SHA-256
 for every preceding member. Validation SHALL bind workflow/run identity, controller
-exit, receipt digest, evidence kind/root digest, lifecycle/count/cleanup checks and
-closed failure codes. CI SHALL read-back and fsync the bundle and upload only the
+exit, wrapper/core digests, directed wrapper/core/report equations, evidence kind/root
+digest, lifecycle/count/cleanup checks and closed failure codes. CI SHALL read-back
+and fsync the bundle and upload only the
 exported exact path/digest from the execution job under a run/attempt-specific
 artifact name. A separate job SHALL download that named artifact into a fresh
 directory, reject extra/path-escaping members, require the expected bundle-manifest
-digest job output, and independently recompute all member and receipt/report/count/
-cleanup bindings from bytes. No execution-workspace path SHALL cross jobs. A missing,
-malformed, unsafe, digest-mismatched or receipt-unbound bundle SHALL fail the
+digest job output, and independently recompute all member and
+wrapper/core/report/count/cleanup bindings from bytes. No execution-workspace path
+SHALL cross jobs. A missing, malformed, unsafe, digest-mismatched or wrapper/core-
+unbound bundle SHALL fail the
 evidence-validation job and SHALL NOT be relabelled as a mutation outcome.
 When GitHub schedules the validation job, it SHALL append the sole authoritative
 `trade.mutation.ci-summary.v1`; whole-workflow cancellation before that job starts is
@@ -1284,10 +1381,10 @@ wrapper regains control, and a separate `controller_exit=0|1|2` output only afte
 controller returns. These outputs are routing observations, not evidence truth. The
 trusted summary SHALL derive controller exit by the following closed precedence:
 
-| Trusted status / receipt fact | Start/finish sentinels | Execution conclusion | `controller_exit` | Unavailable reason |
+| Trusted status / wrapper-core fact | Start/finish sentinels | Execution conclusion | `controller_exit` | Unavailable reason |
 |---|---|---|---|---|
-| `valid`, sealed receipt has exit 0/1/2 | any | any | receipt value | `none` |
-| `valid`, sealed receipt proves controller command not entered | any | any | `null` | `command_not_started` |
+| `valid`, immutable wrapper/core has exit 0/1/2 | any | any | core value | `none` |
+| `valid`, immutable wrapper/core proves controller command not entered | any | any | `null` | `command_not_started` |
 | `valid`, command entered but sealed fallback has no exit | any | any | `null` | `output_not_exported` |
 | `invalid` | any | any | `null` | `evidence_invalid` |
 | `missing|hard_loss` | any | `cancelled` | `null` | `workflow_cancelled` |
@@ -1330,6 +1427,10 @@ evaluate a repository baseline when it is established and comparable:
 - 80% SHALL be documented only as a future core target, not a current repository-wide
   gate;
 - no-coverage mutants SHALL be reported separately.
+- reports SHALL label the result `score_scope=reviewed_matrix`, SHALL NOT imply
+  repository-wide coverage, and SHALL prominently retain deferred production paths;
+- reports SHALL display the independent informational mutation-coverage ratio and its
+  below-70-percent warning without using it to change mutation score or block CI.
 
 `execution_id`/`mutant_id` SHALL remain source-digest exact for execution, cache, and
 exceptions. A separate `comparison_key` SHALL include source path, qualified eligible
@@ -1340,7 +1441,9 @@ policy-different, or partial candidates, differing score-eligible sets, timeout,
 infrastructure, cancellation, invalid, baseline-unavailable, or differing
 exception/no-coverage membership SHALL make the run non-comparable; line shifts or
 unrelated edits MAY remain comparable. V1 SHALL persist numerator/denominator key-set
-digests and report `baseline_comparable=false` rather than invent a mapping.
+digests and report `baseline_comparable=false` with the closed reason above rather
+than invent a mapping. Scheduled projection SHALL count those reasons for operator
+trend visibility.
 
 Schema `trade.mutation.baseline.v1` SHALL start `established: false`. An established
 record SHALL bind a verified bundle-manifest digest, report-manifest digest, run ID,
@@ -1447,25 +1550,33 @@ GitHub Actions SHALL:
 - disable changed remote cache restore and cap the changed job at 15 minutes around
   the 600-second total script budget;
 - make changed/core/full mutation outcomes report-only by capturing exit 0/1/2,
-  receipt path and run ID through `$GITHUB_OUTPUT`, preserving the original exit in
-  the receipt/summary, then returning success from the execution step; score,
+  immutable invocation-wrapper path and run ID through `$GITHUB_OUTPUT`, preserving
+  the original exit in the wrapper/summary, then returning success from the execution
+  step; score,
   survivor, timeout, baseline or tool-status outcomes SHALL NOT become a merge gate
   in this change;
-- in the execution job use `if: always()` to validate the receipt, construct and
+- in the execution job use `if: always()` to validate the immutable wrapper/core, construct and
   locally validate `trade.mutation.bundle.v1`, upload exactly that bundle under a
   run/attempt-specific artifact name, and export the name plus manifest digest;
 - run a separate dependent `if: always()` evidence-validation job that SHALL download
   that named artifact into a fresh directory, independently validate bytes, and fail
-  on missing, extra, malformed, unsafe, digest-mismatched or receipt-unbound evidence;
+  on missing, extra, malformed, unsafe, digest-mismatched or wrapper/core-unbound
+  evidence;
 - use PR concurrency key
   `mutation-pr-${{ github.repository }}-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: true`;
-- use `if: always()` to validate the exact invocation receipt exported through
+- use `if: always()` to validate the exact immutable invocation-wrapper path exported through
   `$GITHUB_OUTPUT`, append its success or typed fallback summary, construct the
   immutable bundle above, and upload only the exported exact bundle path/digest with
   14-day retention for controller exits, internal deadlines and gracefully delivered
   signals while the job remains alive; global `current.json`, raw staging and
   newest-file globbing SHALL NOT select CI evidence;
+- after successful scheduled evidence validation, run a distinct projection job that
+  invokes the credentialed carrier adapter for immutable restore/genesis/quota
+  receipts, passes those receipts and the exact bundle digest to `projection.py`, and
+  uploads one immutable `trade.mutation.projection-receipt.v1`; changed and ordinary
+  manual workflows SHALL contain no such job or adapter import, and no projection
+  process SHALL mutate the sealed invocation wrapper;
 - document upload after hard GitHub job cancellation, runner loss, or host loss as
   best effort rather than guaranteed;
 - run core on cron `17 18 * * 1-6` UTC and on manual request, with 1800-second script
@@ -1519,6 +1630,10 @@ GitHub Actions SHALL:
   within 30 days, record headroom and
   `qualified: true|false`, and fail execution preflight on any missing, expired,
   false, mismatched, non-finite-memory or insufficient-headroom field;
+- verify the ordinary attestation-journal formula at each mode ceiling: no more than
+  128 invocation entries plus ten ordinary entries per mutant, 1029 encoded bytes per
+  ordinary entry, and the independently derived terminal reserve. Qualification SHALL
+  fail when projected entry or byte demand reaches either journal cap;
 - expose `trade dev mutation qualify --mode core|full
   --runner-profile PROFILE` as an explicit report-only serial-plus-capacity
   qualification proposal command that never edits the reviewed capacity file and
@@ -1547,6 +1662,13 @@ GitHub Actions SHALL:
   `artifact_upload_skipped_quota`, name the repository/platform owner, the exact
   namespace and observed/proven bound, require owner-approved artifact cleanup outside
   this workflow, and provide a rerun command after cleanup.
+
+Scheduled summaries SHALL retain closed counts for baseline non-comparability,
+`hard_loss`, invalid evidence, projection gaps, quota skips, and missed scheduled
+runs. Repository owner `huanwei1208` is the initial accountable operator. One event is
+report-only; two consecutive scheduled events or three within seven days SHALL emit a
+visible workflow warning and operator issue/remediation record without changing a
+mutation outcome or making the workflow a branch gate.
 
 The ordinary pull-request workflow SHALL never invoke `core` or `full`. Documentation,
 test-only, fixture, generated, and excluded changes SHALL not execute mutant tests.

@@ -44,7 +44,9 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     budgets across bootstrap, dependency preparation, execution, and publication;
   - selects an absolute Python 3.7+ supervisor interpreter and starts one
     standard-library supervisor before every `uv` child, makes it the invocation
-    subreaper/watchdog, sole OS-level child spawner, and sole receipt/fallback writer;
+    subreaper/watchdog, sole OS-level child spawner, and sole mutable-state/sealed-core
+    writer; its closed finalizer is the sole fallback/immutable-wrapper/final-evidence
+    writer;
     the non-spawning controller uses a per-run-capability-authenticated, numerically
     bounded single-session protocol with opaque worker handles; the shared channel MAC
     protects peer/replay integrity but is not treated as source attestation. The
@@ -53,8 +55,11 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     not filesystem-only: supervisor dumpability, private PID/procfs visibility,
     capabilities, seccomp process-control denials, descriptor ownership, signals and
     Landlock are all read-back verified before the shared channel key is delivered.
-    The receipt/fallback anchors final journal head/count/sequence/size; valid-prefix
-    truncation is invalid. It records a child immediately after OS creation, before
+    The sealed core anchors observed journal head/count/sequence/size and whether a
+    terminal seal was durable; `sealed=false` permits only a wrapper-bound typed
+    fallback and never valid mutation outcome evidence, and valid-prefix truncation is
+    invalid. The
+    supervisor records a child immediately after OS creation, before
     registration, and contains and observes cleanup even when registration or the
     controller fails;
   - denies network, process launch, and real-data paths with Linux Landlock/seccomp
@@ -79,18 +84,22 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
     candidate with closed status/count algebra. The supervisor owns every raw seccomp
     listener and syscall-audit decision, confirms every spawned child and application
-    is cleaned up, seals its journal, then alone binds the candidate, receipt, and
-    attestation into the final generation/current pointer or a typed fallback;
-  - commits cache outcomes only after report publication, keeps report publication
-    sequence separate from core/full trend sequence, and derives bounded trend views
-    from a hash-chained immutable trend-source ledger with explicit reconciliation;
-  - validates and packages the exact receipt plus referenced generation/fallback as
-    one digest-bound `trade.mutation.bundle.v1` CI artifact, including the complete
-    supervisor attestation journal; the execution job uploads it and a separate job
-    downloads and independently validates the bytes and publishes the sole trusted
-    `trade.mutation.ci-summary.v1`. Operators can inspect downloaded bundles without
-    the original runner and reconcile an explicit downloaded trend carrier through a
-    dry-run-first, approval-bound route.
+    is cleaned up, seals its journal and immutable receipt core, then its stdlib-only
+    finalizer alone binds the candidate and core into a final generation or typed
+    fallback, writes the acyclic immutable invocation wrapper, then and only then
+    advances `current.json` for a report and builds the local bundle;
+  - commits scheduled cache/trend outcomes only through a separate post-validation
+    projection process and immutable projection receipt, never by rewriting the
+    sealed invocation wrapper; report publication sequence remains separate from
+    core/full trend sequence, and bounded trend views derive from a hash-chained
+    immutable trend-source ledger with explicit reconciliation;
+  - validates and packages the exact invocation wrapper, sealed core and referenced
+    generation/fallback as one digest-bound `trade.mutation.bundle.v1` CI artifact,
+    including the complete supervisor attestation journal; the execution job uploads
+    it and a separate job downloads and independently validates the bytes and
+    publishes the sole trusted `trade.mutation.ci-summary.v1`. Operators can inspect
+    downloaded bundles without the original runner and reconcile an explicit
+    downloaded trend carrier through a dry-run-first, approval-bound route.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry. Add finite reviewed
   controller/baseline memory bootstrap caps, one durable create-only Git-ref
@@ -115,7 +124,7 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     receive shared carrier credentials, invoke the carrier adapter, make remote
     carrier calls, advance high-water, or publish shared cache/aggregate carriers;
   - all mutation outcomes are initially report-only, while an independent evidence
-    validator fails on missing, malformed, unsafe, or receipt-unbound bundles;
+    validator fails on missing, malformed, unsafe, or wrapper/core-unbound bundles;
   - one credentialed carrier adapter outside the isolated application owns all shared
     cache/aggregate/genesis/recovery artifact/ref/quota operations; ordinary factual
     bundle upload/download remains a separate unprivileged standard artifact action
@@ -144,6 +153,10 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     tuple. Changed and ordinary manual execution perform no remote carrier listing or
     restore. Scheduled upload inventory is namespace-aware and skips publication when
     pagination cannot prove the 14/90 carrier quotas.
+  - scheduled summaries keep structured baseline non-comparability and repeated
+    evidence/projection/quota/missed-run diagnostics; mutation reports separately show
+    reviewed-matrix mutation score and mutation coverage ratio so no-coverage cannot
+    make a narrow score look repository-wide.
 - Add `docs/mutation-testing.md` covering operation, interpretation, exceptions,
   budgets, troubleshooting, and anti-gaming rules.
 
@@ -170,7 +183,7 @@ In scope:
 - Python core business unit-test mutation only.
 - Deterministic changed/core/full planning and execution.
 - Bounded concurrency, native thread pools, source/AST/dependency/private-tree/report
-  limits, supervisor-owned process-tree containment and fallback, kernel I/O
+  limits, supervisor-owned process-tree containment and finalizer-owned fallback, kernel I/O
   containment,
   cancellation algebra, finite first-measurement memory admission, partial reporting,
   committed cache/trend artifacts, scheduled-only shared trend authority, bounded
@@ -206,7 +219,9 @@ registration cleanup accounting, finite bootstrap memory caps, score-eligibility
 precedence, committed cache markers, separate report/trend sequence reservations and
 tombstones, invocation-kind-aware raw-evidence tombstones plus separately retained
 compact trend anchors, exact identity-bound 2N capacity qualification and identical
-runtime dual-resource admission, formula-bound journal/disk reserves, no
+runtime dual-resource admission, formula-bound normal plus terminal journal/disk
+reserves, acyclic sealed-core/wrapper/report binding, an independent scheduled
+projection receipt, durable-surface redaction, no
 changed restore phase, scheduled-only shared trend ownership, reviewed genesis,
 bounded diagnosed remote restore and producer quotas with invalid-predecessor epochs
 and monotonic carriers, immutable cross-job CI bundles, explicit hard-loss summaries,
