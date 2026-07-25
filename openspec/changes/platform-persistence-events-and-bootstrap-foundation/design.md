@@ -137,7 +137,15 @@ The design is accepted only when:
 15. legacy CLI/HTTP/EventBus/backup behavior is unchanged until its selected
     compatibility slice passes;
 16. diagnostic design-check, six-role review and strict approval pass; and
-17. actual runtime adoption remains blocked until shutdown hardening passes.
+17. actual runtime adoption remains blocked until shutdown hardening passes;
+18. every capacity gate binds a workload profile and threshold policy before
+    execution, and dispatcher fairness is schedulable and measurable;
+19. absent ordered positions use `OrderingGapRecord`, while only received
+    immutable messages may enter DLQ or redelivery;
+20. activation binds exact target readiness and prior rollback evidence and
+    fails closed when the sole journal authority is missing or inconsistent; and
+21. SQLite lock wait/hold, restore verifier memory/pass/scratch and telemetry
+    freshness have finite profile bounds.
 
 The implementation PRs, not this design PR, own the behavior tests above. This
 change is complete when those obligations are specified, reviewable and strict
@@ -295,6 +303,14 @@ Terminal `delivered`, `dead_lettered` and `cancelled` rows never reopen. A
 redelivery command creates a new linked attempt/generation. A stale lease token
 or fence cannot ack or terminalize.
 
+V1 delivery means direct local invocation and effective owner acknowledgement.
+Broker acceptance or remote-worker handoff cannot be called `delivered`; a
+future adapter needs a separately reviewed handoff/effective-receipt state
+machine. Dispatch selection uses a versioned `DeliveryCapacityProfile`: bounded
+keyset scan, class/key inflight limits, poison-key cooldown, deterministic
+fairness, reserved control capacity and a maximum starvation interval. Business
+and rights meaning remains opaque in delivery class/constraint references.
+
 #### Inbox state
 
 The inbox effective identity is `(consumer_effect_namespace, message_id)`.
@@ -316,6 +332,12 @@ registers its accepted prior versions. A change that intentionally creates a
 different business effect must allocate a new effect namespace and use an
 owner/process migration contract; changing a version number cannot replay old
 messages.
+
+The recorded compatibility policy is immutable and retained with the inbox
+evidence. It directionally decides the recorded/current version and effect-digest
+tuple; publishing a newer current policy cannot reinterpret an old row. Missing
+recorded policy evidence quarantines the duplicate until an explicit owner
+migration preserves and supersedes that decision evidence.
 
 This is exactly-once effective application, not exactly-once delivery.
 
@@ -602,16 +624,22 @@ sequenceDiagram
   alt N arrives in time
     D->>C: apply N, then eligible N+1
   else gap limit expires
-    O->>O: dead-letter N; keep expected N
+    O->>O: persist absent-N OrderingGapRecord; keep expected N
     Note over O,C: N+1 remains blocked
-    alt owner permits explicit skip/tombstone
+    alt owner permits explicit sequence resolution
       C->>O: ResolveOrderingGap(expected N, policy digest)
-      O->>O: CAS head to N+1 + immutable resolution
-    else redeliver
-      O->>O: new attempt with original epoch/sequence N
+      O->>O: CAS head to N+1 + OrderingGapResolutionReceipt
+    else reconcile producer
+      O->>O: retain expected N and bounded gap generation
     end
   end
 ```
+
+A received immutable N may enter DLQ and be redelivered at its original
+epoch/sequence. A never-received N has no message ID, envelope or payload digest
+and therefore cannot be fabricated as a dead letter or redelivered. The sequence
+resolution receipt is technical ordering evidence, not a Capture rights/content
+tombstone.
 
 #### Restore activation
 
@@ -627,9 +655,10 @@ sequenceDiagram
   OP->>B: Restore command
   B->>S: verify trusted certification + bounded archive before extraction
   S-->>B: staged_verified
+  B->>M: verify target readiness + prior rollback receipt
   B->>M: acquire global activation lease
   M->>M: close admission; fence owners in canonical order; drain
-  B->>J: CAS prior -> target generation
+  M->>J: CAS prior/readiness -> target generation
   J->>BS: rebind target
   alt health passes
     BS-->>B: health_verified
@@ -674,6 +703,11 @@ events, decide feedback, branching and convergence.
 
 This design makes no throughput promise before measurement. It sets safety
 ceilings and requires each deployment profile to reserve lower measured limits.
+Every result binds a predeclared `CapacityWorkloadProfile` and
+`CapacityThresholdPolicy`: exact operation mix/rates/payloads/key/class skew,
+warm-up/steady/recovery durations, failure injection, runner normalization, 10x
+scaled axes and pass/defer/overload limits. Workload meaning and thresholds
+cannot be chosen after observing the run.
 
 #### Contract safety ceilings
 
@@ -703,10 +737,10 @@ The 1x/10x event fixture measures:
 
 - command admissions and duplicates;
 - owner transition plus outbox write latency;
-- claim/ack SQLite lock and write time;
-- backlog under one hot ordered key and many unordered keys;
+- claim/ack SQLite lock-wait, lock-hold, transaction and WAL/checkpoint time;
+- backlog under bulk/control classes, one hot ordered key and many unordered keys;
 - crash reclaim/recovery duration;
-- retry/DLQ rate and no starvation across keys;
+- retry/DLQ rate, reserved control capacity and maximum starvation interval;
 - CPU, RSS, disk and DB/WAL growth.
 
 Migration measures lock acquisition, checkpoint throughput, old/new reader
@@ -714,7 +748,17 @@ latency and recovery. Backup/restore measures streaming manifest/archive parse,
 signature/hash, declared/actual/compressed bytes, expansion ratio, disk
 preflight/peak, staging bytes/sec, CPU/RSS, fence, rebind, health and rollback.
 Results are `pass`, `defer` or `overload`; missing measurement is `defer`, never
-zero/pass.
+zero/pass. A changed workload digest or runner normalization is non-comparable.
+Capacity evidence stores only closed non-secret `credential_mode` and an
+optional opaque policy digest; codecs reject credential names/values,
+environment variables, key/account IDs, tokens, headers, paths and provider
+topology.
+
+Every SQLite operation precomputes before `BEGIN IMMEDIATE`, bounds busy wait by
+the remaining monotonic deadline, rechecks after lock and before commit, and has
+profile limits for connections, statements/rows, lock hold, retries and
+checkpoint interference. Restore profiles additionally bound verifier RSS,
+deterministic spill scratch, archive pass count, reread/hash bytes and deadline.
 
 ### Observability and operations
 
@@ -752,6 +796,15 @@ Bounded operator queries distinguish:
 Runbooks map each stable reason to inspect, retry/redeliver, reconcile,
 rollback or operator intervention. Querying a runbook/status view never
 executes the action.
+
+Critical telemetry has freshness contracts and owned alerts for oldest outbox
+age, terminal-persistence unavailability, persistent ordering gaps, activation
+incomplete/authority unavailable/rollback pending, residual shutdown owners and
+backup trust failures. Each carries observed time, expected interval and
+stale-after bound. Missing or stale telemetry is unavailable/defer, never
+healthy. Admission-audit-unavailable emits at most one safe structured event
+and one low-cardinality counter; telemetry failure neither retries nor masks
+the caller result.
 
 ### Validation strategy
 
@@ -861,9 +914,10 @@ allow tailored graphs while preserving one composition authority.
 
 ### Risks / Trade-offs
 
-- **Shared SQLite can become a write bottleneck.** -> Measure lock/write time,
-  bound batches, keep transactions short and expose overload. Do not promise
-  scale before CapacityEnvelope results.
+- **Shared SQLite can become a write bottleneck.** -> Precompute before lock,
+  bound busy wait/statements/rows/lock hold/checkpoints, keep transactions
+  short and expose overload. Do not promise scale before CapacityEnvelope
+  results.
 - **Inbox/outbox technical rows in a Context transaction can look like
   cross-owner writes.** -> Restrict the participant set in the transaction
   API and architecture tests; no second business Context is permitted.
@@ -871,9 +925,10 @@ allow tailored graphs while preserving one composition authority.
   migrations until exclusive maintenance or adoption is proven.
 - **Legacy and target delivery can duplicate work.** -> One-way bridge identity,
   digest comparison and one selected route per message family.
-- **Ordered hot keys cause head-of-line blocking.** -> Per-key bounded buffers,
-  fair dispatcher scheduling, explicit gap expiry/DLQ, owner-authorized
-  resolution without implicit skip and 10x hot-key fixture.
+- **Ordered hot keys cause head-of-line blocking.** -> Class/key inflight
+  quotas, deterministic fair scheduling, reserved control capacity,
+  absent-gap versus received-DLQ evidence, owner-authorized resolution without
+  implicit skip and a 10x hot-key fixture.
 - **Retry/DLQ policy may classify business errors incorrectly.** -> Platform
   owns technical classes; owner contracts supply stable failure category and
   policy ref. Unknown fails to dead-letter/operator review, not infinite retry.
@@ -890,7 +945,9 @@ allow tailored graphs while preserving one composition authority.
   overrun.
 - **Restore activation can strand writers.** -> Durable fence, journal CAS,
   one Persistence activation authority, canonical owner lock order, restart
-  reconciliation, prior-generation rollback and bounded health window.
+  reconciliation, digest-bound target/prior readiness, reserved rollback
+  budget, authority-integrity failure states, prior-generation rollback and
+  bounded health window.
 - **Bootstrap can become a service locator.** -> Expose typed immutable profile
   handles, no arbitrary lookup/global mutation, architecture guard.
 - **Foundation scope can grow into Processes.** -> Platform transports and

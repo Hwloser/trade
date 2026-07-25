@@ -51,6 +51,17 @@ and context migrations SHALL remain with the owner. No transaction SHALL write t
 business Contexts, call a provider, wait on message delivery or span another
 database.
 
+Every SQLite owner transaction SHALL precompute bounded payloads and candidate keys
+before `BEGIN IMMEDIATE`, set busy/lock wait to no more than the remaining monotonic
+deadline, recheck that deadline after write-lock acquisition and immediately before
+commit, and roll back on exhaustion. A versioned `PersistenceCapacityProfile` SHALL
+bound open connections, statements, selected/changed rows, write-lock hold time,
+retry attempts and jitter, WAL growth and checkpoint interference for each operation
+class. Keyset/indexed selection SHALL replace unbounded scans inside a write
+transaction. Lock-wait and lock-hold measurements SHALL be reported separately;
+neither a successful SQLite call nor a fixed driver timeout may overrun the owner
+deadline.
+
 #### Scenario: A Capture transition emits an event
 - **WHEN** a future Capture repository commits a capture receipt and
   `CaptureCommitted`
@@ -63,6 +74,10 @@ database.
 #### Scenario: The process dies after commit
 - **WHEN** the owner transaction commits and the process exits before a dispatcher observes its outbox row
 - **THEN** the committed owner state and outbox remain recoverable and no caller must repeat the owner transition to recreate the message
+
+#### Scenario: SQLite remains busy through the owner deadline
+- **WHEN** another connection holds the write lock until an owner transaction's remaining monotonic budget expires
+- **THEN** the owner transaction returns a bounded unavailable/deadline outcome, commits no owner/audit/inbox/outbox row and leaves no retrying background work
 
 ### Requirement: MigrationCoordinator SHALL run owner registrations under durable capability fencing
 
@@ -79,6 +94,18 @@ timestamps and audit receipt. An interrupted migration SHALL resume only when it
 registration digest and checkpoint agree. A changed registration under the same
 identity, missing dependency, unknown generation, failed validation or incompatible
 writer SHALL fail closed.
+
+Before capability activation, the coordinator SHALL persist immutable
+`GenerationReadinessEvidence` binding migration/restore plan and registration
+digests, prior and target generations, required-owner-set digest, reader/writer
+compatibility ranges, repository/artifact probe-set digest and result digest,
+binary/config generation, produced/expiry times and activation fence. Old/new reader
+parity, forward-read rejection, supported old-reader behavior, incompatible old
+writer rejection, mixed-version restart and rollback readability SHALL be explicit
+probe results. A changed or unavailable registration, compatibility rule, binary,
+owner set or probe set SHALL invalidate the evidence; restart SHALL not reinterpret
+it under newer code. Activation journal CAS and writer-admission reopening SHALL
+compare the exact readiness-evidence identity.
 
 While any writer that does not participate in `DatabaseRuntime` fencing can access
 the database, an incompatible migration SHALL be prohibited. Only an additive
@@ -97,6 +124,10 @@ unaware legacy binary is fenced.
 #### Scenario: A migration crashes after a checkpoint
 - **WHEN** a registration stops after checkpoint K but before capability activation
 - **THEN** restart verifies the registration digest, preserves the old compatible reader and resumes idempotently from K without repeating destructive work
+
+#### Scenario: Readiness probes change after verification
+- **WHEN** an activation restarts with a binary, configuration, owner set, compatibility rule or probe-set digest different from the persisted readiness evidence
+- **THEN** activation remains closed and requires new verification rather than reusing or silently reinterpreting the prior result
 
 ### Requirement: Legacy schema bootstrap SHALL be isolated and temporary
 
@@ -179,15 +210,25 @@ write activation state independently.
 One activation attempt SHALL use a finite shared monotonic deadline and this
 canonical acquire order:
 
-1. compare-and-swap one database-scoped activation lease/fence;
-2. close new compatible-writer admission for the expected active generation;
-3. enumerate the immutable required-owner set from the verified restore/
-   migration plan and acquire or revoke owner writer leases in ascending
-   canonical owner-namespace bytes;
-4. drain or durably retain every admitted owner under its fence;
-5. compare-and-swap the activation journal from the expected prior generation
-   to the verified target generation; and
-6. rebind and verify the selected generation before reopening admission.
+1. before closing admission, validate the bounded complete owner set, exact
+   `GenerationReadinessEvidence` and a durable `RollbackCandidateReceipt` binding
+   prior generation, capability/owner/probe digests, required artifact identities,
+   successful prior-readiness result, retention guarantee and rollback deadline;
+2. compare-and-swap one database-scoped activation lease/fence;
+3. close new compatible-writer admission for the expected active generation;
+4. acquire or revoke owner writer leases in ascending canonical owner-namespace
+   bytes;
+5. drain or durably retain every admitted owner under its fence;
+6. compare-and-swap the activation journal from the exact expected prior generation
+   and readiness-evidence identity to the verified target generation; and
+7. rebind and verify the selected generation before reopening admission.
+
+The selected `ActivationCapacityProfile` SHALL bound required-owner cardinality and
+reserve nonzero deadline slices for lease/fence acquisition, drain, journal CAS,
+target rebind and prior-generation rollback. A stage may use unused earlier time but
+SHALL NOT consume the reserved rollback slice. The complete owner set and both
+readiness identities SHALL be validated before admission closes. A partial lease set
+SHALL unwind in reverse order within the same remaining budget.
 
 Every contender SHALL acquire only in that order and release in reverse order.
 A failure before journal commit SHALL retain/select the prior generation. A
@@ -200,6 +241,16 @@ inside the attempted write transaction. No Interface timeout, directory
 presence, legacy status row or process-local lock SHALL override the durable
 authority.
 
+The activation journal SHALL be checksummed, append-only/fenced and internally
+consistent with its lease, prior/target generation and readiness evidence. Missing,
+unreadable, torn, corrupt or contradictory authority SHALL produce closed outcomes
+`activation_authority_unavailable` or `activation_authority_inconsistent`.
+Writer admission SHALL remain closed; status SHALL expose safe expected/observed
+generation, journal-integrity evidence, fences and residual owners. Neither target
+nor prior SHALL be automatically selected until an audited recovery operation
+re-establishes authority. Directory presence, a restore operation row or a health
+probe SHALL not reconstruct authority by itself.
+
 #### Scenario: Restore and migration race
 - **WHEN** Platform Backup and MigrationCoordinator concurrently request activation for one database
 - **THEN** one database-scoped activation fence wins, the loser receives an explicit conflict/unavailable receipt and no owner lease or journal state is partially changed
@@ -211,3 +262,11 @@ authority.
 #### Scenario: Target health fails after journal commit
 - **WHEN** the activation journal selects target but required readiness cannot pass
 - **THEN** admission stays closed, the capability compare-and-swaps to the verified prior generation, rebinds and verifies it, then reopens prior admission and releases fences
+
+#### Scenario: The prior generation is not a proven rollback candidate
+- **WHEN** prior readiness, retained artifact identity or rollback-deadline evidence is absent, stale or invalid before activation
+- **THEN** activation fails before writer admission closes and does not rely on an unverified prior generation as recovery
+
+#### Scenario: The activation journal is torn or inconsistent
+- **WHEN** restart cannot authenticate one internally consistent journal-selected generation and readiness identity
+- **THEN** admission remains closed with `activation_authority_inconsistent`, no directory is selected automatically, and an audited authority-recovery procedure is required

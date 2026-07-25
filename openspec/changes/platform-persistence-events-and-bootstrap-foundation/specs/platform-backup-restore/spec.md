@@ -78,6 +78,16 @@ unknown compressed size, counter overflow, archive read beyond the encoded-byte
 bound, actual member/aggregate bytes beyond declarations or policy, and any
 expansion-ratio breach at the first observed byte.
 
+The selected `RestoreCapacityProfile` SHALL also bound verifier peak RSS,
+verification scratch/spill bytes, archive pass count, bytes reread/hashed and total
+verification deadline. Duplicate/collision/member indexing SHALL use a deterministic
+bounded in-memory index and spill to the reserved staged filesystem before its memory
+budget is crossed. Spill bytes SHALL be included in disk preflight and continuous
+reserve accounting. The verifier SHALL reject before exceeding memory, scratch,
+archive-pass, reread-byte or deadline bounds; a nominally streaming parser SHALL not
+retain all member metadata without a profile bound or repeatedly rescan a multi-
+terabyte archive.
+
 Before creating the staged root, restore SHALL reserve or prove available space
 for the profile's bounded archive download when needed, maximum staged
 extraction, verification scratch, journal/WAL growth and preserved prior-
@@ -111,6 +121,10 @@ are terminal. Every transition SHALL be durable and idempotent.
 - **WHEN** preflight or an in-progress checked extraction cannot preserve staging, verification, journal/WAL, prior-generation rollback and safety-reserve bytes
 - **THEN** restore stops with an explicit resource-unavailable outcome before activation and does not delete the prior generation to create space
 
+#### Scenario: Directory verification exceeds its working-set profile
+- **WHEN** duplicate/collision/member validation would exceed verifier RSS, spill, archive-pass, reread-byte or deadline bounds
+- **THEN** verification stops before extraction or fencing with an explicit resource-unavailable result and retains bounded diagnostics rather than rescanning or growing memory without limit
+
 #### Scenario: Restore restarts after staged verification
 - **WHEN** the process crashes with a durable `staged_verified` operation
 - **THEN** reconciliation revalidates the staged identity and resumes fencing without re-downloading or activating unverified bytes
@@ -138,6 +152,14 @@ Persistence canonical order and release in reverse order. Admission SHALL remain
 closed and the global activation lease SHALL remain held until either target or
 rolled-back prior generation is rebound and readiness-verified.
 
+Before requesting activation, Platform Backup SHALL persist and supply the exact
+`GenerationReadinessEvidence` for the target and a current
+`RollbackCandidateReceipt` for the prior generation. Both SHALL bind owner/probe/
+artifact/capability digests, binary/config generation and activation attempt. A
+missing, changed, expired or unreadable readiness/rollback receipt SHALL fail before
+fencing. Platform Backup SHALL consume activation-authority-unavailable/inconsistent
+outcomes without selecting a directory or writing the activation journal itself.
+
 #### Scenario: Activation loses power before compare-and-swap
 - **WHEN** writers are fenced but the activation journal does not contain the target commit
 - **THEN** restart retains or restores the prior generation and resumes/rolls back the operation without selecting the staged root by directory presence
@@ -153,6 +175,10 @@ rolled-back prior generation is rebound and readiness-verified.
 #### Scenario: Another activation starts during restore
 - **WHEN** migration or another restore attempts activation while the database-scoped activation lease is held
 - **THEN** it receives a bounded conflict/unavailable receipt and cannot acquire owner leases or append a competing journal generation
+
+#### Scenario: Target readiness was produced by another probe generation
+- **WHEN** staged bytes are valid but the target readiness evidence does not match the current owner set, probe set, binary/config generation or activation attempt
+- **THEN** restore remains staged, fences no writer and requires a new readiness verification
 
 ### Requirement: Backup and restore evidence SHALL be immutable and operator-visible
 
@@ -170,6 +196,11 @@ Logs, metrics and public errors SHALL not expose credentials, service-account
 paths, archive contents or arbitrary exception text. Remote drivers SHALL have
 finite timeout/retry/cost bounds and SHALL use staging plus digest verification;
 remote availability SHALL not be represented as local backup validity.
+
+Trust-policy fixtures SHALL cover expired and not-yet-valid keys, unsupported or
+downgraded algorithms, unavailable policy registry and policy-generation
+substitution in addition to revoked and wrong-environment keys. Every such failure
+SHALL occur before archive-directory parsing or extraction.
 
 #### Scenario: A corrupt backup is listed
 - **WHEN** certification or later integrity verification detects corruption

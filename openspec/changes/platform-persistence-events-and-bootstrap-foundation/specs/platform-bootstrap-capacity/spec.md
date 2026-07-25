@@ -88,12 +88,31 @@ minimum 30-day window and a rollback selection.
 
 Platform SHALL define a versioned, deterministic `CapacityEnvelope` for
 measurement results. It SHALL contain fixture identity/digest, scenario,
-cardinality and duration, source/credential/stream shape when applicable,
+cardinality and duration, opaque source/stream classifications and closed
+`credential_mode` when applicable,
 binary/config generation, concurrency, worker and queue limits, runner CPU/
 memory/disk profile, monotonic start/finish/duration, latency percentiles,
 admission/rejection/dead-letter counts, SQLite transaction/lock/write time,
 scan bytes/files, CPU/memory/disk peaks, backlog/recovery time, threshold policy
 reference and closed result `pass`, `defer` or `overload`.
+
+`credential_mode` SHALL be a closed non-secret class. Canonical and operator
+projections MAY carry an opaque policy-reference digest, but SHALL NOT contain
+credential values, names, environment-variable names, key IDs, account/tenant IDs,
+headers, tokens, paths or provider topology. Negative codec fixtures SHALL reject
+those fields.
+
+Every envelope SHALL reference one immutable, digest-bound `CapacityWorkloadProfile`
+and `CapacityThresholdPolicy`. The workload profile SHALL define exact operation
+mix, cardinalities, arrival rates, payload-byte distributions, ordering-key/class
+skew, warm-up, steady-state and recovery duration, failure injection, runner
+normalization and the exact axes multiplied from 1x to 10x. The threshold policy
+SHALL define pass/defer/overload limits for accepted p95/p99 latency, SQLite lock
+wait and lock hold, transaction duration, queue/backlog growth and drain, maximum
+starvation interval, CPU, peak/retained RSS, DB/WAL/scratch/disk growth, archive
+passes/bytes reread and crash/recovery time. Missing profile identity, required
+measurement or runner comparability SHALL produce `defer`; implementations SHALL
+not choose workload meaning or pass thresholds after observing results.
 
 Each child SHALL reserve named finite limits before activating a capability.
 Illustrative parent values, host CPU count or existing ThreadPool defaults SHALL
@@ -103,7 +122,7 @@ deterministic and digest-bound.
 
 #### Scenario: A 10x delivery run completes
 - **WHEN** Platform Events processes the declared 10x fixture
-- **THEN** the result records the exact backlog, worker/queue limit, SQLite contention, latency, resource peaks and recovery outcome under one comparable envelope
+- **THEN** the result records the exact digest-bound scaled axes, workload mix, backlog, class/key fairness, worker/queue limit, SQLite lock wait/hold, latency, resource peaks and recovery outcome against the predeclared threshold policy under one comparable envelope
 
 #### Scenario: Resource telemetry is unavailable
 - **WHEN** peak memory or disk measurement cannot be observed
@@ -112,6 +131,14 @@ deterministic and digest-bound.
 #### Scenario: A child proposes a larger limit
 - **WHEN** Capture, Datasets or an Interface changes a reserved queue, batch or concurrency limit
 - **THEN** it supplies new 1x/10x envelopes and a reviewed threshold policy before cutover
+
+#### Scenario: Two runs use different workload definitions
+- **WHEN** envelopes differ in workload-profile digest, runner normalization or required measurement availability
+- **THEN** the gate reports them non-comparable and defers rather than claiming a regression, improvement or pass
+
+#### Scenario: Capacity metadata contains credential detail
+- **WHEN** a producer attempts to encode a credential name, environment variable, key/account identity, token, header or path in a capacity result
+- **THEN** the codec rejects the envelope and emits only a safe invalid-evidence diagnostic
 
 ### Requirement: Platform capabilities SHALL remain technical and bounded
 
@@ -129,6 +156,16 @@ Execution adapters MAY own subprocess/process-tree mechanics only behind an
 approved Platform port; business use cases and Interfaces SHALL not create
 processes directly.
 
+Every capability profile SHALL publish bounded telemetry-freshness evidence and
+alert ownership for oldest outbox age, terminal-persistence unavailable, persistent
+ordering gaps, activation incomplete/authority unavailable/rollback pending,
+residual shutdown owners and backup certification/trust failures. Freshness SHALL
+carry observation time, expected interval, stale-after bound and source status.
+Missing or stale required telemetry SHALL be `unavailable` or `defer`, never healthy.
+Alert policy SHALL name threshold, evaluation window, owner, runbook and
+acknowledgement/escalation path without putting unbounded identities into metric
+labels.
+
 #### Scenario: Platform routes a Capture event
 - **WHEN** a future `CaptureCommitted` envelope enters delivery
 - **THEN** Platform validates generic envelope metadata/digest and routes it without importing Capture domain or interpreting source semantics
@@ -136,6 +173,10 @@ processes directly.
 #### Scenario: Operations queries capacity
 - **WHEN** an Interface requests Platform status
 - **THEN** the bounded query returns technical lifecycle/backlog/capacity evidence and performs no replay, migration, restore or data repair
+
+#### Scenario: A critical metric stops updating
+- **WHEN** a required backlog, activation, shutdown or backup-trust telemetry source exceeds its declared stale-after bound
+- **THEN** status and gates report telemetry unavailable/defer, an owned alert is eligible, and no zero or last-known value is presented as current health
 
 #### Scenario: A business name enters Platform
 - **WHEN** a proposed Platform module or table encodes a BTC-, Dataset- or Study-specific rule

@@ -32,8 +32,9 @@ migration and runtime-concurrency design-quality profiles.
 - Define generic outbox/inbox delivery, lease/ack recovery, bounded retry,
   dead-letter/redelivery, explicit unordered delivery and a durable
   `OrderingContract` for ordered streams. Stable consumer effect identity
-  survives compatible binary upgrades; ordered dead letters cannot implicitly
-  advance the head.
+  survives compatible binary upgrades under immutable policy evidence; ordered
+  dead letters cannot implicitly advance the head, and a never-received
+  sequence is an `OrderingGapRecord`, not a fabricated dead letter.
 - Define an additive `DatabaseRuntime`, `MigrationCoordinator` and exact
   `LegacySchemaBootstrapAdapter` bridge so schema changes no longer occur as an
   implicit query-side effect. Existing `TradeDB` history remains intact until
@@ -43,8 +44,13 @@ migration and runtime-concurrency design-quality profiles.
   Untrusted, unsafe, corrupt, resource-exhausting or incompatible archives fail
   before fencing or activation.
 - Define one target `trade.bootstrap` composition root and a versioned
-  `CapacityEnvelope` so CLI, HTTP, worker, scheduler and later Context children
-  share runtime capabilities and comparable 1x/10x evidence.
+  `CapacityWorkloadProfile`, threshold policy and `CapacityEnvelope` so CLI,
+  HTTP, worker, scheduler and later Context children share runtime capabilities
+  and genuinely comparable 1x/10x evidence with finite SQLite, fairness,
+  verifier and telemetry-freshness bounds.
+- Define digest-bound generation readiness and prior rollback evidence before
+  restore/migration fencing. Missing, torn or contradictory activation authority
+  keeps writer admission closed and cannot be repaired by selecting a directory.
 - Preserve all current CLI, HTTP, Web, EventBus, database, Parquet, SDK,
   notebook, scheduler and C++ behavior while this design is reviewed. Existing
   constructors remain compatibility shims until a later implementation slice
