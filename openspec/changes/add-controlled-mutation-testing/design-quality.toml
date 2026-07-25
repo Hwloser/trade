@@ -37,36 +37,36 @@ applies = true
 reason = "The developer controller owns a bounded worker pool plus independently terminable pytest process groups, global/per-mutant deadlines, cancellation, backpressure, and partial result aggregation."
 
 [evidence.contract]
-contract = "Canonical trade dev mutation changed|core|full plus qualify/inspect/repair/reconcile, with scripts/mutation-test argv/exit compatibility, safe-root output, lowering-only budget/worker, plan-only, and cache options; a Python 3.7 stdlib sole-spawner supervisor creates trade.mutation.invocation.v1 before uv; exit 0 complete/zero-work/deferred-only/plan-only/budget-partial, exit 1 future established comparable regression only, exit 2 preflight/degraded/cancelled/report failure; one root-hash-bound trade.mutation.report.v1 generation or supervisor-owned trade.mutation.fallback.v1 diagnostic and one cross-job validated trade.mutation.bundle.v1 in CI."
+contract = "Canonical trade dev mutation changed|core|full plus qualify, bundle-or-run inspect, repair, and carrier-aware reconcile, with scripts/mutation-test argv/exit compatibility, safe-root output, lowering-only budget/worker, plan-only, and cache options; parser-only cli.py delegates to application.py over a complete acyclic module graph; a Python 3.7 stdlib sole-spawner supervisor creates trade.mutation.invocation.v1 and its supervisor-only attestation journal before uv; exit 0 complete/zero-work/deferred-only/plan-only/budget-partial, exit 1 future established comparable regression only, exit 2 preflight/degraded/cancelled/report failure; one root-hash-bound trade.mutation.report.v1 generation or supervisor-owned trade.mutation.fallback.v1 diagnostic and one cross-job validated trade.mutation.bundle.v1 in CI."
 consumers = "Repository developers, pull-request GitHub Actions, nightly/manual operators, and future baseline reviewers. Existing runtime CLI, HTTP, Web, SDK, scheduler, event, database, artifact, model, C++ and frontend consumers are unchanged."
 compatibility = "The surface is additive and initially non-blocking. Existing pytest remains the test framework. Optional mutation dependencies are not runtime dependencies. Missing or invalid explicit changed base fails closed and never broadens to core/full."
 migration = "No migration is required. Reports and caches use versioned schemas/keys and are generated only after explicit invocation. The baseline starts unestablished rather than treating the first run as historical truth."
 rollback = "Remove the workflow, wrapper, controller, optional dependency group, configuration, tests and documentation. Ignored reports/caches are disposable; no runtime state or data restoration is needed."
 
 [evidence.storage]
-authoritative_writer = "The Python 3.7 stdlib supervisor is the sole OS child spawner, invocation-receipt writer, and writer of every fallback; one receipt-bound controller is the sole writer for its UUID run staging/final generation below owned repository .mutation-testing and can only request fallback. An output-root lock serializes report/trend sequence reservation, pointer recovery, retention, report publication and post-publication cache/trend projections. Landlock rejects runtime databases, parquet, provider data, and production artifacts."
-idempotency_key = "A report generation is identified by run_id plus sealed GitScopeSnapshot, config, import-closure, mapped-definition/test, dependency-environment, platform, command, cohort, and tool digests. Cache entries require closure identity plus source-exact execution_id and a post-publication commit marker. Report and trend have independent monotonic sequences; trend uses high-water/checkpoint and content-addressed source/tombstone hash chain. CI bundles bind exact receipt and evidence roots."
-concurrency_control = "The supervisor creates receipt/CLOCK_BOOTTIME deadlines before uv, becomes subreaper, owns authenticated bounded spawn/signal/wait/fallback requests, opaque handles, fork-stop delegated-cgroup/session admission, pidfd identities, signal forwarding, continued cleanup and fallback. The controller stages under run_id and holds a boot-bound lease but cannot spawn. One output lock covers quarantine, separate report/trend sequence reservation, manifest-root publication, retention, cache commit, trend source/tombstone/high-water and reconciliation. Repair/reconcile take the same lock and default dry-run."
-staging_validation = "The controller validates safe output ownership, sealed Git scope, redaction, receipt transitions, exact pass-FD closure and SCM_RIGHTS handoff, supervisor-verified child guard plus controller-private syscall-audit lifecycles, normal or constrained forced-close finalization, sticky integrity plus cleanup override, the closed fifteen-status mutation/worker/test/cleanup matrix and count algebra, CoverageTupleEvidenceV1, per-file/generation/receipt/ledger/aggregate/renderer bounds, source/comparison/cache identities, member hashes, and non-self manifest root. Cache reads require markers; trend validates chain; CI independently revalidates downloaded trade.mutation.bundle.v1 bytes."
-atomic_visibility = "JSON, Markdown and HTML are flushed/fsynced; manifest hashes every other member; report sequence is reserved/fsynced before current.json and the supervisor receipt anchor manifest hash, byte size and sequence. Cache markers and independent core/full trend source/tombstone/high-water records are idempotent post-publication projections; trend.jsonl is atomically rebuilt. CI bundles have a read-back-verified manifest and cross-job artifact digest."
+authoritative_writer = "The Python 3.7 stdlib supervisor is the sole OS child spawner, invocation-receipt writer, supervisor-attestation-journal writer, and writer of every fallback; controller Landlock policy denies create/write/rename/link/remove access to those roots even though the controller shares the control-channel MAC key. One receipt-bound controller is the sole writer for its UUID report staging/final generation below owned repository .mutation-testing and can only request fallback. An output-root lock serializes report publication and projections. Only scheduled core/full own shared trend/cache/aggregate writes; manual and changed runs write factual bundles only, while an environment-approved reconcile route may publish one validated repaired carrier."
+idempotency_key = "A report generation is identified by run_id plus sealed GitScopeSnapshot, config, import-closure, mapped-definition/test, dependency-environment, platform, command, cohort, and tool digests. Supervisor attestation entries form a run-bound hash chain. Cache entries require closure identity plus source-exact execution_id and a post-publication score-eligible commit marker. Report and trend have independent monotonic sequences; scheduled trend uses one reviewed genesis marker, high-water/checkpoint and content-addressed source/tombstone hash chain. CI bundles bind exact receipt, complete attestation journal and evidence roots."
+concurrency_control = "The supervisor creates receipt/CLOCK_BOOTTIME deadlines before uv, becomes subreaper, owns bounded channel-authenticated spawn/signal/wait/fallback requests, source-exclusive attestation, opaque handles, fork-stop delegated-cgroup/session admission, pidfds, signal forwarding, continued cleanup and fallback. Successful OS child creation is journaled before registration. The controller stages under run_id and holds a boot-bound lease but cannot spawn or write supervisor roots. One output lock covers quarantine, separate report/trend sequence reservation, manifest-root publication, retention, cache commit, trend source/tombstone/high-water and reconciliation. Repair/reconcile take the same lock and default dry-run."
+staging_validation = "The controller validates safe output ownership, sealed Git scope, redaction, receipt transitions, exact pass-FD closure and SCM_RIGHTS handoff, supervisor-attestation references, controller-private syscall-audit lifecycle, normal or constrained forced-close listener-drain handoff, sticky integrity plus cleanup override, the closed fifteen-status mutation/worker-spawned/worker-registered/test/cleanup matrix, phase algebra, run-score eligibility, CoverageTupleEvidenceV1, per-file/generation/receipt/journal/aggregate/renderer bounds, source/comparison/cache identities, member hashes, and non-self manifest root. Cache reads require score-eligible markers; scheduled trend validates genesis/chain; CI independently revalidates downloaded trade.mutation.bundle.v1 bytes."
+atomic_visibility = "Supervisor receipt and attestation entries are append/fsync/hash-chain bound. JSON, Markdown and HTML are flushed/fsynced; manifest hashes every other member; report sequence is reserved/fsynced before current.json and the supervisor receipt anchor manifest hash, byte size and sequence. Scheduled-only cache markers and independent core/full trend source/tombstone/high-water records are idempotent post-publication projections; trend.jsonl is atomically rebuilt. CI bundles have a read-back-verified manifest and cross-job artifact digest."
 crash_windows = "A crash before current-pointer replacement leaves the prior generation current and leased staging unreferenced; after replacement it exposes one root-verified generation. An unresolved report reservation commits only when current.json exactly matches run/sequence/root/size, otherwise tombstones. Controller loss leaves supervisor-owned cleanup plus root or fallback evidence. Cache/trend projection failure leaves report truth and a receipt gap; active leases prevent cleanup."
-corrupt_predecessor = "Corrupt predecessor state fails closed under the publication lock: malformed, oversized, symlinked, path-escaping, missing-generation, identity, root, member, sequence high-water, checkpoint or hash-chain mismatch is quarantined or yields exact inspect and dry-run/apply repair/reconcile commands. First pointer absence is explicit; corrupt cache is a miss; missing aggregate starts predecessor_unavailable while corrupt highest aggregate starts predecessor_invalid and cannot silently fall back."
-partial_results = "Every selected mutant receives exactly one closed terminal status plus mutation-applied/worker-spawned/test-started facts and orthogonal cleanup status. Sticky integrity or unconfirmed cleanup replaces provisional natural/timeout/cancel outcomes with phase-appropriate infrastructure and forces degraded-infrastructure run precedence. Deadline, signal, baseline and worker degradation publish a marked partial generation when possible. Projection degradation remains visible in the receipt without rewriting report truth; publication failure preserves staging and asks the supervisor for a typed bounded fallback."
-reader_consistency = "Readers resolve one receipt/current pointer, verify its manifest root then member hashes, and read one immutable generation. Raw receipt/report-or-fallback/bundle evidence expires as one unit and becomes an evidence-expired tombstone. Separately retained compact trend anchors expose detail_evidence=expired and cannot establish baseline or detailed comparability. Cache readers require closure identity and commit marker; trend readers validate compact source records and expose gaps until explicit reconcile."
-backup_hash_verification = "Report recovery verifies manifest SHA-256/size/report-sequence from receipt/current and every member hash. CI execution constructs/read-back verifies an immutable receipt/evidence/validation bundle, uploads exact bytes, and the next job independently downloads/recomputes it. Baselines reopen a verified bundle and recompute key sets/counts/score. Cache markers, trend source/tombstone/high-water/checkpoint and rolling aggregates are hashed; disposable ignored developer state requires no business-data backup."
-small_sample_verification = "Temporary-root tests interrupt receipt/report-sequence/pointer/cache/trend-sequence/bundle phases, kill the controller, race leases/same-key writers, saturate the authenticated protocol, corrupt every pointer/root/chain/highest aggregate state, rerun an old workflow tuple, and verify predecessor/successor, predecessor-invalid/unavailable/non-monotonic epoch, or explicit reconcile. They exercise all CLI schemas/exits, raw-versus-compact retention tombstones, closed terminal matrix, representative capacity and 15/45/110 phase equations, cross-directory bundle/CI-summary binding and lowered-budget roots."
+corrupt_predecessor = "Corrupt predecessor state fails closed under the publication lock: malformed, oversized, symlinked, path-escaping, missing-generation, identity, root, member, sequence high-water, checkpoint or hash-chain mismatch is quarantined or yields exact run/bundle inspect and explicit-carrier dry-run/apply repair/reconcile commands. One unused matching reviewed genesis marker alone permits first pointer absence; later missing aggregate starts predecessor_unavailable, while corrupt highest starts predecessor_invalid and cannot silently fall back."
+partial_results = "Every selected mutant receives exactly one closed terminal plus mutation-applied/worker-spawned/worker-registered/test-started facts and orthogonal cleanup. Sticky integrity or unconfirmed cleanup replaces provisional natural/timeout/cancel outcomes with phase-appropriate infrastructure and forces score ineligibility/degraded-infrastructure run precedence. Factual numerator/denominator remain auditable while displayed score is null. Deadline, signal, baseline and worker degradation publish a marked partial generation when possible. Projection degradation remains visible in the receipt without rewriting report truth; publication failure preserves staging and asks the supervisor for a typed bounded fallback."
+reader_consistency = "Readers resolve one receipt/current pointer, verify supervisor attestation references, manifest root and member hashes, and read one immutable generation. Raw receipt+attestation+report-or-fallback+expected-bundle evidence expires as one invocation-kind-aware unit; local bundle expectation is explicitly not_applicable while CI is required. Separately retained compact trend anchors expose detail_evidence=expired and cannot establish baseline or detailed comparability. Cache readers require closure identity and score-eligible commit marker; trend readers validate reviewed genesis plus compact source records and expose gaps until explicit carrier-aware reconcile."
+backup_hash_verification = "Report recovery verifies supervisor attestation chain, manifest SHA-256/size/report-sequence from receipt/current and every member hash. CI execution constructs/read-back verifies an immutable receipt/attestation/evidence/validation bundle, uploads exact bytes, and the next job independently downloads/recomputes it. Baselines reopen a verified score-eligible bundle and recompute key sets/counts/score. Cache markers, trend genesis/source/tombstone/high-water/checkpoint and rolling aggregates are hashed; disposable ignored developer state requires no business-data backup."
+small_sample_verification = "Temporary-root tests interrupt receipt/attestation/report-sequence/pointer/cache/trend-sequence/bundle phases, fail child registration, kill the controller, race leases/same-key writers, saturate the bounded protocol/journal, corrupt every pointer/root/chain/highest aggregate state, rerun an old workflow tuple, and verify genesis/predecessor-invalid/unavailable/non-monotonic or explicit-carrier reconcile. They exercise all CLI schemas/exits, custom output roots, bundle inspection, local-versus-CI retention, closed phase/score algebra, finite bootstrap memory, changed no-restore 15-minute equation, representative core/full 45/110 qualification, and valid/invalid/missing/hard-loss summary binding."
 rollback = "Rollback removes tracked workflow, controller, configuration and documentation without mutating runtime data. Ignored report generations, caches and trend records remain available for manual audit and can be deleted separately; no rollback rewrites current.json to fabricate an older result or imports developer state into production."
-audit_trail = "The phase-journal receipt, immutable manifest, trend chain, capacity record and CI bundle record run_id, CLOCK_BOOTTIME/boot ID deadlines, mode, sealed Git scope, config/tool/environment/execution/comparison/cohort/runner digests, budgets, phase facts, stop/status/cleanup, spawn-handle/FD/broker policy, independent guard/audit lifecycles, cancellation, cache/retention/report-sequence/trend-sequence/aggregate decisions without credentials or production data."
+audit_trail = "The phase-journal receipt, source-exclusive supervisor attestation journal, immutable manifest, trend genesis/chain, capacity record and CI bundle record run_id, CLOCK_BOOTTIME/boot ID deadlines, mode, sealed Git scope, config/tool/environment/execution/comparison/cohort/runner digests, budgets, spawned/registered/test phase facts, score eligibility, stop/status/cleanup, spawn-handle/FD/broker/drain policy, independent guard/audit lifecycles, cancellation, invocation-kind retention, report/trend/aggregate decisions without credentials or production data."
 
 [evidence.concurrency]
-ownership = "One Python 3.7 stdlib supervisor creates receipt/deadline before uv and alone owns OS spawn, per-run-capability authenticated control protocol, opaque handles, fork-stop delegated-cgroup/session admission, pidfds, subreaping, signal/wait/reap, child guard verification/forced-close receipts, continued cleanup and every fallback. One non-spawning controller owns planning, bounded logical threads, seccomp listener, brokered-open decisions, private syscall audit, and typed outcomes. Each thread owns one bytecode-clean closure tree; child owns only its guard writer/key copy while supervisor owns the verifier/read end."
-bound = "Mode limits are 150/1000/5000 generated/selected mutants and 600/1800/5400 controller seconds with 30/60/120 in-budget reserves; scans are separately 3000/20000/100000 positions and 3/20/100 million visits; source/dependency/tree/output/remote-restore bounds are finite. Workers use min(4, floor(effective CPU/2)) plus enforced per-worker cgroup v2 memory.max/high/swap/pids and fixed controller/safety/renderer reserves; absent delegated finite cgroup is plan-only. Native threads are one."
-ordering = "Changed admits only CanonicalMutationPositionV1 on exact changed lines under a sealed GitScopeSnapshot; core/full use configured definition priority, then repository-relative path, byte position, operator priority/name and execution occurrence. Completion order never changes serialization. Report and trend use separate sequences; CI aggregate restore uses numeric workflow-run-ID/run-attempt tuple and refuses publication from a tuple not strictly newer than its validated predecessor."
-atomicity = "Threads share no mutable tree. One operator-local position-verified mutation is applied to one closure tree. Sticky integrity and final cleanup override provisional control events in the closed phase matrix. JSON/Markdown/HTML plus non-self manifest publish under one leased run ID and report sequence; independent cache/trend projections follow; supervisor fallback and cross-job CI bundle never change current."
-timeout_cancellation = "Baseline/mutant pytest run in supervisor-owned cgroups/groups; events use CLOCK_BOOTTIME, control events are provisional, integrity is sticky dominant after notification drain and verified normal or constrained forced-close evidence, and cleanup unconfirmed forces infrastructure. Admission requires ordinary timeout plus cleanup before execution deadline. Controller requests by opaque handle; supervisor uses pidfd/cgroup/TERM/KILL/observable reap; 15/45/110 outer CI phase equations are final containment."
-backpressure = "Admission uses CPU plus enforced per-worker and fixed memory reserves, native threads one, protocol frames 64 KiB/JSON 48 KiB/eight FDs, at most workers in-flight and active handles plus 2*workers+4 queued requests, deadline checks during Git/source/AST/dependency/copy/coverage, cleanup/report/bundle/upload reserves and worst-case report capacity. Representative tuple-stratified runner qualification, bounded restore diagnostics, producer quotas, and an externally provisioned/readiness-proven disposable runner are required before execution schedules."
+ownership = "One Python 3.7 stdlib supervisor creates receipt/deadline before uv and alone owns OS spawn, source-exclusive hash-chained attestation, bounded channel-authenticated protocol, opaque handles, fork-stop delegated-cgroup/session admission, pidfds, subreaping, signal/wait/reap, child guard read end/verification/forced-close, continued cleanup and every fallback. One non-spawning controller owns planning, bounded logical threads, seccomp listener, brokered-open decisions, private syscall audit, and typed outcomes but cannot write supervisor roots. application.py alone coordinates use cases; cli.py only parses/renders. Each thread owns one bytecode-clean closure tree; child owns only its guard writer."
+bound = "Mode limits are 150/1000/5000 generated/selected mutants and 600/1800/5400 controller seconds with 30/60/120 in-budget reserves; scans are separately 3000/20000/100000 positions and 3/20/100 million visits; source/dependency/tree/output/remote-restore bounds are finite. Changed remote restore is zero. First measurements use finite identity-bound 512-MiB controller and 1024-MiB baseline caps; later workers use min(4, floor(effective CPU/2)) plus measured, enforced cgroup v2 memory.max/high/swap/pids and fixed reserves. Absent delegated finite cgroup is plan-only. Native threads are one."
+ordering = "Changed admits only CanonicalMutationPositionV1 on exact changed lines under a sealed GitScopeSnapshot; core/full use configured definition priority, then repository-relative path, byte position, operator priority/name and execution occurrence. Completion order never changes serialization. Report and trend use separate sequences; only scheduled core/full consume reviewed genesis/restore and reserve shared trend. Manual/changed cannot advance high-water. CI aggregate and approved reconcile publication use numeric workflow-run-ID/run-attempt and refuse a tuple not strictly newer than its validated predecessor."
+atomicity = "Threads share no mutable tree. One operator-local position-verified mutation is applied to one closure tree. Successful OS spawn is attested before registration; every spawned child has confirmed or unconfirmed cleanup. Sticky integrity and final cleanup override provisional control events in the closed phase matrix, while factual score counts remain and score eligibility controls projections. JSON/Markdown/HTML plus non-self manifest publish under one leased run ID and report sequence; scheduled-only cache/trend projections follow; supervisor fallback and cross-job CI bundle never change current."
+timeout_cancellation = "Baseline/mutant pytest run in supervisor-owned cgroups/groups; events use CLOCK_BOOTTIME, control events are provisional, integrity is sticky dominant after normal listener drain or timeout/cancel drain-ownership handoff plus supervisor forced-close attestation, and cleanup unconfirmed forces infrastructure. Admission requires ordinary timeout plus cleanup before execution deadline. Controller requests by opaque handle; supervisor uses pidfd/cgroup/TERM/KILL/observable reap; changed 2+10+2+1, core 4+3+30+5+3, and full 4+3+90+10+3 outer equations are final containment."
+backpressure = "Admission uses CPU plus finite bootstrap and enforced measured per-worker memory reserves, native threads one, protocol frames 64 KiB/JSON 48 KiB/eight FDs, at most workers in-flight and active handles plus 2*workers+4 queued requests, bounded attestation entries, deadline checks during Git/source/AST/dependency/copy/coverage, cleanup/report/bundle/upload reserves and worst-case report capacity. Changed requires readiness plus one exact cold-cache smoke; scheduled core/full require representative tuple-stratified qualification. Bounded restore diagnostics, producer quotas, and an externally provisioned disposable runner are required before their respective execution routes."
 partial_failure = "Baseline failure marks only its tuple unavailable with a closed reason and never increments mutant timeout. Closed terminal/phase/cleanup facts keep kills/survivors, no-coverage, invalid, timeout, infrastructure, cancellation and not-run distinct; cleanup unconfirmed is orthogonal but forces infrastructure. Supervisor loss fallback, projection gaps and predecessor-invalid/unavailable epochs remain explicit and never rewrite report truth."
-capacity_validation = "Tests force source/AST/closure/visit/scanned/generated/tree/temp/native-thread/per-worker-memory/time/detail/generation/receipt/ledger/cache/bundle/restore/upload-quota ceilings, pre-uv Python/CLOCK_BOOTTIME, sole-spawner authenticated protocol saturation, fork-stop delegated cgroup admission, unique-cgroup OOM, sticky integrity/cleanup override, forced-close restrictions, SCM_RIGHTS and brokered open, supervisor-verified guard/controller audit streams, tuple-stratified capacity and trusted-time equations, rolling aggregate invalid/unavailable/non-monotonic predecessor, cross-job bundle and authoritative CI-summary validation, redaction and interruption."
+capacity_validation = "Tests force source/AST/closure/visit/scanned/generated/tree/temp/native-thread/bootstrap/per-worker-memory/time/detail/generation/receipt/attestation/cache/bundle/restore/upload-quota ceilings, pre-uv Python/CLOCK_BOOTTIME, sole-spawner bounded protocol saturation, controller-write denial, spawn-before-registration cleanup, fork-stop delegated cgroup admission, unique-cgroup OOM, sticky integrity/score/cleanup precedence, listener-drain forced-close restrictions, SCM_RIGHTS and brokered open, supervisor guard/controller audit streams, changed smoke plus tuple-stratified scheduled capacity equations, reviewed genesis and aggregate invalid/unavailable/non-monotonic predecessor, cross-job bundle inspection and valid/invalid/missing/hard-loss CI-summary validation, redaction and interruption."
 
 [[obligations]]
 id = "mutation.bounded-execution"
@@ -78,6 +78,7 @@ paths = [
   "trade_py/devtools/mutation_testing/supervisor.py",
   "trade_py/devtools/mutation_testing/protocol.py",
   "trade_py/devtools/mutation_testing/bootstrap.py",
+  "trade_py/devtools/mutation_testing/application.py",
   "trade_py/devtools/mutation_testing/config.py",
   "trade_py/devtools/mutation_testing/git_scope.py",
   "trade_py/devtools/mutation_testing/selection.py",
@@ -94,13 +95,14 @@ contracts = [
   "core 1000 generated/selected mutants, 20000 scanned positions and 1800 seconds",
   "full 5000 generated/selected mutants, 100000 scanned positions and 5400 seconds",
   "worker max min(4, CPU half) plus enforced per-worker delegated cgroup v2 memory controls",
+  "finite 512 MiB controller and 1024 MiB baseline bootstrap caps before measured admission",
   "no writable delegated finite cgroup v2 makes execution plan-only",
   "one native thread per pytest process",
   "finite source, AST, dependency, visit, private-tree and candidate scan",
   "one Python 3.7 stdlib sole-spawner supervisor CLOCK_BOOTTIME deadline before uv plus execution deadline and in-budget reserve",
   "authenticated opaque-handle fork-stop cgroup admission, pidfd identity and supervisor cleanup/fallback after controller death",
   "64 KiB frame, 48 KiB JSON, eight FD, workers in-flight/active and 2*workers+4 queue protocol bounds",
-  "15/45/110 outer CI phase equations contain uninterruptible kernel or filesystem stalls",
+  "changed 2+10+2+1 with no remote restore, core 4+3+30+5+3, and full 4+3+90+10+3 outer equations",
   "lowering-only overrides and no scope broadening",
 ]
 failure_states = [
@@ -111,6 +113,7 @@ failure_states = [
   "cleanup unconfirmed or fsync unreturned",
   "missing, stale or identity-mismatched capacity qualification",
   "no finite delegated cgroup v2 memory bound",
+  "bootstrap cap OOM or identity mismatch",
   "unsafe or excluded source",
   "excessive worker request",
   "partial execution",
@@ -197,6 +200,7 @@ paths = [
   "trade_py/devtools/mutation_testing/supervisor.py",
   "trade_py/devtools/mutation_testing/protocol.py",
   "trade_py/devtools/mutation_testing/bootstrap_contract.py",
+  "trade_py/devtools/mutation_testing/application.py",
   "trade_py/devtools/mutation_testing/engine.py",
   "trade_py/devtools/mutation_testing/coverage.py",
   "trade_py/devtools/mutation_testing/isolation.py",
@@ -209,13 +213,15 @@ contracts = [
   "selected pytest only",
   "coverage.py 7.10.7 line-data adapter",
   "sole-supervisor spawn and fork-stop subreaper/delegated-cgroup/pidfd ownership with opaque handles",
+  "supervisor-only writable hash-chained attestation journal protected from controller writes",
   "CLOCK_BOOTTIME phase state machine with provisional control events, sticky dominant integrity and final cleanup override",
   "private-overlay module path and digest provenance",
   "bytecode-clean overlay and one native thread",
   "Landlock final boundary plus SCM_RIGHTS seccomp listener and brokered openat2 descriptor injection",
   "exact close-fds and pass-FD policy before application import",
   "reviewed thread-form clone flags allowed but process clone, fork and exec denied",
-  "child guard HMAC writer plus supervisor verifier/forced-close receipt and controller-private syscall-audit handshakes",
+  "child guard writer plus supervisor-exclusive verifier/attestation and controller-private syscall-audit handshakes",
+  "normal listener drain or timeout/cancel drain-ownership handoff before forced close",
   "max(10 seconds, 2.5 times baseline) timeout",
   "bounded observable descendant cleanup with cleanup-unconfirmed truth",
 ]
@@ -242,6 +248,8 @@ failure_states = [
   "orphan descendant",
   "uninterruptible descendant with cleanup unconfirmed",
   "stale bytecode or spawn-registration race",
+  "spawned child falsely marked cleanup not required",
+  "controller forges or mutates supervisor attestation",
   "spawn protocol replay, invalid handle or descriptor-role mismatch",
   "protocol peer/MAC/correlation/frame/FD/queue capacity failure",
   "ambiguous OOM counter attribution",
@@ -256,8 +264,10 @@ id = "mutation.truthful-report"
 owner = "trade_py/devtools/mutation_testing models, cache, trend, render, report store, bundle, baseline and capacity"
 paths = [
   "trade_py/devtools/mutation_testing/models.py",
+  "trade_py/devtools/mutation_testing/supervisor.py",
   "trade_py/devtools/mutation_testing/cache.py",
   "trade_py/devtools/mutation_testing/trend.py",
+  "trade_py/devtools/mutation_testing/application.py",
   "trade_py/devtools/mutation_testing/render.py",
   "trade_py/devtools/mutation_testing/report_store.py",
   "trade_py/devtools/mutation_testing/bundle.py",
@@ -270,16 +280,17 @@ paths = [
 ]
 contracts = [
   "trade.mutation.report.v1",
-  "trade.mutation.invocation.v1 and trade.mutation.fallback.v1",
+  "trade.mutation.invocation.v1, trade.mutation.supervisor-attestation.v1 and trade.mutation.fallback.v1",
   "trade.mutation.bundle.v1, trade.mutation.bundle-validation.v1 and trade.mutation.ci-summary.v1",
   "trade.mutation.baseline.v1, trade.mutation.capacity.v1 and rolling aggregate epoch contract",
   "generation-atomic JSON, Markdown, HTML and non-self manifest",
   "receipt and current pointer manifest-root binding",
   "separate report and trend sequences plus high-water/checkpoint/source-or-tombstone hash chain",
   "sole-supervisor non-authoritative fallback on publication failure",
-  "closed fifteen-status enum plus mutation-applied, worker-spawned, test-started and cleanup facts",
+  "closed fifteen-status enum plus mutation-applied, worker-spawned, worker-registered, test-started and cleanup facts",
   "CoverageTupleEvidenceV1 independently recomputes no-coverage-line",
-  "exact scanned, generated, selected, phase, infrastructure, cancellation, not-run and score equations",
+  "exact scanned, generated, selected, phase, infrastructure, cancellation, not-run and factual-score equations",
+  "closed run-score eligibility precedence controls cache, trend and baseline authority",
   "survivor execution ID, comparison key, digests, span, source, operator, coverage and tests",
   "partial report at every budget boundary",
   "closure cache identity plus post-publication commit marker",
@@ -298,6 +309,7 @@ failure_states = [
   "stale or corrupt cache and trend state",
   "projection failure rewrites factual report",
   "sequence reuse, broken trend chain or fabricated aggregate continuity",
+  "missing, duplicate, reused or mismatched trend genesis",
   "raw evidence evicted without synchronous unit or evidence-expired tombstone",
   "detail-expired compact trend used to establish baseline or detailed comparability",
   "missing, malformed or receipt-unbound CI bundle",
@@ -305,6 +317,7 @@ failure_states = [
   "non-comparable baseline",
   "credential leakage in durable diagnostics",
   "cleanup-unconfirmed provisional kill or survivor retained",
+  "ineligible mixed run publishes a score, cache entry, trend or baseline",
   "corrupt highest aggregate silently falls back",
 ]
 spec_requirements = [
@@ -366,21 +379,23 @@ paths = [
 ]
 contracts = [
   "PR changed only",
-  "nightly and manual core",
-  "weekly and manual full",
+  "nightly core and weekly full are the only ordinary shared-trend writers",
+  "manual core/full publish factual bundles but no shared trend, cache or aggregate carrier",
   "report-only mutation outcomes with original exit preserved",
-  "execution job builds and uploads exact immutable trade.mutation.bundle.v1",
-  "separate always-run job downloads bytes and independently validates missing or invalid bundle",
-  "validation job publishes sole authoritative trade.mutation.ci-summary.v1",
-  "receipt-bound generation-or-fallback plus validation digest",
-  "always-run fallback summary for controller-managed failures",
+  "execution job builds and uploads exact immutable attestation-bound trade.mutation.bundle.v1",
+  "when scheduled, a separate job downloads bytes and independently validates valid, invalid, missing or hard-loss evidence",
+  "validation job publishes sole authoritative trade.mutation.ci-summary.v1 with nullable controller exit",
+  "receipt plus supervisor-attestation plus generation-or-fallback and validation digest",
+  "whole-workflow cancellation before validation is explicitly best effort",
   "literal UTC schedules and shared one-running/latest-pending long-run group",
   "hard runner loss documented best effort",
   "disposable bounded result cache separated from trend evidence",
   "bounded numeric workflow-run-ID/run-attempt rolling aggregate restore with invalid/unavailable epoch gaps",
-  "ephemeral trade-mutation-v1 runner and identity, finite-memory, freshness and pass-equation-bound qualification",
-  "GitHub repository owner huanwei1208-accountable runner child change, named platform operator and three-run readiness prerequisite",
-  "15/45/110 outer phase equations and scheduled-only remote producer quotas",
+  "one reviewed genesis marker permits only the first no-predecessor trend checkpoint",
+  "explicit-carrier dry-run-first environment-approved reconcile route",
+  "ephemeral trade-mutation-v1 runner and identity, finite bootstrap/measured memory, freshness and pass-equation-bound qualification",
+  "GitHub repository owner huanwei1208-accountable runner child change, named platform operator, three-run readiness and changed-smoke prerequisites",
+  "changed no-restore 15-minute, core 45-minute and full 110-minute equations plus scheduled-only remote producer quotas",
 ]
 failure_states = [
   "PR full or core execution",
@@ -391,6 +406,7 @@ failure_states = [
   "missing, malformed, unsafe or receipt-unbound bundle",
   "mutation exit 2 skips evidence publication",
   "controller exit hidden by advisory workflow conclusion",
+  "hard loss or missing output misclassified as a mutation outcome",
   "expired or runner-mismatched capacity record executes mutants",
   "cache treated as durable trend source",
   "aggregate expiry treated as continuous history",
@@ -400,6 +416,9 @@ failure_states = [
   "missing runner label queues indefinitely instead of hosted plan-only",
   "old workflow rerun publishes a non-monotonic trend carrier",
   "manual run publishes shared cache or aggregate carrier",
+  "manual run reserves trend sequence or advances high-water",
+  "changed route restores remote cache",
+  "reconcile scans newest artifacts or publishes without approval and monotonic revalidation",
   "superseded pending dispatch treated as completed work",
 ]
 spec_requirements = [

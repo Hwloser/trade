@@ -116,7 +116,8 @@ trade_py/devtools/mutation_testing/
   supervisor.py                              Python 3.7 stdlib receipt/containment/fallback owner
   protocol.py                                Python 3.7-compatible closed control protocol
   bootstrap.py                               import-light Git/config/zero-work planner
-  cli.py                                     argument parsing and orchestration only
+  cli.py                                     argument parsing/rendering only
+  application.py                             top-level use-case orchestration
   models.py                                  immutable plans/outcomes/status algebra
   config.py                                  closed configuration parser
   git_scope.py                               bounded base/diff/changed-line discovery
@@ -168,13 +169,21 @@ name only that handle; raw PIDs are diagnostic and cannot authorize signal, wait
 cleanup.
 
 The protocol is `trade.mutation.supervisor-protocol.v1`. The supervisor creates a
-256-bit per-run capability before the controller starts, passes it only through an
-inherited close-on-exec descriptor, and authenticates every request and response with
+256-bit per-run channel capability before the controller starts, passes it only
+through an inherited close-on-exec descriptor, and authenticates every request and response with
 HMAC-SHA-256 over direction, run/boot identity, request ID, sequence, deadline,
 payload digest, and descriptor-role digest. It also verifies the inherited client's
 `SO_PEERCRED` PID/start token. The capability descriptor closes after the controller
-establishes the one allowed session and is never inherited by workers. Reconnect and
-a second client are forbidden. Packets are at most 64 KiB, JSON payloads at most
+establishes the one allowed session and is never inherited by workers. This channel
+MAC prevents peer/replay corruption but is not supervisor-exclusive attestation.
+The supervisor separately retains the only writable descriptor for a bounded,
+hash-chained `trade.mutation.supervisor-attestation.v1` journal. Before controller
+imports, it applies a Landlock controller policy that denies all controller writes,
+renames, links, and removals below invocation/attestation/fallback roots while allowing
+report-root writes. Reports reference journal entry digests and CI validates the full
+chain. Unsupported write isolation fails execution preflight, so possession of the
+shared channel key cannot forge supervisor-authored guard/wait/OOM/cleanup/forced-
+close evidence. Reconnect and a second client are forbidden. Packets are at most 64 KiB, JSON payloads at most
 48 KiB, and each packet carries at most eight role-labelled descriptors. One
 controller multiplexer owns the socket, correlates unique request IDs, allows at most
 `workers` in-flight lifecycle requests, one in-flight spawn per logical worker,
@@ -185,26 +194,30 @@ spins or grows. MAC, peer, sequence, correlation, frame, FD, channel loss, or re
 failure closes admission, requests cleanup of registered handles, and becomes
 phase-appropriate infrastructure failure.
 
-The CLI coordinates owned modules but does not contain mutation logic. Cosmic Ray is
+The CLI parses and renders only; `application.py` coordinates owned use cases and
+contains no adapter implementation. Cosmic Ray is
 an adapter dependency and never imports application runtime modules. `models.py`
 imports no controller adapter; planning and execution depend on models, while
 selection/engine never import process, storage, cache, trend, or rendering modules.
 `process_supervisor.py` is only the typed client for the supervisor protocol and owns
-no OS spawning primitive. The complete import DAG is:
+no OS spawning primitive. Every direct first-party import is represented in this
+complete import DAG:
 
 ```text
 bootstrap_contract <- protocol <- supervisor
+bootstrap_contract, protocol <- bootstrap
 models <- config, git_scope, selection, engine, coverage, process_supervisor,
           isolation, executor, render, report_store, cache, trend, baseline,
-          exceptions, capacity, bundle, cli
+          exceptions, capacity, bundle, application, cli
 config <- selection, engine, coverage, isolation, executor, baseline, exceptions,
-          capacity, cli
+          capacity, application
 git_scope <- selection <- engine
-protocol <- process_supervisor <- isolation, executor, cli
-engine, coverage, isolation <- executor <- cli
+protocol <- process_supervisor <- isolation, executor, application
+engine, coverage, isolation <- executor <- application
 models <- render <- report_store
 models, report_store <- cache, trend, baseline, exceptions, bundle
-models, capacity <- cli
+report_store, cache, trend, baseline, exceptions, capacity, bundle, executor,
+process_supervisor, git_scope, selection, config <- application <- cli
 ```
 
 `supervisor.py` depends only on Python-3.7-compatible
@@ -215,8 +228,11 @@ filesystem transitions only; it does not own outcomes, bundles, score policy, ca
 or trend. Cache/trend/baseline/exception/bundle modules consume immutable report DTOs
 and cannot call executor or adapters. `bundle.py` validates copied bytes and never
 selects global current state. `capacity.py` owns qualification math but cannot mutate
-the reviewed capacity record. Static import-architecture tests enforce every edge and
-forbid reverse/cyclic imports. Tests use synthetic repositories and source files.
+the reviewed capacity record. `bootstrap.py` depends only on the two Python
+3.7-compatible modules and hands one validated bootstrap DTO to `application.py`; it
+cannot import controller adapters. Static import-architecture tests enumerate every
+module, enforce every edge, and forbid reverse/cyclic imports. Tests use synthetic
+repositories and source files.
 
 The controller is a devtool, not a domain service. It does not belong in the future
 business Context graph and is excluded as a mutation target.
@@ -329,16 +345,23 @@ Identifiers and invariants:
   `deferred_unmapped`, so the former `no_coverage_mapping` terminal is unreachable
   and removed.
 - every record also carries booleans `mutation_applied_current`,
-  `worker_spawned_current`, and `test_started_current`; aggregate phase counts are
-  sums of those facts, not guesses from logs. `test_started_current` implies
-  `worker_spawned_current`, which implies `mutation_applied_current`. Cache terminals
-  set all three false. Test-started terminals set all three true.
+  `worker_spawned_current`, `worker_registered_current`, and
+  `test_started_current`; aggregate phase counts are sums of those facts, not guesses
+  from logs. Successful OS child creation immediately makes spawned true, before
+  cgroup/pidfd/session registration can fail. `test_started_current` implies
+  `worker_registered_current`, which implies `worker_spawned_current`, which implies
+  `mutation_applied_current`. Cache terminals set all four false. Test-started
+  terminals set all four true.
   `infrastructure_error_pre_test`, `not_run_budget`, or `not_run_cancelled` may set
   mutation-applied true only when their typed stop event wins after the
   position-verified write but before pytest spawn; in this contract `not_run` means
   the test did not start, not necessarily that transformation did not occur.
-- only `killed_*` and `survived_*` enter score; score is `null` when their sum is zero.
-  Only verified fresh killed/survived outcomes are cache candidates.
+- only `killed_*` and `survived_*` enter the factual numerator/denominator. The report
+  always preserves those counts, but `run_score_eligible=false` makes displayed score
+  null under closed reason precedence `report_invalid`, `integrity_override`,
+  `cleanup_unconfirmed`, `degraded_infrastructure`, then `zero_denominator`. Only an
+  eligible run may compare/append a trend score or commit verified fresh
+  killed/survived cache outcomes.
 - every worker also has orthogonal cleanup status
   `not_required|confirmed|unconfirmed`. `cleanup_unconfirmed` is not a seventeenth
   terminal. If cleanup cannot be confirmed, the provisional terminal is replaced by
@@ -349,24 +372,26 @@ Identifiers and invariants:
   count survives that override.
 
 The phase matrix below is the sole normative table. A tuple is
-`(mutation_applied_current, worker_spawned_current, test_started_current, cleanup)`.
+`(mutation_applied_current, worker_spawned_current, worker_registered_current,
+test_started_current, cleanup)`.
 No tuple outside it is serializable:
 
 | Terminal | Allowed tuples |
 |---|---|
-| `killed_fresh`, `survived_fresh`, `timeout_test_started`, `cancelled_test_started` | `(true,true,true,confirmed)` |
-| `infrastructure_error_test_started` | `(true,true,true,confirmed)`, `(true,true,true,unconfirmed)` |
-| `killed_cache`, `survived_cache` | `(false,false,false,not_required)` |
-| `no_coverage_line`, `baseline_unavailable`, `invalid_mutation`, `equivalent_exception`, `not_run_plan` | `(false,false,false,not_required)` |
-| `infrastructure_error_pre_test` | `(false,false,false,not_required)`, `(true,false,false,not_required)`, `(true,true,false,confirmed)`, `(true,true,false,unconfirmed)` |
-| `not_run_budget`, `not_run_cancelled` | `(false,false,false,not_required)`, `(true,false,false,not_required)` |
+| `killed_fresh`, `survived_fresh`, `timeout_test_started`, `cancelled_test_started` | `(true,true,true,true,confirmed)` |
+| `infrastructure_error_test_started` | `(true,true,true,true,confirmed)`, `(true,true,true,true,unconfirmed)` |
+| `killed_cache`, `survived_cache` | `(false,false,false,false,not_required)` |
+| `no_coverage_line`, `baseline_unavailable`, `invalid_mutation`, `equivalent_exception`, `not_run_plan` | `(false,false,false,false,not_required)` |
+| `infrastructure_error_pre_test` | `(false,false,false,false,not_required)`, `(true,false,false,false,not_required)`, `(true,true,false,false,confirmed)`, `(true,true,false,false,unconfirmed)`, `(true,true,true,false,confirmed)`, `(true,true,true,false,unconfirmed)` |
+| `not_run_budget`, `not_run_cancelled` | `(false,false,false,false,not_required)`, `(true,false,false,false,not_required)`, `(true,true,false,false,confirmed)`, `(true,true,true,false,confirmed)` |
 
 Any provisional non-infrastructure terminal whose spawned worker cleanup is
 `unconfirmed` is replaced before aggregation by the phase-appropriate infrastructure
 terminal with the corresponding allowed `unconfirmed` tuple. Such a record and its
 run are score-ineligible, cache-ineligible, and trend-incomparable. No terminal
 permits a false-to-true phase implication, and no cache terminal can claim current
-mutation, worker, or test activity.
+mutation, worker, or test activity. Any created child requires confirmed or
+unconfirmed cleanup; `not_required` means the OS child never existed.
 
 Unavailable states are explicit: missing base, unsupported tool, invalid config,
 baseline test failure, no eligible source, no test mapping, budget exhaustion, and
@@ -508,8 +533,11 @@ receipts/tombstones for 400 entries, 64 MiB, and 400 days; fallback/quarantine/
 failed-staging evidence for at most 50 entries, 512 MiB, and 14 days. Deterministic
 oldest-creation/run-ID eviction under the publication lock protects `current`, active
 leases, and current failure evidence. Retention is a DAG, not one synchronous unit:
-the raw-evidence unit is `receipt + report-or-fallback + CI bundle`; its members are
-evicted together or the receipt becomes bounded
+each receipt declares `bundle_expectation=required_ci|not_applicable_local` plus its
+expected-member manifest. The raw-evidence unit is `receipt + supervisor-attestation
+journal + report-or-fallback + expected bundles`; CI expects one named bundle and
+local runs expect none. Required-missing and local-not-applicable are distinct.
+Members are evicted together or the receipt becomes bounded
 `trade.mutation.evidence-tombstone.v1` with former roots/sequences, reason, time, and
 `detail_evidence=expired`. A compact trend source/aggregate is a separately retained
 digest-bound derived record and may outlive raw evidence. It retains score/counts,
@@ -532,8 +560,10 @@ scripts/mutation-test COMMAND [COMMAND_OPTIONS] [OUTPUT_OPTIONS]
 
 COMMAND := changed | core | full | inspect | repair | qualify | reconcile
 
-changed|core|full:
+changed:
   [--base REF]
+
+changed|core|full:
   [--output-dir PATH]
   [--max-mutants N]
   [--max-seconds N]
@@ -541,14 +571,20 @@ changed|core|full:
   [--plan-only]
   [--no-cache]
 
-trade dev mutation inspect --run-id UUID [--format text|json]
+trade dev mutation inspect
+  (--run-id UUID [--output-dir PATH] | --bundle PATH)
+  [--format text|json]
 trade dev mutation repair --run-id UUID
+  [--output-dir PATH]
   --expected-manifest-sha256 SHA256
   [--format text|json]
   [--apply]
 
 trade dev mutation qualify --mode core|full --runner-profile PROFILE
-trade dev mutation reconcile --trend-epoch EPOCH [--apply]
+trade dev mutation reconcile --trend-epoch EPOCH
+  --carrier PATH
+  [--output-dir PATH]
+  [--apply]
 
 OUTPUT_OPTIONS := [--format text|json] [--quiet | --verbose]
 ```
@@ -558,8 +594,10 @@ OUTPUT_OPTIONS := [--format text|json] [--quiet | --verbose]
 compatible facade. `COMMAND` is required and closed to the seven values above.
 Execution-only options are rejected on administrative commands; `--base` is accepted
 only by `changed`; `--mode`/`--runner-profile` only by `qualify`;
-`--trend-epoch`/`--apply` only by `reconcile`; and `--run-id`,
-`--expected-manifest-sha256`, and `--apply` only as shown for inspect/repair.
+`--trend-epoch`/`--carrier`/`--apply` only by `reconcile`; `--bundle` only by
+`inspect`; and `--run-id`, `--expected-manifest-sha256`, and `--apply` only as shown
+for inspect/repair. `--output-dir` is valid on execution and run-root administrative
+commands.
 Changed mode defaults
 to `${MUTATION_BASE_REF:-origin/master}` locally; CI always passes the pull-request
 base SHA. Failure to resolve the explicit base is an infrastructure/configuration
@@ -573,7 +611,10 @@ cached outcomes. Its run status is `plan_only`, every selected mutant is
 `not_run_plan`, score is `null`, and it exits 0 unless preflight or report publication
 fails.
 
-`inspect` is read-only and returns `trade.mutation.inspect.v1`; `repair` returns
+`inspect` is read-only and returns `trade.mutation.inspect.v1`; it resolves either one
+explicit run under one owned output root or one explicit immutable bundle, never a
+recursive scan or newest-file inference. Bundle inspection needs no original runner
+or mutation dependency. `repair` returns
 `trade.mutation.repair.v1`. Both support text/JSON, closed
 `healthy|first_run|repairable|active_lease|stale_expected_digest|evidence_expired|
 unsafe|internal_error` states, stable error/remediation fields and deterministic
@@ -592,10 +633,13 @@ never edits the checked-in capacity record. Its response schema is
 internal_error`; a completed qualified or unqualified proposal exits 0 and the latter
 three exit 2. `reconcile` returns `trade.mutation.reconcile.v1` with status
 `clean|gap_plan|applied|active_lease|stale_epoch|unsafe|internal_error`, validates a
-named trend epoch,
+named trend epoch and explicit downloaded carrier,
 shows missing/tombstoned sequences and projection repairs in dry-run form, and requires
-`--apply` plus the publication lock to commit a gap tombstone or rebuilt projection.
-It never invents a predecessor or score. `clean|gap_plan|applied` exits 0,
+`--apply` plus the publication lock to commit a gap tombstone or rebuilt projection
+and emit a repaired-carrier proposal. Local apply never uploads. The manual CI
+recovery route must bind artifact identity/digest, run dry-run first, require an
+environment approval, revalidate, and publish only under a strictly newer workflow
+tuple. It never invents a predecessor or score. `clean|gap_plan|applied` exits 0,
 `active_lease|stale_epoch` exits 1, and `unsafe|internal_error` exits 2.
 
 All commands support `--format text|json` and mutually exclusive `--quiet|--verbose`.
@@ -659,17 +703,17 @@ Command templates substitute only validated IDs/digests/paths:
 | `cleanup_unconfirmed` | supervisor/cleanup | yes | error | `trade dev mutation inspect --run-id RUN_ID` |
 | `baseline_unavailable` | coverage/baseline | yes | warning | `trade dev mutation COMMAND --plan-only` |
 | `report_publish_failed` | report/publication | yes | error | `trade dev mutation repair --run-id RUN_ID --expected-manifest-sha256 DIGEST` |
-| `projection_degraded` | cache/trend/projection | yes | warning | `trade dev mutation reconcile --trend-epoch EPOCH` |
+| `projection_degraded` | cache/trend/projection | yes | warning | `trade dev mutation reconcile --trend-epoch EPOCH --carrier PATH` |
 | `cache_restore_miss` | cache/restore | yes | notice | `trade dev mutation COMMAND --no-cache` |
-| `trend_predecessor_unavailable` | trend/restore | yes | warning | `trade dev mutation reconcile --trend-epoch EPOCH` |
-| `trend_predecessor_invalid` | trend/restore | no | error | `trade dev mutation reconcile --trend-epoch EPOCH` |
-| `carrier_not_monotonic` | trend/publication | no | warning | `trade dev mutation reconcile --trend-epoch EPOCH` |
+| `trend_predecessor_unavailable` | trend/restore | yes | warning | `trade dev mutation reconcile --trend-epoch EPOCH --carrier PATH` |
+| `trend_predecessor_invalid` | trend/restore | no | error | `trade dev mutation reconcile --trend-epoch EPOCH --carrier PATH` |
+| `carrier_not_monotonic` | trend/publication | no | warning | `trade dev mutation reconcile --trend-epoch EPOCH --carrier PATH` |
 | `evidence_expired` | retention/inspect | no | warning | `trade dev mutation COMMAND` |
 | `active_lease` | storage/admin | yes | warning | `trade dev mutation inspect --run-id RUN_ID` |
 | `stale_expected_digest` | storage/admin | no | error | `trade dev mutation inspect --run-id RUN_ID` |
 | `bundle_missing` | CI/validation | yes | error | `gh run rerun RUN_ID` |
-| `bundle_invalid` | CI/validation | no | error | `trade dev mutation inspect --run-id RUN_ID` |
-| `artifact_upload_skipped_quota` | CI/upload | yes | warning | `trade dev mutation inspect --run-id RUN_ID` |
+| `bundle_invalid` | CI/validation | no | error | `gh run download RUN_ID -n ARTIFACT -D DIR && trade dev mutation inspect --bundle DIR` |
+| `artifact_upload_skipped_quota` | CI/upload | yes | warning | `gh api repos/OWNER/REPO/actions/artifacts` |
 | `hard_runner_loss` | CI/runner | yes | error | `gh run rerun RUN_ID` |
 
 The registry's implementation is shared immutable data in `models.py`; owner modules
@@ -812,9 +856,13 @@ owned session from authenticated protocol requests, forwards signals, and mainta
 PID/start-token/boot-identity descendants. Every supervisor child starts through a
 Python 3.7-compatible fork-stop trampoline: before exec or application code the child
 raises `SIGSTOP`. The supervisor creates one invocation cgroup and one unique child
-cgroup, places the stopped child, sets resource controls, reads back membership, and
-installs pidfd/session/watchdog ownership before sending `SIGCONT`; placement or
-read-back failure kills the stopped child and fails preflight. When `clone3`
+cgroup. Immediately after successful OS child creation it records
+`worker_spawned_current=true`, PID/start token, and a provisional registry entry in
+the supervisor attestation journal. It then places the stopped child, sets resource
+controls, reads back membership, and installs pidfd/session/watchdog ownership before
+recording `worker_registered_current=true` and sending `SIGCONT`; placement or
+read-back failure kills/reaps the stopped child and records confirmed or unconfirmed
+cleanup instead of pretending cleanup was not required. When `clone3`
 `CLONE_INTO_CGROUP` is available an equivalent tested supervisor helper may replace
 this handshake. The supervisor stays outside the invocation cgroup, sets
 `memory.oom.group=1`, and verifies every worker cgroup and the invocation
@@ -832,7 +880,7 @@ explicit best effort, not a no-orphan guarantee.
 
 A controller-owned thread pool performs logical scheduling but submits every
 coverage/pytest launch to the sole supervisor spawner and receives only an opaque
-worker handle. Supervisor spawn, stopped-child registration, controller-visible
+worker handle. Supervisor child creation, stopped-child registration, controller-visible
 admission acknowledgement, typed stop-event enqueue, and wait observation share one
 protocol/state gate. Every mutant follows
 `PLANNED -> MUTATED? -> STARTED? -> EXIT_SEEN|STOP_SEEN -> FINALIZING -> TERMINAL`.
@@ -858,16 +906,22 @@ signals, and parent cancellation use one supervisor TERM, bounded wait, KILL,
 cgroup/group-existence check, and reap path.
 
 A hard termination cannot require a killed child to emit `guard_completed`. For an
-already provisional `timeout_test_started|cancelled_test_started`, the supervisor may
-issue `trade.mutation.guard-forced-close.v1` only after it authenticated the worker
-identity/start token and stream prefix, stopped admission, drained the notification
-queue to empty, observed the guard pipe EOF caused by that exact worker's termination,
-and confirmed the unique cgroup empty plus wait/reap. The signed record binds the last
-valid guard sequence/digest, provisional control event/sequence, TERM/KILL facts,
-notification-drain result, cleanup result, and reason `forced_timeout|forced_cancel`.
+already provisional `timeout_test_started|cancelled_test_started`, forced close uses
+one bounded ownership handoff: the controller stops broker admission, resolves or
+denies already-received notifications, finalizes its syscall-audit digest, and passes
+the listener plus digest in a typed request. The supervisor validates tracee/listener
+identity, takes exclusive listener ownership, proves a nonblocking receive has no
+pending notification, appends an ACK to its source-exclusive journal, and only then
+allows the controller endpoint to close. It terminates the exact worker, observes
+guard EOF, and confirms the unique cgroup empty plus wait/reap before appending
+`trade.mutation.guard-forced-close.v1`. The attestation binds the last valid guard
+sequence/digest, final audit digest, handoff/ACK sequences, provisional control
+event/sequence, TERM/KILL facts, notification-drain result, cleanup result, and reason
+`forced_timeout|forced_cancel`.
 It substitutes only for `guard_completed`; any sequence gap, pre-existing truncation,
-wrong identity, nonempty notification queue, unconfirmed cleanup, natural exit, or
-budget stop remains `incomplete_evidence` infrastructure failure. Thus an infinite
+wrong identity, missing/late ACK, listener loss/deadline, nonempty notification queue,
+unconfirmed cleanup, natural exit, or budget stop remains `incomplete_evidence`
+infrastructure failure. Thus an infinite
 loop can truthfully remain timeout after supervisor-proven forced closure without
 turning arbitrary EOF into success.
 
@@ -905,7 +959,7 @@ validates listener/tracee IDs before every decision, closes transfer endpoints a
 defined handshake points, bounds receive/drain, and kills the process group if the
 listener closes or the controller dies. The reviewed pass-FD table is exactly the
 child's guard-pipe write end, listener-transfer socket until ACK, stdout and stderr;
-the controller alone retains the guard-pipe read end, the child never receives it,
+the supervisor alone retains the guard-pipe read end, the child never receives it,
 stdin is `/dev/null`, and every other descriptor is closed/read-back audited.
 
 The broker records and validates `openat/openat2`, socket/connect, fork/vfork,
@@ -931,13 +985,15 @@ passes neither key nor endpoint to the controller. The child emits a gap-free
 HMAC-SHA-256 sequence of `guard_started`,
 `kernel_policy_active`, zero or more `guard_violation`, and `guard_completed`. The
 supervisor verifies identity, MAC, sequence, and digest chain online, destroys the key
-after finalization, then gives the controller an immutable response authenticated by
-the supervisor control-protocol capability or the forced-close receipt above.
+after finalization, appends the result or forced-close entry to its source-exclusive
+attestation journal, then gives the controller only that entry digest over the
+ordinary authenticated control channel.
 The controller alone owns the syscall audit records and private append state; it writes
 `syscall_audit_started`, zero or more `syscall_violation`, and
 `syscall_audit_completed` before durable outcome serialization. The child cannot forge
-the audit stream and the controller cannot forge child MACs or supervisor
-verification receipts. Both bind run ID, worker PID/start token, target digest and
+the audit stream; the controller cannot forge the supervisor journal because its
+Landlock boundary denies every write to that root and it owns no writable descriptor.
+Both bind run ID, worker PID/start token, target digest and
 policy digest. Classification drains pending notifications and requires both verified
 sequences. Missing, empty, truncated, duplicate, wrong-key or incomplete evidence is
 `infrastructure_error`. Any child or syscall violation
@@ -1040,13 +1096,22 @@ Source file/byte/tree/dependency and parse/operator-visit limits plus deadline
 checkpoints bound operator-sparse trees where candidate count alone would not stop
 planning. Effective CPU is the minimum of affinity, cgroup quota, and host count.
 The CPU candidate is `min(4, max(1, floor(effective_cpu / 2)))`. Effective workers are
-also limited by a finite enforceable delegated cgroup v2 memory ceiling. Baseline
-execution measures each selected test tuple's peak descendant `memory.peak` and the
-scheduler sets each worker cgroup `memory.max =
-max(256 MiB, ceil(1.5 * measured_peak))`, `memory.high = floor(0.9 * memory.max)`,
-`memory.swap.max = 0`, and `pids.max` to the reviewed thread-only allowance. The
-invocation cgroup's finite `memory.max` is `effective_memory`. Fixed reservations are
-`controller_reserve = max(256 MiB, measured_controller_peak * 1.25)`,
+also limited by a finite enforceable delegated cgroup v2 memory ceiling. Qualification
+cannot depend on an unmeasured peak: reviewed config sets finite
+`controller_bootstrap_memory_max=512 MiB` and
+`baseline_bootstrap_memory_max=1024 MiB`, both identity-bound and lowering-only.
+Qualification caps/read-backs the controller at 512 MiB, then measures each selected
+test tuple at `min(1024 MiB, effective_memory - controller/safety/renderer reserves)`.
+The measurement must retain at least 256 MiB. Bootstrap-cap OOM, a peak reaching
+`memory.high`, or inability to admit that finite cgroup fails the tuple/qualification;
+there is no unbounded bootstrap. Later qualified execution uses measured controller
+peak and each tuple's descendant `memory.peak`; the scheduler sets each worker cgroup
+`memory.max = max(256 MiB, ceil(1.5 * measured_peak))`,
+`memory.high = floor(0.9 * memory.max)`, `memory.swap.max = 0`, and `pids.max` to the
+reviewed thread-only allowance. The invocation cgroup's finite `memory.max` is
+`effective_memory`. Fixed reservations are the 512 MiB controller cap during
+qualification and
+`controller_reserve = max(256 MiB, ceil(measured_controller_peak * 1.25))` afterward,
 `safety_reserve = max(256 MiB, floor(0.10 * effective_memory))`, and the mode's
 64/128/256 MiB renderer reserve. Admission requires
 `controller_reserve + safety_reserve + renderer_reserve +
@@ -1140,7 +1205,8 @@ never the sole ordering truth.
 CI treats mutation result cache and trend storage differently. Result cache is a
 disposable performance optimization capped at 20000 entries and 512 MiB. Remote
 restore lists at most 20 candidate artifacts, downloads at most two candidates and
-512 MiB total, and has a 60-second changed or 180-second core/full deadline. It accepts
+512 MiB total, and has a 180-second scheduled core/full deadline. Changed remote cache
+restore is disabled so its 15-minute outer budget contains no hidden restore phase. It accepts
 only an exact schema/tool/config prefix and the newest digest-valid candidate by
 numeric `(workflow_run_id, run_attempt)` identity, validates every record and
 committed-run marker, and saves one bounded archive under a new run-specific immutable
@@ -1158,8 +1224,10 @@ records the same plus expected/observed epoch, predecessor/high-water tuple, aff
 sequence gap, `predecessor_invalid|predecessor_unavailable|none`, and exact reconcile
 command. JSON, human reports, and the trusted CI summary render these objects.
 
-Only scheduled core/full runs publish remote cache or aggregate carriers; manual runs
-always upload their factual invocation bundle but skip shared cache/aggregate
+Only scheduled core/full runs own shared trend restore/sequence/high-water and publish
+remote cache or aggregate carriers. Manual core/full may restore one carrier for
+bounded diagnostics but always upload only their factual invocation bundle and skip
+shared sequence reservation, source append, high-water advance, cache and aggregate
 publication. Before upload, a bounded GitHub API inventory reads at most 100 metadata
 records/20 MiB in 60 seconds. Cache carriers are capped per repository at 14 artifacts
 and 7 GiB across seven days; aggregate carriers at 90 artifacts and 5760 MiB across
@@ -1167,7 +1235,7 @@ and 7 GiB across seven days; aggregate carriers at 90 artifacts and 5760 MiB acr
 bytes, publication is skipped with `artifact_upload_skipped_quota`; report/trend local
 truth remains valid and the summary names platform-owner cleanup.
 
-For scheduled/manual core and full, CI first retrieves prior
+For scheduled core and full, CI first retrieves prior
 `mutation-aggregate-v1-<workflow_run_id>-<run_attempt>` artifacts by monotonically
 decreasing tuple `(workflow_run_id, run_attempt)`. Restore lists at most 20 carriers,
 reads metadata for at most 20 MiB, downloads at most the first two same-epoch
@@ -1177,8 +1245,12 @@ checkpoint, complete retained hash chain, workflow/repository identity, configur
 epoch, and source-bundle digest validate. A second artifact with the same high-water
 and identical manifest digest is a duplicate carrier and may be used; otherwise a
 corrupt highest carrier starts a new `predecessor_invalid` epoch and lower tuples are
-not silently accepted. If no carrier exists because of schedule pause or artifact
-expiry, the run starts `predecessor_unavailable`. The restored aggregate seeds only
+not silently accepted. Each reviewed configuration epoch contains one immutable,
+initially unused genesis marker binding epoch/config digest,
+`allow_no_predecessor=true`, and `predecessor_tuple=null`. Only that marker permits
+the first checkpoint/high-water and first sequence. Any later missing carrier caused
+by pause, expiry, deletion, or epoch mismatch starts `predecessor_unavailable`; genesis
+never establishes a historical baseline or cross-epoch comparability. The restored aggregate seeds only
 the local trend sequence, never the report sequence. Before reserving a new trend
 sequence, the current `(workflow_run_id, run_attempt)` must be strictly greater than
 the validated predecessor carrier tuple. An older workflow rerun still publishes its
@@ -1189,8 +1261,12 @@ run uploads a new immutable rolling aggregate containing the bounded ledger,
 projection, high-water/checkpoint, its source bundle digest, and predecessor tuple;
 retention is 90 days and aggregate size is capped at 64 MiB. Nightly cadence keeps a
 recent carrier for records retained inside the aggregate. Every unavailable/invalid
-epoch requires an explicit `trade dev mutation reconcile --trend-epoch ...` operation
-to close its visible gap; later runs cannot silently heal it. Local 400-day retention
+epoch requires an explicit artifact-aware `trade dev mutation reconcile --trend-epoch
+... --carrier ...` operation to close its visible gap; later runs cannot silently heal
+it. The manual recovery workflow downloads and verifies one named carrier, dry-runs,
+requires environment approval, reapplies under the publication lock, and publishes a
+repair carrier only with a strictly newer workflow tuple. Local apply never uploads,
+and ordinary manual core/full never writes shared trend. Local 400-day retention
 is a cap, not a claim that GitHub guarantees storage for 400 days. Core/full no-overlap
 prevents concurrent aggregate writers; PR changed runs do not write this aggregate.
 
@@ -1255,15 +1331,19 @@ capacity/availability SLO, and a runner-readiness workflow. Its accepted evidenc
 a reviewed image digest plus three consecutive clean readiness jobs that prove label
 pickup within five minutes, unique ephemeral identity/destruction, cgroup ownership,
 kernel probes, no production mounts/secrets, and cleanup. Until that child change and
-mode capacity qualification pass, mutation execution schedules and PR execution are
-disabled; repository CI may run plan-only on ordinary GitHub-hosted runners and must
-not queue indefinitely on a nonexistent label.
+core/full mode capacity qualification pass, scheduled execution is disabled. Changed
+execution requires the same runner readiness plus one exact cold-cache changed smoke
+within its 150/600 limits; it does not require a nonexistent changed entry in the
+core/full capacity schema. Repository CI may run plan-only on ordinary GitHub-hosted
+runners and must not queue indefinitely on a nonexistent label.
 
 One GitHub Actions workflow then has three execution routes plus one
 evidence-validation job:
 
-- every route uses the repository's dedicated ephemeral ARC/VM scale-set profile
-  `runs-on: [self-hosted, linux, x64, ephemeral, trade-mutation-v1]`. One clean VM is
+- every execution route uses the repository's dedicated ephemeral ARC/VM scale-set
+  profile `runs-on: [self-hosted, linux, x64, ephemeral, trade-mutation-v1]`; hosted
+  plan-only routing before readiness uses the ordinary hosted label and never claims
+  this execution profile. One clean execution VM is
   destroyed after one job, has no production/data mounts or long-lived credentials,
   and delegates a fresh writable cgroup v2 subtree with `memory`, `pids`, and `cpu`
   controllers to the unprivileged runner user. Its immutable image enables Landlock
@@ -1275,7 +1355,8 @@ evidence-validation job:
   profile; ordinary persistent self-hosted and current GitHub-hosted runners are not
   assumed to satisfy the contract.
 - `pull_request`: checkout full enough history, set up Python/uv, run
-  `trade dev mutation changed --base $BASE_SHA`; job-level timeout is 15 minutes
+  `trade dev mutation changed --base $BASE_SHA`; remote cache restore is disabled and
+  the job-level timeout is 15 minutes
   around the 10-minute total controller budget. Its concurrency key is
   `mutation-pr-${{ github.repository }}-${{ github.event.pull_request.number }}` with
   `cancel-in-progress: true`; cancellation upload is best effort.
@@ -1306,17 +1387,22 @@ is different: a dependent `validate-evidence` job runs `if: always()`, downloads
 named artifact into a fresh directory, rejects extra/path-escaping members, recomputes
 all member/manifest digests and receipt/report/count/cleanup bindings without using an
 execution-workspace path, and fails on missing or invalid evidence. No local path is
-assumed to cross jobs. Regardless of validation success, that job appends the sole
-authoritative operator-facing `trade.mutation.ci-summary.v1` summary with
+assumed to cross jobs. When GitHub schedules it, the validation job appends the sole
+authoritative operator-facing `trade.mutation.ci-summary.v1`; whole-workflow
+cancellation before scheduling remains best effort. Valid downloaded bytes dominate,
+invalid downloaded bytes are `invalid`, absent bytes with exported artifact identity
+are `missing`, absent identity plus failed/cancelled/timed-out execution is
+`hard_loss`, and absent identity after success/skipped is `missing`. The summary carries
 `trusted_validation_status=valid|missing|invalid|hard_loss`, expected and actual
-artifact/manifest digest, artifact/run/workflow/attempt identity, original controller
-exit, verified outcome counts/score/budget flag when valid, closed error code, and
-exact remediation. The earlier execution summary is visibly labelled
+artifact/manifest digest, artifact/run/workflow/attempt identity,
+`controller_exit=0|1|2|null`, closed unavailable reason, verified outcome counts/
+score/budget only when valid, closed error code, and exact remediation. The earlier
+execution summary is visibly labelled
 `UNTRUSTED UNTIL validate-evidence`; it cannot be mistaken for the final trust
 decision. Mutation outcomes remain report-only. Evidence validation may be red on
 integrity failure, but this change does not configure it as a required branch check.
 
-Scheduled and manual core/full share concurrency key
+Scheduled and manual core/full plus the approved reconcile recovery route share concurrency key
 `mutation-long-${{ github.repository }}` with `cancel-in-progress: false`. Native GitHub
 concurrency guarantees at most one running and one pending member; a newer dispatch
 may supersede an older pending member even though it does not cancel the running job.
@@ -1332,7 +1418,9 @@ isolation-policy digests, Python and dependency lock identities, the exact
 `runner_capacity_identity` and separate serial/capacity `measurement_profile`s, and
 the measured planning/copy/baseline/per-mutant p50/p95/render/fsync/cleanup values and
 pass equations above. It records both qualification run/bundle digests, qualified UTC,
-expiry at no more than 30 days, worker/throughput/time/memory/disk headroom and
+the finite 512 MiB controller and 1024 MiB baseline bootstrap caps, bootstrap OOM and
+measured-controller evidence, expiry at no more than 30 days,
+worker/throughput/time/memory/disk headroom and
 `qualified: true|false`; review owns the checked-in file.
 Before mutation dependency setup, scheduled/manual core/full recompute every identity
 and freshness field. Missing, expired, false, mismatched, non-finite-memory, or
@@ -1352,6 +1440,7 @@ chooses a newest path. It then creates a new immutable directory with schema
 `trade.mutation.bundle.v1` containing:
 
 - the exact receipt bytes;
+- the complete supervisor-attestation journal;
 - the complete referenced report generation and manifest, or the exact fallback;
 - `validation.json` with schema `trade.mutation.bundle-validation.v1`, validator
   version, workflow/run identity, controller exit, receipt digest, evidence kind/root
@@ -1464,9 +1553,10 @@ import-closure tree and restores the target between work items.
 Atomicity is one root-hash-published run generation. Report sequence reservation
 precedes pointer publication; a separate core/full trend sequence drives
 source/tombstone reconciliation as a post-publication idempotent projection journaled
-in the supervisor receipt. A child write-only/controller-read-only guard channel and
-controller-private syscall-audit state are independently authenticated and jointly
-required. Timeout and cancellation name opaque handles and target full worker
+in the supervisor receipt. A child write-only/supervisor-read-only guard channel,
+supervisor-only write-protected attestation journal, and controller-private syscall-
+audit state are independently authenticated and jointly required. Timeout and
+cancellation name opaque handles and target full worker
 cgroups/process groups; the supervisor owns adopted descendants, every fallback and
 continued cleanup. Backpressure is the CPU-and-memory admission rule, finite queue,
 source/AST/dependency ceilings, detail budget, and cleanup reserve. Partial failure is
