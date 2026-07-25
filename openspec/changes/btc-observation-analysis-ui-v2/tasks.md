@@ -56,7 +56,7 @@ child changes after this design receives strict approval and user confirmation.
   Dataset refs, per-point PIT, field-level revision impact, runtime shutdown,
   owner cancellation/admission, full compatibility, empty state, payload
   limits, observability, and conditional external evidence.
-- [ ] 1.5 Resolve all P0 and material P1 findings, rerun the non-strict check, [validates:btc-ui.compatibility] [validates:btc-analysis.product-boundary] [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:review]
+- [x] 1.5 Resolve all P0 and material P1 findings, rerun the non-strict check, [validates:btc-ui.compatibility] [validates:btc-analysis.product-boundary] [validates:btc-ui.bff-boundary] [validates:btc-ui.temporal-coherence] [validation:review]
   record current digest-bound `design-review.toml`, and run
   `./trade dev design-check btc-observation-analysis-ui-v2 --strict`.
   Objective: obtain genuine design approval before any child implementation.
@@ -265,7 +265,7 @@ child changes after this design receives strict approval and user confirmation.
   child or this design, invalidate review digest and regain strict approval.
   Completion evidence: dependency audit records package/contracts and formal
   PIT prerequisites before Datasets/BFF/Web cutover.
-- [ ] 6.2 Review final handoff evidence and confirm this design change modified no production code, real data, [validates:btc-ui.compatibility] [validation:review]
+- [x] 6.2 Review final handoff evidence and confirm this design change modified no production code, real data, [validates:btc-ui.compatibility] [validation:review]
   schema, generated artifact or runtime behavior and record the approved handoff.
   Objective: close the design round without accidentally beginning
   implementation. Inputs: git diff/status, strict report, review consensus and
