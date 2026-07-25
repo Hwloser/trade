@@ -60,8 +60,9 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - denies network, process launch, and real-data paths with Linux Landlock/seccomp
     containment, transfers a seccomp listener over `SCM_RIGHTS`, brokers allowed
     opens with `openat2` plus descriptor injection, and requires independent
-    controller-owned syscall audit and supervisor-owned child guard verification,
-    including an explicit listener ownership handoff and supervisor-owned
+    supervisor-owned syscall audit and child guard verification, including an
+    explicit one-way listener ownership handoff whose sender endpoint is closed after
+    acknowledgement, and supervisor-owned
     freeze/drain/terminate/final-drain forced-close attestation after timeout/
     cancellation, before a mutant can be
     killed, survived, or truthfully timed out;
@@ -76,9 +77,10 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
     Exact equivalent exceptions remain selected visible records instead of being
     filtered from candidate algebra;
   - publishes deterministic JSON, Markdown, and HTML as one bounded atomic run
-    generation with closed status/count algebra, a manifest hash anchored by the
-    invocation receipt/current pointer, and an independent typed fallback if
-    publication itself fails;
+    candidate with closed status/count algebra. The supervisor owns every raw seccomp
+    listener and syscall-audit decision, confirms every spawned child and application
+    is cleaned up, seals its journal, then alone binds the candidate, receipt, and
+    attestation into the final generation/current pointer or a typed fallback;
   - commits cache outcomes only after report publication, keeps report publication
     sequence separate from core/full trend sequence, and derives bounded trend views
     from a hash-chained immutable trend-source ledger with explicit reconciliation;
@@ -92,9 +94,12 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
 - Add `config/mutation-testing.toml`, an initial unestablished baseline, and a
   location-precise equivalent-mutant exception registry. Add finite reviewed
   controller/baseline memory bootstrap caps, one durable create-only Git-ref
-  consumption receipt for each reviewed trend genesis marker, and an identity- and
-  freshness-bound CPU-and-concurrent-memory capacity qualification contract for
-  scheduled modes.
+  consumption receipt for each reviewed trend genesis marker, a recoverable
+  content-addressed genesis candidate uploaded/read back before that CAS, and an
+  identity- and freshness-bound CPU-and-concurrent-memory capacity contract used
+  identically by qualification and runtime. Each qualification executes exactly
+  `N=max(30,5*tuple_count)` stable identities serially and the same N at capacity
+  under one mode deadline and one outer timeout.
 - Add focused controller, selection, process-isolation, reporting, baseline, and CLI
   tests using temporary repositories and synthetic source.
 - Add optional locked mutation dependencies without changing the existing pytest
@@ -103,14 +108,19 @@ boundary, and keep mutation score advisory until a trustworthy history exists.
   - pull requests plan `changed` only when eligible production code changed and run
     it only after runner readiness plus an exact cold-cache changed smoke; changed
     mode never restores remote result cache;
-  - nightly runs may execute `core`, and weekly runs may execute `full`, only after
-    representative capacity qualification;
+  - cron-only scheduled routes may execute `core` and `full` only after exact
+    capacity qualification and are the only ordinary owners of shared carrier
+    credentials and cache/trend/genesis/aggregate authority;
   - capacity-qualified manual core/full runs remain factual diagnostics and never
-    advance shared trend sequence/high-water or publish shared cache/aggregate
-    carriers;
+    receive shared carrier credentials, invoke the carrier adapter, make remote
+    carrier calls, advance high-water, or publish shared cache/aggregate carriers;
   - all mutation outcomes are initially report-only, while an independent evidence
     validator fails on missing, malformed, unsafe, or receipt-unbound bundles;
-  - scheduled modes require a reviewed, unexpired capacity qualification and carry
+  - one credentialed carrier adapter outside the isolated application owns all shared
+    cache/aggregate/genesis/recovery artifact/ref/quota operations; ordinary factual
+    bundle upload/download remains a separate unprivileged standard artifact action
+    that grants no shared-carrier authority. Scheduled modes
+    require a reviewed, unexpired capacity qualification and carry
     trend history through validated immutable rolling aggregate artifacts rather than
     treating result cache as evidence. Only one reviewed genesis marker plus its
     durable compare-and-set consumption ref may establish the first no-predecessor
@@ -186,7 +196,7 @@ The main risks are runaway test processes, excessive enumeration, incorrect
 test-to-source mapping, native I/O escaping Python guards, false kills from
 infrastructure failures, and score gaming through broad exclusions. An
 invocation-wide supervisor/deadline, subreaper/cgroup process containment,
-Landlock plus brokered seccomp opens and independent syscall audit,
+Landlock plus supervisor-exclusive seccomp listener/brokered opens and syscall audit,
 source/AST/dependency/private-tree limits, bytecode-clean private source trees,
 target-filtered line coverage, closed
 operator/definition maps, generation-atomic output plus safe fallback, exact
@@ -195,7 +205,8 @@ close attestation in a supervisor-only write-protected journal, spawn-before-
 registration cleanup accounting, finite bootstrap memory caps, score-eligibility
 precedence, committed cache markers, separate report/trend sequence reservations and
 tombstones, invocation-kind-aware raw-evidence tombstones plus separately retained
-compact trend anchors, representative identity-bound capacity qualification, no
+compact trend anchors, exact identity-bound 2N capacity qualification and identical
+runtime dual-resource admission, formula-bound journal/disk reserves, no
 changed restore phase, scheduled-only shared trend ownership, reviewed genesis,
 bounded diagnosed remote restore and producer quotas with invalid-predecessor epochs
 and monotonic carriers, immutable cross-job CI bundles, explicit hard-loss summaries,
