@@ -34,8 +34,11 @@ Datasets-owned references SHALL be
 reserved and confirmed in the same owner-local transaction; Capture-owned
 closures SHALL be pre-reserved and then confirmed through the Datasets
 transaction's replayable outbox. A committed-but-unconfirmed reservation SHALL
-remain protected and reconcile idempotently. An uncommitted reservation MAY
-expire only under its owner policy. No part of this protocol SHALL require a
+remain protected and reconcile idempotently. A confirmation-deadline breach
+SHALL become `reconciliation_required` without releasing protection.
+Capture MAY release an uncommitted reservation only after an idempotent
+`ReferenceAborted` receipt binds the Datasets transaction identity and proves
+that no Dataset reference committed. No part of this protocol SHALL require a
 cross-Context transaction.
 
 #### Scenario: A DatasetVersion commit crashes before Capture confirmation
@@ -57,9 +60,10 @@ cross-Context transaction.
 
 - **WHEN** a build acquires upstream reservations but crashes before committing
   the DatasetVersion
-- **THEN** no formal reference becomes visible, and each owner may release its
-  unconfirmed reservation after the finite lease and reconciliation window
-  without affecting other retained references
+- **THEN** no formal reference becomes visible; recovery emits a
+  transaction-bound ReferenceAborted receipt before an upstream owner releases
+  that reservation, and an unknown outcome remains reconciliation-required and
+  protected without affecting other retained references
 
 ### Requirement: Datasets SHALL own quality, lineage, revisions and point-in-time resolution
 

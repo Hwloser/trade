@@ -38,6 +38,10 @@ Decision Support SHALL commit its case transition, reservation refs, audit
 entry and confirmation outbox in one owner-local transaction. Upstream owners
 SHALL confirm those reservations idempotently, and reconciliation SHALL recover
 a committed-but-unconfirmed case without creating a duplicate case or review.
+An overdue confirmation SHALL become `reconciliation_required` and keep its
+evidence protected. An upstream owner SHALL release a pending reservation only
+after a transaction-bound `ReferenceAborted` receipt proves that the case
+transition did not commit.
 Expiry, supersession or withdrawal SHALL release protection only through an
 explicit audited retirement command after no retained formal case requires the
 closure. This protocol SHALL NOT use a cross-Context transaction.
@@ -56,7 +60,9 @@ closure. This protocol SHALL NOT use a cross-Context transaction.
   evidence
 - **THEN** Decision Support does not make the case formally ready or accepted,
   records the typed refusal and permits bounded release of any other
-  unconfirmed reservation
+  unconfirmed reservation only after its owner receives the matching
+  ReferenceAborted receipt; an unknown outcome remains protected for
+  reconciliation
 
 #### Scenario: A case is retired after its evidence expires
 

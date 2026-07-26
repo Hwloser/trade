@@ -390,17 +390,20 @@ artifact.
 
 Formal Snapshot, StudyResult, DecisionCase, process and backup references
 reserve their transitive evidence closure before commit. A consumer pre-acquires
-finite owner-issued `EvidenceClosureReservationRef` values, commits its local
+owner-issued `EvidenceClosureReservationRef` values with a finite confirmation
+deadline, commits its local
 aggregate, reservation refs and confirmation outbox atomically, and confirms
-upstream protection through idempotent delivery; committed-but-unconfirmed
-references reconcile, while uncommitted leases expire under their owner policy.
-This is not a cross-Context transaction. Retention/GC closes new reservations
-that intersect an immutable target set, repeats its final reachability census
-under the same target-level fence and persists planned/prepared/deleted target
-state plus an atomic deletion receipt. This prevents a new differently
-identified proof closure from racing between census and unlink, and makes an
-absent or changed target without matching prepared evidence an integrity
-refusal rather than a successful delete.
+upstream protection through idempotent delivery. A missed deadline becomes
+`reconciliation_required` and continues blocking GC; it never implies abort.
+Release requires a `ReferenceAborted` or audited retirement receipt bound to
+the consumer transaction, while committed or unknown references remain
+protected. This is not a cross-Context transaction. Retention/GC closes new
+reservations that intersect an immutable target set, repeats its final
+reachability census under the same target-level fence and persists
+planned/prepared/deleted target state plus an atomic deletion receipt. This
+prevents a new differently identified proof closure from racing between census
+and unlink, and makes an absent or changed target without matching prepared
+evidence an integrity refusal rather than a successful delete.
 
 Bootstrap owns one shutdown attempt and one monotonic deadline across CLI, Web,
 workers and schedulers. The order is: reject new ingress and schedules; settle
@@ -1402,6 +1405,7 @@ tooling. The cross-cutting test inventory is:
     fixture root unchanged.
 17. Rights/retention fixture: SourceManifest processor/region/license
     rejection, revocation tombstone, legal hold, durable reference reservation,
+    overdue-confirmation reconciliation, transaction-bound abort receipt,
     intersecting-closure target fence, crash-safe deletion receipt and
     reachable-lineage GC guard.
 18. Capture conformance fixture: trusted passing adapter receipt identity,
@@ -1476,7 +1480,7 @@ is proposed; it is not a current implementation dependency.
 | Process coordination becomes a hidden global manager | High | one process module per named flow, durable state schema and context commands only; Processes owner. |
 | Observatory retains a second authority or direct artifact-read path | High | Datasets owns catalog/release/PIT projection and manifest-verified reads, Studies owns research facts, Interfaces owns only BFF serialization/cache views; Observatory file matrix and query-port tests; Datasets/Studies/Interfaces owners. |
 | Release bridge advances two authorities or crashes between release and legacy pointer | High | generation-stamped Datasets authority, pointer materialization journal, startup reconciliation and dual-reader checks; Datasets owner. |
-| Unbounded immutable retention exhausts storage or GC races a new reference | Critical | retention classes, legal holds, durable evidence-closure reservation, target-level intersecting fence/final census, crash-atomic deletion receipt and dry-run fixture; Platform/Datasets/Capture owners. |
+| Unbounded immutable retention exhausts storage or GC races a new reference | Critical | retention classes, legal holds, fail-closed evidence-closure reservation, confirmation-deadline reconciliation, transaction-bound abort/retirement receipts, target-level intersecting fence/final census, crash-atomic deletion receipt and dry-run fixture; Platform/Datasets/Capture owners. |
 | Restore claim activates corrupt, inconsistent or operationally obsolete data | Critical | consistency-cut SQLite/WAL/artifact/delivery watermarks, measured RPO/RTO, safe archive validation, manifest/SHA-256 staged restore, ordered owner-first restore, writer fence, generation-CAS activation journal, health window/rebind and append-only receipt; Platform Backup owner. |
 | C++ binding collision or native mutation bypasses a Context boundary | Medium | `_trade_native` namespace, port capability catalog, no-persistence guard and differential test; engine child owner. |
 | Existing PIT baseline remains permissive | Critical | dedicated child P0 gate before formal Study migration; missing required clocks block formal result. |
@@ -1527,7 +1531,9 @@ Every child proposal must include:
   when a child handles external data or semantic derivation;
 - a `MigrationReconciliationManifest`, mixed-version/leader plan, evidence
   reservation/GC fence and consistency-cut staged backup restore rehearsal with
-  measured RPO/RTO when a child changes durable ownership;
+  measured RPO/RTO when a child changes durable ownership; reservation timeout
+  must remain fail-closed until a consumer-transaction-bound abort or retirement
+  receipt proves release is safe;
 - a review worktree six-role consensus before implementation and before merge.
 
 The architecture change itself is complete only after its deterministic design

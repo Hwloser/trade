@@ -139,15 +139,32 @@ actor and recovery location where applicable.
 
 Every retained or newly created formal reference SHALL first acquire a durable
 reservation over its complete transitive evidence closure and SHALL confirm or
-release that reservation in the owning transaction. A GC plan SHALL bind an
-immutable sorted target set and target-set generation, then atomically close
-new reservations that intersect any target before its final reachability
-census. The final census and per-target delete authorization SHALL share the
-same target-level fence generation. A reservation for any different proof,
-snapshot, StudyResult, DecisionCase, process, backup or legal hold whose closure
-intersects a target SHALL lose the fence compare-and-swap or force that target
-out of the plan; closure identity alone SHALL NOT make intersecting evidence
-independent.
+release that reservation through an owner-authorized receipt. A reservation
+SHALL bind reservation ID, consumer context and reference identity, closure
+digest, owner generation, confirmation deadline, correlation/idempotency
+identity and state `pending`, `confirmed`, `reconciliation_required` or
+`released`. Reaching the confirmation deadline SHALL move `pending` to
+`reconciliation_required`, retain the GC block and raise owner-visible recovery;
+it SHALL NOT auto-release evidence because the consumer commit may have
+succeeded before its confirmation outbox was delivered.
+
+Confirmation SHALL require a `ReferenceCommitted` receipt bound to the consumer
+transaction and outbox identity. Release SHALL require a `ReferenceAborted` or
+audited retirement receipt bound to the same reservation and consumer-local
+transaction evidence. If the consumer is unavailable or reports `unknown`, the
+reservation SHALL remain fail-closed and visible for reconciliation. A Process
+Manager MAY coordinate status requests and receipts, but neither Platform nor
+the evidence owner SHALL infer consumer commit state from lease age, process
+liveness or a missing event.
+
+A GC plan SHALL bind an immutable sorted target set and target-set generation,
+then atomically close new reservations that intersect any target before its
+final reachability census. The final census and per-target delete authorization
+SHALL share the same target-level fence generation. A reservation for any
+different proof, snapshot, StudyResult, DecisionCase, process, backup or legal
+hold whose closure intersects a target SHALL lose the fence compare-and-swap or
+force that target out of the plan; closure identity alone SHALL NOT make
+intersecting evidence independent.
 
 For each target, GC SHALL persist `planned -> prepared -> deleted` state before
 unlinking bytes. The immutable deletion receipt and `prepared -> deleted`
@@ -175,6 +192,25 @@ as successful without the matching prepared target identity and digest.
   prevents target preparation or the closed GC target rejects the reservation;
   GC repeats its final census under the same generation and cannot unlink the
   target while the concurrent reference can become formal
+
+#### Scenario: Confirmation delivery exceeds its deadline
+
+- **WHEN** a consumer has acquired a reservation and its confirmation deadline
+  passes before the evidence owner receives either a committed or aborted
+  receipt
+- **THEN** the owner records `reconciliation_required`, continues blocking GC,
+  requests consumer status through the Process contract and never treats age,
+  process death or missing delivery as proof that the formal reference was not
+  committed
+
+#### Scenario: An abandoned reservation is released
+
+- **WHEN** reconciliation receives a `ReferenceAborted` receipt that binds the
+  reservation, consumer transaction identity and durable evidence that no
+  formal reference committed
+- **THEN** the evidence owner releases exactly that reservation idempotently and
+  leaves every shared, confirmed, unknown or independently retained closure
+  protected
 
 #### Scenario: The runtime crashes around physical deletion
 

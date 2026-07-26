@@ -121,8 +121,9 @@
   rejection, consistency-cut mismatch, measured restore RPO/RTO,
   activation/rebind rollback, failed partial construction, repeated stop, stuck
   child-process TERM/KILL escalation, executor/heartbeat drain,
-  database-close ordering, target-fence/delete crash recovery and isolated plus
-  combined 1x/10x backlog tests. Rollback:
+  database-close ordering, overdue reservation reconciliation,
+  transaction-bound abort/retirement release, target-fence/delete crash recovery
+  and isolated plus combined 1x/10x backlog tests. Rollback:
   select the legacy EventBus/TradeDB construction bridge without deleting
   outbox, receipt or restore evidence. Completion evidence: no Context child
   has to invent an atomic outbox, command handoff, runtime container or
@@ -210,6 +211,7 @@
   rebuild, immutable build input, policy/clock/revision/reference tamper,
   manifest-verified formal and compatibility reads, deterministic and
   provider-backed derivation receipts, reservation/confirmation crash retry,
+  overdue-confirmation fail-closed reconciliation, transaction-bound abort,
   physical query-budget, pointer
   reconciliation and rollback fixtures.
   Rollback: restore verified prior release pointer and retain the newer
@@ -228,8 +230,9 @@
   Outputs: Study lifecycle migration plan, evidence-closure reservation
   integration and golden fixture matrix. Affected contracts: StudyResultRef,
   reservation/confirmation receipts and Decision Support read inputs.
-  Validation: PIT proof rejection, raw-input rejection, reservation crash/retry
-  before StudyResultRef commit, deterministic rerun, revision
+  Validation: PIT proof rejection, raw-input rejection, reservation crash/retry,
+  overdue confirmation and transaction-bound abort before StudyResultRef commit,
+  deterministic rerun, revision
   staleness and insufficient-data tests. Rollback: preserve prior research
   query path and expose new outputs as unpublished/stale. Completion evidence:
   child proposal declares all metrics, horizon and unavailable semantics.
@@ -249,9 +252,10 @@
   plan. Affected contracts: DecisionCase views, reservation refs, reviews,
   overrides, non-executable intents and accepted/rejected/expired/stale
   compatibility states. Validation: immutable evidence rejection, refusal and
-  committed-but-unconfirmed reservation crash/retry, shared-evidence retirement,
-  stale/revision propagation, append-only override, expiry, GET read-only,
-  audit correlation and unsupported-execution tests.
+  committed-but-unconfirmed reservation crash/retry, overdue-confirmation
+  fail-closed reconciliation, transaction-bound abort, shared-evidence
+  retirement, stale/revision propagation, append-only override, expiry, GET
+  read-only, audit correlation and unsupported-execution tests.
   Rollback: select the legacy recommendation/action read adapter, stop new case
   admission and retain append-only decision/audit facts. Completion evidence:
   no child treats Decision Support as Studies, a Web page, a global service or
@@ -269,6 +273,7 @@
   reconciliation manifest, artifact digest, consistency-cut staged verified
   backup restore, measured RPO/RTO, writer-fence/activate/rebind/health-window
   rollback, protected-reference reservation, intersecting-closure GC race,
+  overdue-confirmation reconciliation, transaction-bound abort/retirement,
   prepare/unlink crash, dry-run/run receipts and projection rebuild tests.
   Rollback:
   restore previous generation or verified backup snapshot without deleting
