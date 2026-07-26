@@ -81,10 +81,18 @@ knowledge-mode/effective-cut, revision/retraction-mapping,
 clock-confidence/eligibility and snapshot-content identities. A required
 missing temporal clock SHALL fail closed for formal point-in-time resolution.
 
+The formal PIT child SHALL publish one canonical clock enum and a versioned
+knowledge-mode eligibility matrix covering event, publication, available,
+received, fetched, observed, first-seen and revision clocks. It SHALL declare
+whether every source field is a distinct clock or a documented alias and SHALL
+bind timezone, precision/confidence and fallback prohibition. A clock may not
+be substituted merely because another collector clock exists.
+
 #### Scenario: A row has no required availability clock
 
 - **WHEN** a formal market-available or installation-observed snapshot requires
-  a row's availability or fetched time and the relevant time is absent
+  a row's clock selected by the canonical knowledge-mode eligibility matrix and
+  that required clock is absent
 - **THEN** snapshot resolution reports an explicit unavailable or
   PIT-not-proven outcome and does not silently treat the row as visible
 
@@ -95,6 +103,16 @@ missing temporal clock SHALL fail closed for formal point-in-time resolution.
 - **THEN** the configured reconciliation policy records a QualityReport and
   lineage evidence, chooses a documented canonical outcome only when policy
   permits it, or quarantines the candidate without advancing a release pointer
+
+#### Scenario: Multi-source identities or finality conflict
+
+- **WHEN** two source-local identities collide after canonicalization, sources
+  disagree on finality, or simultaneous supersession chains target the same
+  logical observation
+- **THEN** Datasets preserves every candidate source/revision/finality identity
+  in lineage, applies the pinned reconciliation policy deterministically, and
+  quarantines or returns an explicit conflict when that policy cannot prove one
+  outcome; it never collapses the candidates by arrival order or moving latest
 
 ### Requirement: Quality and source finality SHALL have a total publication disposition
 
@@ -139,8 +157,9 @@ using a tested revision
 mapping. `as_known` SHALL select only facts visible at the effective knowledge
 cut; `latest_restated` SHALL create a distinct, explicitly non-PIT
 transformation using mapped revisions/retractions and SHALL NOT merely label an
-`as_known` selection. Missing required event, publication, available, received
-or revision clocks SHALL return explicit `PIT_NOT_PROVEN` or unavailable
+`as_known` selection. Missing required event, publication, available, received,
+fetched, observed, first-seen or revision clocks selected by the canonical
+eligibility matrix SHALL return explicit `PIT_NOT_PROVEN` or unavailable
 outcomes. The formal-PIT-and-revision-semantics child change SHALL complete its
 golden fixtures and release gate before any formal DatasetSnapshotRef or
 StudyRun migration.

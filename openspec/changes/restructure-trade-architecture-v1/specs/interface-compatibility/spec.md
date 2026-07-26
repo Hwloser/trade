@@ -170,6 +170,17 @@ create a DecisionCase or move a lifecycle pointer. Previously confirmed data
 MAY remain visible while revalidating only when its immutable identity and
 stale state remain visible.
 
+Before the batched BTC BFF is selected, the child SHALL emit a BTC-specific
+`CapacityEnvelope` and the cumulative `CombinedCapacityEnvelope` for the exact
+deployment topology. Evidence SHALL cover four-panel cold and warm requests,
+partial failure, a slow owner, concurrent clients, parallel-query/deadline
+cancellation, scan files/bytes, result bytes, cache/coalescing behavior and peak
+CPU/memory/file-descriptor/connection/worker usage. The combined run SHALL
+include applicable Capture, replay, Dataset/Study query, Process/outbox and
+existing SSE workloads and prove finite admission shedding and fair recovery.
+An isolated or cumulative budget failure SHALL prevent BFF selection even when
+functional and bounded-fan-out tests pass.
+
 #### Scenario: Market and research panels resolve different snapshots
 
 - **WHEN** a workspace response would combine a market panel and StudyResult
@@ -186,6 +197,15 @@ stale state remain visible.
 - **THEN** the workspace preserves confirmed independent panels, renders the
   affected panel's typed state and evidence/recovery link, and performs no
   repair or mutation during the read
+
+#### Scenario: The BTC BFF passes functional tests but exceeds combined capacity
+
+- **WHEN** the workspace returns contract-valid panels in isolation but its
+  cumulative topology exceeds a declared query, scan, runner-resource or
+  recovery-fairness budget while Capture, replay or SSE load coexists
+- **THEN** selection remains on the granular endpoints, the failed
+  `CapacityEnvelope` or `CombinedCapacityEnvelope` is retained with the observed
+  limit, and the UI child cannot treat functional parity as production readiness
 
 #### Scenario: The BTC UI child is rolled back
 

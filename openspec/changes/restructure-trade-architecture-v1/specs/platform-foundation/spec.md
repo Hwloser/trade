@@ -12,6 +12,11 @@ record and outbox record; it SHALL NOT provide a business repository or a
 cross-context transaction. The foundation SHALL also provide durable command
 ingress idempotency, consumer inbox/receipt deduplication, lease/ack recovery,
 ordered delivery policy, bounded retry and a dead-letter/redrive record.
+Command ingress SHALL scope an idempotency claim by trusted actor/tenant
+authority and command kind and SHALL bind the canonical command digest. The
+same scoped key and digest SHALL return the existing receipt; the same scoped
+key with a different digest SHALL fail with a stable conflict and SHALL create
+no second owner transaction, Process generation or context command.
 
 #### Scenario: A process dies after a context transaction commits
 
@@ -29,6 +34,14 @@ ordered delivery policy, bounded retry and a dead-letter/redrive record.
 - **THEN** Platform records a bounded dead-letter entry with correlation,
   causation, payload digest and failure reason, requires an audited redrive
   command, and never drops or silently reorders the envelope
+
+#### Scenario: Concurrent ingress reuses a key for different command content
+
+- **WHEN** two requests concurrently claim one trusted actor scope, command kind
+  and idempotency key with different canonical command digests
+- **THEN** only one digest may own the durable claim, the conflicting request
+  returns the stable idempotency-conflict receipt or error, and no second owner
+  transaction, Process generation or context command is created
 
 ### Requirement: Ordered delivery SHALL use a durable OrderingContract
 

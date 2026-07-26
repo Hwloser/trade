@@ -61,8 +61,8 @@
 
 ## 2. Foundational Prerequisites for Child Changes
 
-- [ ] 2.1 Prepare `architecture-guardrails-and-baselines` as an independent [validates:architecture.boundaries] [validates:dependency.guardrails] [validation:test]
-  child OpenSpec change. Objective: define static import guard, contract type
+- [x] 2.1 Verify the implemented and merged `architecture-guardrails-and-baselines` prerequisite. [validates:architecture.boundaries] [validates:dependency.guardrails] [validation:test]
+  Objective: confirm its static import guard, contract type
   leakage guard, DB-owner guard and baseline inventories before any module
   extraction. Inputs: dependency graph, current imports, table inventory, root
   CLI, FastAPI registry, React/SDK/notebook consumers and current OpenAPI
@@ -76,13 +76,15 @@
   and DB owners; registry/golden fixtures account for all modes and fail rather
   than emit an empty OpenAPI snapshot. Rollback: remove only guardrail/baseline
   additions if invalid; do not alter source ownership or interface behavior.
-  Completion evidence: each rule and surface maps to a current path, fixture and
-  baseline generation consumed by the later compatibility child.
+  Completion evidence: merged baseline/guard implementation at repository
+  baseline `4fa6113` maps each rule and surface to a current path, fixture and
+  immutable generation consumed by the later compatibility child; this parent
+  does not reimplement or rerun that child.
   [validates:architecture.boundaries]
   [validates:dependency.guardrails] [validation:test]
 
-- [ ] 2.2 Prepare `kernel-and-public-contracts` as an independent [validates:architecture.boundaries] [validates:processes.recovery] [validates:interfaces.compatibility] [validation:test]
-  prerequisite child OpenSpec change. Objective: establish framework-free IDs,
+- [ ] 2.2 Strictly approve and implement `kernel-and-public-contracts` as the next independent prerequisite child. [validates:architecture.boundaries] [validates:processes.recovery] [validates:interfaces.compatibility] [validation:test]
+  Objective: establish framework-free IDs,
   envelope/command/query DTOs, immutable refs/policy identities, trusted
   ActorContext, OperationReceipt, ProcessView, ErrorEnvelope and explicit
   status taxonomy before Platform or interface extraction consumes them.
@@ -94,7 +96,9 @@
   unavailable distinction and legacy snapshot tests. Rollback: stop new
   consumers and retain legacy DTO/import paths. Completion evidence: Platform
   can consume public DTOs without introducing a Context repository or framework
-  type. [validates:architecture.boundaries] [validates:processes.recovery]
+  type. Current status: governed design exists and its non-strict check passes;
+  six-role child review, current strict approval and all implementation tasks
+  remain pending. [validates:architecture.boundaries] [validates:processes.recovery]
   [validates:interfaces.compatibility] [validation:test]
 
 - [ ] 2.3 Prepare `platform-persistence-events-and-bootstrap-foundation` as [validates:platform.foundation] [validates:processes.recovery] [validates:migration.governance] [validation:test]
@@ -116,7 +120,9 @@
   migration capability, handler selector, runtime composition, startup-cleanup
   and shutdown receipts.
   Validation:
-  crash-after-commit, duplicate ingress, inbox dedup, lease recovery, DLQ,
+  crash-after-commit, duplicate ingress, same scoped idempotency key with a
+  different canonical command digest returning a stable conflict with zero
+  second owner transaction, inbox dedup, lease recovery, DLQ,
   N+1-before-N ordering gap, mixed-binary fence, staged corrupted-backup
   rejection, consistency-cut mismatch, measured restore RPO/RTO,
   activation/rebind rollback, failed partial construction, repeated stop, stuck
@@ -186,7 +192,11 @@
   drift, rights
   revocation through retained lineage, absent publication time, quarantined
   access/revalidation, commit crash and 1x/10x admission tests defined in the
-  child. Rollback: previous capture adapter and immutable prior artifacts.
+  child. Any L2 profile additionally fixes depth, updates/second,
+  snapshot-plus-delta burst, segment rotation, buffer/uncommitted bytes and
+  checkpoint-lag workloads; any third-party/untrusted plugin additionally proves
+  process/network/filesystem/quota/credential/process-tree crash containment.
+  Rollback: previous capture adapter and immutable prior artifacts.
   Completion evidence: child change has an owned migration/rollback design,
   policy digest, identity-bound passing conformance receipt, explicitly
   persisted quota/circuit/Retry-After evidence and code worktree plan.
@@ -207,8 +217,12 @@
   DatasetVersionRef, DatasetSnapshotRef, evidence-closure reservation,
   quality/PIT query and DerivationReceipt. Validation: all nine quality
   passed/warned/blocked by provisional/final/retracted pairs, lineage, source
-  reconciliation, catalog
-  rebuild, immutable build input, policy/clock/revision/reference tamper,
+  reconciliation, source-local identity collision, conflicting finality and
+  simultaneous supersession-chain goldens that preserve every candidate
+  identity in lineage, catalog rebuild, immutable build input,
+  policy/clock/revision/reference tamper, canonical clock-enum/knowledge-mode
+  eligibility including explicit fetched/received/observed/first-seen
+  alias-or-distinct rules,
   manifest-verified formal and compatibility reads, deterministic and
   provider-backed derivation receipts, reservation/confirmation crash retry,
   overdue-confirmation fail-closed reconciliation, transaction-bound abort,
@@ -349,7 +363,7 @@
   [validates:processes.recovery]
   [validates:interfaces.compatibility] [validation:test]
 
-- [ ] 4.4 Prepare `btc-observation-analysis-ui-v1` as an independent child [validates:interfaces.compatibility] [validates:datasets.products] [validates:studies.reproducibility] [validation:test]
+- [ ] 4.4 Prepare `btc-observation-analysis-ui-v1` as an independent child [validates:interfaces.compatibility] [validates:datasets.products] [validates:studies.reproducibility] [validates:platform.foundation] [validation:test]
   after compatibility baselines and Dataset/Study query contracts. Objective:
   reorganize the existing BTC Observatory into Market, Quality, Research and
   Lineage work views without creating a business Context or changing old
@@ -361,14 +375,20 @@
   deep links, granular BTC routes, snapshot identity, typed panel states and
   workspace cache/ETag metadata. Validation: disabled/error/ready capability,
   URL restore, old/new payload goldens, snapshot mismatch, partial/stale panel,
-  decimal precision, bounded fan-out, keyboard/ARIA, desktop/mobile screenshot,
-  no-overlap and chart nonblank pixel tests. Rollback: select the current
+  decimal precision, bounded fan-out, a BTC-specific `CapacityEnvelope` for
+  four-panel cold/warm cache, partial failure, slow owner, concurrent clients,
+  scan/deadline/coalescing/peak-resource behavior, and the cumulative
+  `CombinedCapacityEnvelope` with Capture/replay/Process/outbox/SSE coexistence
+  and fair recovery, keyboard/ARIA, desktop/mobile screenshot, no-overlap and
+  chart nonblank pixel tests. Either capacity failure blocks selection.
+  Rollback: select the current
   four-lens page and granular endpoints while preserving URL state and immutable
   evidence. Completion evidence: every visible metric names source/ref and
   unavailable state; no UI/BFF query performs capture, repair, publication,
   Study execution or Decision transition.
   [validates:interfaces.compatibility] [validates:datasets.products]
-  [validates:studies.reproducibility] [validation:test]
+  [validates:studies.reproducibility] [validates:platform.foundation]
+  [validation:test]
 
 - [ ] 4.5 Prepare `python-package-and-web-layout` as an independent child [validates:architecture.boundaries] [validates:dependency.guardrails] [validates:interfaces.compatibility] [validation:test]
   only after owner boundaries and interface adapters are selected. Objective:

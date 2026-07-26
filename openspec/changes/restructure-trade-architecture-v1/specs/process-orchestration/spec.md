@@ -45,6 +45,12 @@ workflow service.
 Every command ingress SHALL create or return an `OperationReceipt` containing
 an operation ID, `ActorContext`, correlation/causation IDs, idempotency key,
 accepted command digest, state, reason code and process linkage where relevant.
+The idempotency claim SHALL be scoped by trusted actor/tenant authority and
+command kind and SHALL bind the canonical command digest. Reuse of the same
+scoped key MAY return the existing receipt only when that digest matches. A
+different digest SHALL return a stable `IDEMPOTENCY_CONFLICT` or equivalent
+versioned reason, SHALL NOT reveal either raw payload, and SHALL start no second
+owner transaction or Process generation.
 Platform Events SHALL persist an outbox envelope, consumer inbox claim,
 delivery lease, acknowledgement, attempt history, ordering key, payload-size
 limit, deadline and redrive/dead-letter state. A `ProcessView` SHALL expose
@@ -69,6 +75,16 @@ successful, empty or healthy state.
 - **THEN** command ingress returns the existing OperationReceipt or ProcessView
   linkage, creates no second owner transaction, and records the duplicate
   attempt without leaking credentials or raw payload content
+
+#### Scenario: An idempotency key is reused for a different command
+
+- **WHEN** two concurrent or retried ingress requests use the same trusted actor
+  scope, command kind and idempotency key but have different canonical command
+  digests
+- **THEN** at most the first matching claim may be accepted, the other request
+  returns the stable idempotency-conflict reason linked to the original
+  operation, and no second owner transaction, Process generation or context
+  command is created
 
 #### Scenario: A slow consumer causes delivery backlog
 

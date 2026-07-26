@@ -137,6 +137,11 @@ change:
   deferred.
 - Stream/L2 and remote worker providers use the same Capture contracts but need
   a separate capacity and storage sizing proposal before production activation.
+  An L2 proposal must bind depth, updates per second, snapshot-plus-delta burst,
+  segment rotation, buffered/uncommitted bytes and checkpoint-lag workloads.
+  A third-party or otherwise untrusted provider/plugin must additionally bind an
+  execution trust class and reviewed process, network-egress, filesystem,
+  resource-quota and crash-containment policy before admission.
 - The registered FastAPI table, not generated OpenAPI alone, is current route
   evidence until the `PredictRequest` schema defect is repaired. The child must
   reconcile both sources and representative payload goldens before extraction.
@@ -338,6 +343,15 @@ benchmark, validation window and feature/label definitions; a result records
 coverage, sample count, uncertainty, calibration state and explicit unavailable
 or insufficient-data outcome rather than inventing a numeric fallback.
 
+The formal PIT child owns one canonical clock enum and a per-knowledge-mode
+eligibility matrix for event, publication, available, received, fetched,
+observed, first-seen and revision time. It explicitly declares which clocks are
+distinct and which source-specific fields are aliases; no child may silently
+substitute one clock for another. Multi-source reconciliation preserves every
+candidate source/revision identity in lineage and has golden cases for
+source-local identity collisions, conflicting finality and concurrent
+supersession chains.
+
 ### External-event data safety
 
 Capture validates every external interaction against a versioned SourceManifest
@@ -372,10 +386,13 @@ silent formal release.
 
 Every process has a durable idempotency key and resumes from its latest
 committed step after crash. Duplicate command delivery returns the existing
-receipt/process result. Outbox records are committed atomically with the
-context state transition; delivery can repeat, so event consumers are
-idempotent. Delivery has an inbox receipt, lease, acknowledgement, bounded
-attempt policy, backlog age/count/byte visibility and audited DLQ/redrive.
+receipt/process result only when actor scope, command kind and canonical command
+digest match. Reuse of the same scoped key with a different command digest
+returns a stable conflict without starting a second owner transaction. Outbox
+records are committed atomically with the context state transition; delivery
+can repeat, so event consumers are idempotent. Delivery has an inbox receipt,
+lease, acknowledgement, bounded attempt policy, backlog age/count/byte
+visibility and audited DLQ/redrive.
 Capture reconciliation classifies prepared/orphaned/corrupt artifacts after
 crash. Ordered deliveries retain scope/sequence/consumer expected-sequence
 evidence and do not silently apply `N+1` before `N`. Backup restore first
@@ -1270,6 +1287,15 @@ it never reads tables/parquet, computes formal metrics, fetches providers,
 publishes data or runs a Study. Existing granular endpoints remain supported
 and are used as rollback until the workspace golden contract proves parity.
 
+The BTC child cannot select this BFF on bounded-fan-out unit evidence alone. It
+must emit a BTC-specific `CapacityEnvelope` and the cumulative
+`CombinedCapacityEnvelope` for the exact selected topology. The fixtures cover
+all four panels under cold and warm cache, partial failure, a slow owner,
+concurrent clients, scan files/bytes, parallel-query and deadline-cancellation
+counts, cache/coalescing hits, peak runner resources and fair recovery while
+Capture, replay and existing SSE load coexist. A failed isolated or cumulative
+budget blocks BFF selection and keeps the granular endpoints authoritative.
+
 The UI explicitly distinguishes `loading`, `empty`, `partial`, `stale`,
 `unavailable`, `quarantined`, `blocked`, `failed`, `unknown` and
 `not_observed`. A previously rendered snapshot may remain visible only with a
@@ -1421,16 +1447,16 @@ tooling. The cross-cutting test inventory is:
 |---|---|---|---|
 | 1 | `architecture-guardrails-and-baselines` | Existing approved prerequisite: import/DB-owner/read-only guards and machine-readable package, native, table, artifact, pointer and interface inventory in `architecture-baseline.toml`. Freeze CLI help/parse/exit, both 72/81 route modes, golden payload/SSE signatures, notebook/import consumers and the OpenAPI defect before extraction; this baseline step performs no interface delegation. | Revert only guard/test/baseline additions; no data format or interface implementation change. |
 | 2 | `kernel-and-public-contracts` | Existing governed prerequisite: introduce only justified Kernel and versioned refs/DTOs, including trusted ActorContext, OperationReceipt, ProcessView, ErrorEnvelope and policy references, with compatibility imports/serialization/status-taxonomy tests. | Stop new consumers; keep existing types/paths. |
-| 3 | `platform-persistence-events-and-bootstrap-foundation` | Establish transaction/outbox implementation, command ingress, inbox/lease/ack/DLQ, OrderingContract, generic handler selector, EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator, CapacityEnvelope/CombinedCapacityEnvelope, reference-reservation/GC fence primitives, consistency-cut RPO/RTO restore and the one Bootstrap lifecycle owner, including bounded startup cleanup and child/executor/SSE/database shutdown. | Disable the new Platform adapter, retain EventBus/TradeDB/Web-resource compatibility bridges and all delivery/shutdown/restore records. |
+| 3 | `platform-persistence-events-and-bootstrap-foundation` | Establish transaction/outbox implementation, command ingress with scoped idempotency-key/command-digest conflict refusal, inbox/lease/ack/DLQ, OrderingContract, generic handler selector, EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator, CapacityEnvelope/CombinedCapacityEnvelope, reference-reservation/GC fence primitives, consistency-cut RPO/RTO restore and the one Bootstrap lifecycle owner, including bounded startup cleanup and child/executor/SSE/database shutdown. | Disable the new Platform adapter, retain EventBus/TradeDB/Web-resource compatibility bridges and all delivery/shutdown/restore records. |
 | 4 | `formal-pit-and-revision-semantics` | Existing governed prerequisite under separate approval: correct fail-closed clock selection and actual as-known/latest-restated mapping using current PIT code and goldens. Formal adoption remains blocked until that child reaches strict approval and implementation evidence. | Retain existing reader for non-formal compatibility views; block formal release rather than publish an unproven snapshot. |
-| 5 | `capture-boundary` | Extract a pilot SourceManifest rights/temporal/admission policy, trusted adapter conformance receipt, shared quota/circuit state, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine/revalidation and rights-restriction propagation behavior. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
-| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy, total quality-by-finality disposition and Datasets catalog/PIT projection, with QueryBudget, evidence-closure reservation/confirmation, manifest-verified readers and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
+| 5 | `capture-boundary` | Extract a pilot SourceManifest rights/temporal/admission policy, trusted adapter conformance receipt, shared quota/circuit state, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine/revalidation and rights-restriction propagation behavior. A future L2 or untrusted-plugin profile must first add its explicit workload and isolation policy. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
+| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy, total quality-by-finality disposition and Datasets catalog/PIT projection, with canonical clock eligibility, multi-source conflict goldens, QueryBudget, evidence-closure reservation/confirmation, manifest-verified readers and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
 | 7 | `study-boundary` | Move one registered Study to proven-SnapshotRef-only input, retention reservation/confirmation, EvidenceGap declaration and deterministic validation/result receipts. | Preserve legacy research query compatibility; expose new result as unpublished/stale if necessary. |
 | 8 | `decision-support-boundary` | Classify and migrate one recommendation/causal/action slice into DecisionCase, Review, Rationale, Override, Expiry and non-executable PortfolioIntent with immutable Dataset/Study evidence, evidence-closure reservation/confirmation and append-only audit. | Stop new case admission and select legacy read adapter; retain all audit facts and confirmed evidence protection. |
 | 9 | `process-manager-boundary` | Introduce selected refresh/evidence-gap/revision/rights-restriction and decision-staleness flows using the proven Platform foundation and Context contracts; Process state never writes Context aggregates. Prove symmetric generation-fenced legacy/Process handler selection with zero losing-owner work before the selector CAS. | Reverse the same selector state machine to the legacy handler and replay pending events only after lease settlement; retain both handler audit trails. |
 | 10 | `operational-sli-slo-alert-runbook-matrix` | Create the versioned signal/SLI/SLO/threshold/owner/escalation/runbook matrix with synthetic-alert and authorized-recovery evidence before any production cutover. | Disable only the new alert/routing adapter; retain status and receipts. |
 | 11 | `cli-http-sdk-compatibility` | Consume the already frozen interface baseline and operational evidence, repair the `/predict` OpenAPI blocker, then delegate selected CLI/HTTP/SSE/SDK/notebook routes through a complete mutation receipt/recovery ledger, bounded BFF/SSE hub, ProcessView and RetentionView. It does not re-own baseline discovery or delegate before required Process/Context handles and cutover runbooks exist. | Re-enable legacy adapter path; retain payload/error aliases and the guardrails-owned registry baseline. |
-| 12 | `btc-observation-analysis-ui-v1` | Compose one evidence-bound BTC Market/Quality/Research/Lineage workspace from Datasets/Studies queries, preserve granular routes/deep links/capability gates and prove responsive/accessibility/canvas/capacity goldens. | Select the current four-lens page and granular endpoints. |
+| 12 | `btc-observation-analysis-ui-v1` | Compose one evidence-bound BTC Market/Quality/Research/Lineage workspace from Datasets/Studies queries, preserve granular routes/deep links/capability gates and prove responsive/accessibility/canvas goldens plus BTC-specific isolated and cumulative combined capacity envelopes. | Select the current four-lens page and granular endpoints. |
 | 13 | `python-package-and-web-layout` | Make a prior package-transition decision, then introduce staged `src/trade`/`web` layout with dual discovery, import/console/native compatibility smoke tests. | Retain old distribution/import/entrypoint shims for the compatibility window. |
 | 14 | `tests-and-legacy-cleanup` | Retire only bridges, docs/output paths and aliases that meet usage, snapshot, retention and migration exit criteria. | Restore compatibility adapter; never delete immutable artifacts as rollback. |
 
@@ -1461,6 +1487,14 @@ Execution port with capability/version negotiation, submit/status/cancel/
 heartbeat, worker identity, resource/egress policy, output refs and execution
 receipts. It may be added as a prerequisite only when the first remote worker
 is proposed; it is not a current implementation dependency.
+
+The same conditional ADR rule applies before the first third-party or untrusted
+source plugin. Its execution trust class, process isolation, network-egress and
+filesystem allowlists, resource limits, credential boundary, process-tree
+termination and crash containment become part of the SourceManifest profile,
+adapter conformance receipt and isolated/combined capacity evidence. Trusted
+first-party pilot adapters may remain in-process only through an explicit
+reviewed profile; plugin naming alone never grants in-process trust.
 
 ## Risk Register
 
