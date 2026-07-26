@@ -24,6 +24,12 @@ reported as successful cancellation.
 - Add framework-free Platform public DTOs for trusted `ActorContext`,
   `OperationReceipt`, versioned `ErrorEnvelope`, cancellation/control results,
   and a truthful bounded `ShutdownReceipt`.
+- Separate historical replay attribution from current execution authority
+  through a finite `ReplayAdmissionV1`. Direct replay is resolve-only, performs
+  one owner-local lookup/audit transaction, commits a request-causal audit
+  before returning an unchanged historical receipt, and fails closed on
+  binding conflict, missing operation or audit unavailability without retry or
+  background continuation.
 - Add a framework-free Processes `ProcessView` contract with a closed state
   taxonomy, bounded transition history, deadlines, retry/compensation state,
   dead-letter visibility, and owner-scoped recovery descriptors.

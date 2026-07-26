@@ -387,34 +387,66 @@ requires a versioned origin extension.
 
 Durable replay keeps historical bytes and attribution immutable but never
 revives historical authority. `ReplayContextV1` separately names the replay
-request message, historical message/actor attribution, current verified replay
-initiator and immutable replay policy reference. Decoded historical actors are
-unverified attribution. Redispatch and replay-derived commands use current
-replay-initiator plus owner/Process policy; expired/revoked historical
-provenance grants nothing. A derived mutating command establishes a current
-idempotency subject rather than reusing the historical subject.
+request message/correlation/optional-causation tuple, historical message/actor
+attribution, current verified replay initiator and immutable replay policy
+reference. Root replay requests omit causation; child replay requests name
+their direct parent. Retry/redelivery preserves this current tuple. Decoded
+historical actors are unverified attribution. Redispatch and replay-derived
+commands use current replay-initiator plus owner/Process policy; expired/revoked
+historical provenance grants nothing. A derived mutating command establishes a
+current idempotency subject rather than reusing the historical subject.
 
 `ReplayAdmissionV1` binds one `ReplayContextV1`, the historical envelope
 message/correlation/causation identities, its canonical envelope
 `ContentDigest`, required historical `operation_id` and the current
-`IdempotencySubjectV1`. `ReplayContextV1` is the single source of the current
-replay initiator and immutable policy reference; the admission record does not
-duplicate either value. The outer historical `message_id` must equal the
-context's historical message identity, and the current subject must be derived
-from that context's verified replay initiator under the ordinary subject rules.
-The adapter verifies those bindings, the digest and complete historical identity
-tuple and authorizes the current actor, subject and policy before any operation
-lookup or existence disclosure.
-Direct redispatch is resolve-only: it may resolve and return an existing
-command-equivalent `OperationReceipt`, while recording an exact, at-most
-2,048-byte Platform replay-audit fact containing schema/version, current replay
-request, historical message/operation/envelope digest, current safe principal
-ID, policy ref, `resolved` outcome and occurrence time. It never rewrites that
-receipt's historical actor or causal identity. A missing operation returns
-`REPLAY_OPERATION_NOT_FOUND` and creates no claim or operation, preventing
-expired historical authority from becoming a new admission. To execute work
-again, replay derives a new command under the ordinary child-message rule with
-the current actor, subject, policy and immutable input references.
+`IdempotencySubjectV1`, plus one finite `Deadline`. `ReplayContextV1` is the
+single source of the current replay initiator and immutable policy reference;
+the admission record does not duplicate either value. The outer historical
+`message_id` must equal the context's historical message identity, and the
+current subject must be derived from that context's verified replay initiator
+under the ordinary subject rules. The adapter verifies those bindings, the
+digest and complete historical identity tuple and authorizes the current actor,
+subject and policy before opening the owner transaction or disclosing operation
+existence.
+
+Direct redispatch is resolve-only. One admission uses one monotonic remaining
+deadline, starts at most one Platform owner-local replay transaction, performs
+at most one required operation/claim lookup inside it and performs no
+persistence retry or background continuation. The durable replay-audit key is
+exactly `(owner_namespace, replay_request_message_id)`. The transaction checks
+that key before the operation lookup. A prior row whose internal admission
+binding digest differs returns `REPLAY_ADMISSION_CONFLICT` without looking up
+the requested operation. The internal digest is SHA-256 over the ASCII domain
+`trade.replay-admission-binding.v1`, one NUL byte and the exact canonical
+`ReplayAdmissionV1` identity/authority/content fields with only `deadline`
+omitted. Excluding the attempt deadline permits the same request and binding to
+retry with a fresh finite deadline; every retry is reauthorized before the key
+lookup. The digest is authorization-neutral and never appears in a public
+error, receipt, metric, log or cross-Context projection.
+
+For a new key, the transaction resolves the required command-equivalent
+operation/claim exactly once. A missing operation returns
+`REPLAY_OPERATION_NOT_FOUND` and creates no claim, operation, receipt or
+resolved-audit fact. An existing operation causes the transaction to commit one
+exact, at-most 2,048-byte replay-audit fact before the unchanged historical
+`OperationReceipt` may be returned. The fact contains only schema/version,
+static owner namespace, the current replay request message/correlation/optional
+direct causation, historical message/operation/envelope digest, the internal
+admission binding digest, current safe principal ID, policy ref, `resolved`
+outcome and occurrence time. A same-key, same-binding retry/redelivery resolves
+that existing fact and the same receipt in the one transaction without a
+second audit row.
+
+If the transaction cannot start or commit within the shared deadline, or its
+persistence fails, replay returns `REPLAY_AUDIT_UNAVAILABLE` with no receipt or
+operation/process link. It does not silently succeed, retry or continue in the
+background. Audit commit followed by response loss is recovered by the
+same-key/same-binding path; a crash before commit leaves no replay-audit fact.
+One bounded failure signal goes to the same future Platform operator health
+owner required for admission-audit failures, and runtime adoption remains
+blocked until that health query exists. To execute work again, replay derives a
+new command under the ordinary child-message rule with the current actor,
+subject, policy and immutable input references.
 
 Alternative: accept caller-provided actor dictionaries. It enables authority
 spoofing. Alternative: put authentication framework objects in the contract.
@@ -731,19 +763,23 @@ semantics.
 
 In addition to required `schema_name`, `schema_version`, `reason_code`,
 `occurred_at`, `safe_message` and the safe `recovery_hint` shown below,
-idempotency admission uses this exact variable-field product. Every optional
-link or retry field not shown as present is absent:
+replay and idempotency admission use these exact variable-field products. Every
+optional link or retry field not shown as present is absent:
 
 | Reason | Category / observation | Retry | Public links | Recovery |
 |---|---|---|---|---|
+| `REPLAY_OPERATION_NOT_FOUND` | `invalid` / `observed` | `retryable=false`; no retry-after | current replay request + correlation + root-absent/child-present causation; no operation/process ID | verify the historical operation identity or submit a newly authorized replay-derived command |
+| `REPLAY_ADMISSION_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current replay request + correlation + root-absent/child-present causation; no operation/process ID | retry the original replay binding or use a new replay request identity |
+| `REPLAY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current replay request + correlation + root-absent/child-present causation; no operation/process ID | inspect Platform replay-audit persistence and retry the same replay request after recovery |
 | `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current request + correlation + root-absent/child-present causation; no operation/process ID | submit the original command or use a new idempotency identity |
 | `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | current request + correlation + root-absent/child-present causation; no operation/process ID | audited operator inspection |
 | `IDEMPOTENCY_KEYSET_CONTENTION` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request + correlation + root-absent/child-present causation; no operation/process ID | retry the same command and identity with a fresh finite deadline |
 | `IDEMPOTENCY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request + correlation + root-absent/child-present causation; no operation/process ID | inspect Platform persistence and retry after recovery |
 
 These products forbid an old receipt, a fabricated operation ID, a raw key,
-the command payload and claim internals. The Platform persistence owner records
-one immutable admission-audit fact for each terminal conflict, corruption or
+the command/replay payload, the internal replay binding digest and claim
+internals. The Platform persistence owner records one immutable
+admission-audit fact for each terminal idempotency conflict, corruption or
 contention outcome before returning that exact outcome. This fact uses one
 optional repository transaction after the claim attempt ends and has an exact
 2,048-byte canonical limit and closed fields: schema/version, reason,
