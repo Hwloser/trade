@@ -90,9 +90,8 @@ class OwnerCodecDescriptor:
         _positive_version(self.schema_version, field_name="schema_version")
         if not isinstance(self.payload_purpose, PayloadPurpose):
             raise TypeError("payload_purpose must be PayloadPurpose")
-        if (
-            not isinstance(self.max_canonical_bytes, int)
-            or isinstance(self.max_canonical_bytes, bool)
+        if not isinstance(self.max_canonical_bytes, int) or isinstance(
+            self.max_canonical_bytes, bool
         ):
             raise TypeError("max_canonical_bytes must be an integer")
         if not 1 <= self.max_canonical_bytes <= _MAX_CANONICAL_BYTES:
@@ -174,9 +173,8 @@ class FingerprintKeySetV1:
     retained_read_versions: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.key_set_generation, int)
-            or isinstance(self.key_set_generation, bool)
+        if not isinstance(self.key_set_generation, int) or isinstance(
+            self.key_set_generation, bool
         ):
             raise TypeError("key_set_generation must be an integer")
         if not 1 <= self.key_set_generation <= _MAX_KEY_SET_GENERATION:

@@ -297,10 +297,7 @@ def _is_dynamic_export_call(node: ast.Call) -> bool:
         isinstance(func, ast.Name)
         and func.id == "setattr"
         and len(node.args) >= 2
-        and (
-            not isinstance(node.args[1], ast.Constant)
-            or not isinstance(node.args[1].value, str)
-        )
+        and (not isinstance(node.args[1], ast.Constant) or not isinstance(node.args[1].value, str))
     )
 
 

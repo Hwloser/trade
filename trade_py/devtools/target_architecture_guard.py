@@ -50,7 +50,9 @@ _COMPAT_MODULES = frozenset(
         "trade_py.compat.runtime_contracts",
     }
 )
-_COMPAT_FILES = frozenset({"__init__.py", *{name.rsplit(".", 1)[-1] + ".py" for name in _COMPAT_MODULES}})
+_COMPAT_FILES = frozenset(
+    {"__init__.py", *{name.rsplit(".", 1)[-1] + ".py" for name in _COMPAT_MODULES}}
+)
 _COMPAT_ALLOWED_PREFIXES = {
     "trade_py.compat.bus_contracts": (
         "trade.kernel",
@@ -372,9 +374,7 @@ def _validate_edges(
                     )
                 )
         elif source.module.startswith(("trade_py", "trade_web")):
-            if matches_any(target, _TARGET_PREFIXES) or matches_any(
-                target, tuple(_COMPAT_MODULES)
-            ):
+            if matches_any(target, _TARGET_PREFIXES) or matches_any(target, tuple(_COMPAT_MODULES)):
                 findings.append(
                     _edge_finding(
                         RUNTIME_ADOPTION_FENCE,
@@ -490,8 +490,7 @@ def _reviewed_cli_inventory(sources: list[PythonSource]) -> bool:
         if not isinstance(node, ast.Assign):
             continue
         if not any(
-            isinstance(target, ast.Name)
-            and target.id in {"canonical_domains", "legacy_domains"}
+            isinstance(target, ast.Name) and target.id in {"canonical_domains", "legacy_domains"}
             for target in node.targets
         ):
             continue

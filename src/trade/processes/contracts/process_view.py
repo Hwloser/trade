@@ -245,8 +245,7 @@ class HistoryWindow:
             )
         sequences = tuple(item.sequence for item in self.items)
         if any(
-            current <= previous
-            for previous, current in zip(sequences, sequences[1:], strict=False)
+            current <= previous for previous, current in zip(sequences, sequences[1:], strict=False)
         ):
             raise ValueError("history owner sequences must be strictly increasing")
         if self.first_sequence != sequences[0] or self.last_sequence != sequences[-1]:
@@ -346,9 +345,7 @@ class ProcessView:
         )
         if self.retry_count > self.retry_limit:
             raise ValueError("retry_count cannot exceed retry_limit")
-        if self.next_attempt_at is not None and not isinstance(
-            self.next_attempt_at, UtcInstant
-        ):
+        if self.next_attempt_at is not None and not isinstance(self.next_attempt_at, UtcInstant):
             raise TypeError("next_attempt_at must be UtcInstant or None")
         if self.state is ProcessState.RETRY_SCHEDULED:
             if self.next_attempt_at is None:
@@ -373,9 +370,7 @@ class ProcessView:
             not isinstance(item, RecoveryActionDescriptor)
             for item in self.permitted_recovery_actions
         ):
-            raise TypeError(
-                "permitted_recovery_actions entries must be RecoveryActionDescriptor"
-            )
+            raise TypeError("permitted_recovery_actions entries must be RecoveryActionDescriptor")
         if not isinstance(self.created_at, UtcInstant):
             raise TypeError("created_at must be UtcInstant")
         if not isinstance(self.updated_at, UtcInstant):
@@ -408,9 +403,7 @@ def validate_process_transition(
             raise ValueError("idempotent state observation forbids new deadline evidence")
         return
     if current not in _PROCESS_TRANSITIONS[previous]:
-        raise ValueError(
-            f"process transition {previous.value} -> {current.value} is not allowed"
-        )
+        raise ValueError(f"process transition {previous.value} -> {current.value} is not allowed")
     if current is ProcessState.DEADLINE_EXCEEDED:
         if not isinstance(deadline_evidence, DeadlineTerminalEvidence):
             raise ValueError(
@@ -488,8 +481,7 @@ def _validate_process_reason(state: ProcessState, reason_code: str | None) -> No
 def _validate_token(value: str, *, field_name: str) -> str:
     if not isinstance(value, str) or _TOKEN_PATTERN.fullmatch(value) is None:
         raise ValueError(
-            f"{field_name} must be 1-96 ASCII lower-case letters, digits, '.', "
-            "'_', ':' or '-'"
+            f"{field_name} must be 1-96 ASCII lower-case letters, digits, '.', '_', ':' or '-'"
         )
     return value
 

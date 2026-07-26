@@ -66,8 +66,7 @@ def _id(namespace: str, value: str) -> OpaqueId:
 
 def _instant(second: int = 0) -> UtcInstant:
     return UtcInstant(
-        datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
-        + timedelta(seconds=second)
+        datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=second)
     )
 
 
@@ -230,9 +229,7 @@ def _shutdown_receipt(
         actions: tuple[ShutdownRecoveryAction, ...] = ()
         safe_error = None
     else:
-        selected_stage = (
-            ShutdownStage.DRAIN_DELIVERY if stage is None else stage
-        )
+        selected_stage = ShutdownStage.DRAIN_DELIVERY if stage is None else stage
         selected_reason = (
             {
                 ShutdownState.DEADLINE_EXCEEDED: "SHUTDOWN_DEADLINE_EXCEEDED",
@@ -558,9 +555,7 @@ def test_shutdown_done_stage_is_closed(
     state: ShutdownState,
     stage: ShutdownStage,
 ) -> None:
-    valid = (
-        state is ShutdownState.COMPLETED and stage is ShutdownStage.DONE
-    ) or (
+    valid = (state is ShutdownState.COMPLETED and stage is ShutdownStage.DONE) or (
         state is not ShutdownState.COMPLETED and stage is not ShutdownStage.DONE
     )
 
@@ -587,9 +582,7 @@ def test_residual_owner_taxonomy_is_closed_and_owner_fenced(
     with pytest.raises(ValueError, match="owner instance and fence"):
         replace(
             receipt,
-            residual_owners=(
-                replace(residual, owner_instance_id=_id("owner", "other")),
-            ),
+            residual_owners=(replace(residual, owner_instance_id=_id("owner", "other")),),
         )
 
 
@@ -610,9 +603,7 @@ def test_shutdown_recovery_actions_are_closed_owner_scoped_and_informational(
     with pytest.raises(ValueError, match="reported residual"):
         replace(
             updated,
-            shutdown_recovery_actions=(
-                replace(recovery, target_id=_id("residual", "unknown")),
-            ),
+            shutdown_recovery_actions=(replace(recovery, target_id=_id("residual", "unknown")),),
         )
 
 

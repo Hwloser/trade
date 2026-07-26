@@ -187,8 +187,7 @@ def test_unknown_actor_must_remain_unverified() -> None:
 def test_actor_scope_and_delegation_bounds_are_exact() -> None:
     scopes = tuple(f"scope.{index:02d}" for index in range(32))
     hops = tuple(
-        _provenance(ProvenanceType.PARENT_ENVELOPE, reason=f"hop.{index}")
-        for index in range(8)
+        _provenance(ProvenanceType.PARENT_ENVELOPE, reason=f"hop.{index}") for index in range(8)
     )
 
     actor = _actor(scopes=scopes, delegation_chain=hops)
@@ -306,7 +305,10 @@ def test_idempotency_subject_requires_tuple_and_at_most_eight_delegates() -> Non
     }
     delegates = tuple(_id("principal", f"delegate-{index}") for index in range(8))
 
-    assert len(IdempotencySubjectV1(**common, delegated_subject_ids=delegates).delegated_subject_ids) == 8
+    assert (
+        len(IdempotencySubjectV1(**common, delegated_subject_ids=delegates).delegated_subject_ids)
+        == 8
+    )
     with pytest.raises(ValueError, match="at most 8"):
         IdempotencySubjectV1(
             **common,
@@ -335,7 +337,9 @@ def test_owner_codec_registry_freezes_sorted_unique_descriptors() -> None:
 
     registry = FrozenCodecRegistry.freeze((query, command))
 
-    assert registry.descriptors == tuple(sorted((command, query), key=lambda item: item.registry_key))
+    assert registry.descriptors == tuple(
+        sorted((command, query), key=lambda item: item.registry_key)
+    )
     assert (
         registry.resolve(
             owner_namespace=command.owner_namespace,
@@ -380,9 +384,7 @@ def test_fingerprint_key_set_has_one_active_and_at_most_three_retained() -> None
 
 def test_hmac_framing_uses_unsigned_four_byte_lengths() -> None:
     assert frame_hmac_components((b"a", b"", b"bc")) == (
-        b"\x00\x00\x00\x01a"
-        b"\x00\x00\x00\x00"
-        b"\x00\x00\x00\x02bc"
+        b"\x00\x00\x00\x01a\x00\x00\x00\x00\x00\x00\x00\x02bc"
     )
 
 

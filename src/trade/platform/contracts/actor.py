@@ -192,18 +192,23 @@ class ActorContext:
                 ActorAssurance.ANONYMOUS_ALLOWED,
                 ActorAssurance.UNVERIFIED,
             }:
-                raise ValueError("anonymous actor assurance must be anonymous_allowed or unverified")
+                raise ValueError(
+                    "anonymous actor assurance must be anonymous_allowed or unverified"
+                )
         elif self.assurance is ActorAssurance.ANONYMOUS_ALLOWED:
             raise ValueError("anonymous_allowed assurance requires an anonymous principal")
-        if self.principal_kind is PrincipalKind.UNKNOWN and self.assurance is not ActorAssurance.UNVERIFIED:
+        if (
+            self.principal_kind is PrincipalKind.UNKNOWN
+            and self.assurance is not ActorAssurance.UNVERIFIED
+        ):
             raise ValueError("unknown principal must remain unverified")
 
     @property
     def can_submit_mutation(self) -> bool:
-        return (
-            self.assurance is ActorAssurance.VERIFIED
-            and self.principal_kind in {PrincipalKind.AUTHENTICATED, PrincipalKind.SYSTEM}
-        )
+        return self.assurance is ActorAssurance.VERIFIED and self.principal_kind in {
+            PrincipalKind.AUTHENTICATED,
+            PrincipalKind.SYSTEM,
+        }
 
     def as_wire_attribution(self) -> ActorContext:
         return replace(self, assurance=ActorAssurance.UNVERIFIED)

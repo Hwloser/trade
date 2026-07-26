@@ -194,17 +194,13 @@ class ControlReceipt:
         if self.disposition is ControlDisposition.ALREADY_TERMINAL:
             self._require_reason("CONTROL_ALREADY_TERMINAL")
             if self.target_terminal_receipt_id is None:
-                raise ValueError(
-                    "already_terminal control requires target_terminal_receipt_id"
-                )
+                raise ValueError("already_terminal control requires target_terminal_receipt_id")
             if self.safe_error is not None:
                 raise ValueError("already_terminal control forbids safe_error")
             return
 
         if self.target_terminal_receipt_id is not None:
-            raise ValueError(
-                f"{self.disposition.value} control forbids terminal receipt link"
-            )
+            raise ValueError(f"{self.disposition.value} control forbids terminal receipt link")
         if self.safe_error is None:
             raise ValueError(f"{self.disposition.value} control requires safe_error")
         self._validate_safe_error_identity()
@@ -255,9 +251,7 @@ class ControlReceipt:
 
     def _require_reason(self, expected: str) -> None:
         if self.reason_code != expected:
-            raise ValueError(
-                f"{self.disposition.value} control reason must be {expected}"
-            )
+            raise ValueError(f"{self.disposition.value} control reason must be {expected}")
 
     def _require_no_error_or_terminal_link(self) -> None:
         if self.safe_error is not None or self.target_terminal_receipt_id is not None:
@@ -275,10 +269,7 @@ class ControlReceipt:
             or error.causation_id != self.causation_id
         ):
             raise ValueError("control safe_error must preserve request causal identity")
-        if (
-            error.operation_id != self.operation_id
-            or error.process_id != self.process_id
-        ):
+        if error.operation_id != self.operation_id or error.process_id != self.process_id:
             raise ValueError("control safe_error must preserve the exact target link")
 
 
@@ -318,8 +309,7 @@ class ControlDeadlineBudget:
     def remaining_target_ms(self, monotonic_now: float) -> int:
         return max(
             0,
-            self.deadline.remaining_ms(monotonic_now)
-            - self.receipt_finalization_reserve.value,
+            self.deadline.remaining_ms(monotonic_now) - self.receipt_finalization_reserve.value,
         )
 
     def can_start_target_step(
@@ -411,9 +401,7 @@ class ShutdownReceipt:
 
     def __post_init__(self) -> None:
         if self.schema_name != "trade.shutdown_receipt":
-            raise ValueError(
-                "ShutdownReceipt schema_name must be 'trade.shutdown_receipt'"
-            )
+            raise ValueError("ShutdownReceipt schema_name must be 'trade.shutdown_receipt'")
         if self.schema_version != 1:
             raise ValueError("ShutdownReceipt schema_version must be 1")
         if not isinstance(self.owner_namespace, IdNamespace):
@@ -473,39 +461,26 @@ class ShutdownReceipt:
         if not isinstance(self.shutdown_recovery_actions, tuple):
             raise TypeError("shutdown_recovery_actions must be a tuple")
         if len(self.shutdown_recovery_actions) > _MAX_RECOVERY_ACTIONS:
-            raise ValueError(
-                "shutdown_recovery_actions must contain at most 16 entries"
-            )
+            raise ValueError("shutdown_recovery_actions must contain at most 16 entries")
         if any(
-            not isinstance(item, ShutdownRecoveryAction)
-            for item in self.shutdown_recovery_actions
+            not isinstance(item, ShutdownRecoveryAction) for item in self.shutdown_recovery_actions
         ):
-            raise TypeError(
-                "shutdown_recovery_actions entries must be ShutdownRecoveryAction"
-            )
-        residual_targets = {
-            residual.inspection_selector for residual in self.residual_owners
-        }
+            raise TypeError("shutdown_recovery_actions entries must be ShutdownRecoveryAction")
+        residual_targets = {residual.inspection_selector for residual in self.residual_owners}
         for residual in self.residual_owners:
             if (
                 residual.owner_instance_id != self.owner_instance_id
                 or residual.fence_generation != self.fence_generation
             ):
-                raise ValueError(
-                    "residual owner must match shutdown owner instance and fence"
-                )
+                raise ValueError("residual owner must match shutdown owner instance and fence")
         for action in self.shutdown_recovery_actions:
             if (
                 action.owner_instance_id != self.owner_instance_id
                 or action.fence_generation != self.fence_generation
             ):
-                raise ValueError(
-                    "shutdown recovery action must match owner instance and fence"
-                )
+                raise ValueError("shutdown recovery action must match owner instance and fence")
             if action.target_id not in residual_targets:
-                raise ValueError(
-                    "shutdown recovery action must target a reported residual owner"
-                )
+                raise ValueError("shutdown recovery action must target a reported residual owner")
 
     def _validate_state_product(self) -> None:
         if self.state is ShutdownState.COMPLETED:
@@ -522,9 +497,7 @@ class ShutdownReceipt:
         if self.current_stage is ShutdownStage.DONE:
             raise ValueError("non-completed shutdown forbids done stage")
         if not self.residual_owners or not self.shutdown_recovery_actions:
-            raise ValueError(
-                "non-completed shutdown requires residual and recovery evidence"
-            )
+            raise ValueError("non-completed shutdown requires residual and recovery evidence")
         if self.safe_error is None:
             raise ValueError("non-completed shutdown requires safe_error")
         self._validate_safe_error_identity()
@@ -534,9 +507,7 @@ class ShutdownReceipt:
 
         if self.state is ShutdownState.DEADLINE_EXCEEDED:
             if self.reason_code != "SHUTDOWN_DEADLINE_EXCEEDED":
-                raise ValueError(
-                    "deadline_exceeded shutdown requires SHUTDOWN_DEADLINE_EXCEEDED"
-                )
+                raise ValueError("deadline_exceeded shutdown requires SHUTDOWN_DEADLINE_EXCEEDED")
             if error.category is not ErrorCategory.TIMEOUT:
                 raise ValueError("deadline_exceeded shutdown requires timeout error")
         elif self.state is ShutdownState.INCOMPLETE:
@@ -549,9 +520,7 @@ class ShutdownReceipt:
                 ErrorCategory.BLOCKED,
                 ErrorCategory.UNAVAILABLE,
             }:
-                raise ValueError(
-                    "incomplete shutdown requires blocked or unavailable error"
-                )
+                raise ValueError("incomplete shutdown requires blocked or unavailable error")
         else:
             if self.reason_code in {
                 "SHUTDOWN_COMPLETED",
@@ -562,9 +531,7 @@ class ShutdownReceipt:
                 ErrorCategory.INTERNAL,
                 ErrorCategory.UNAVAILABLE,
             }:
-                raise ValueError(
-                    "failed shutdown requires internal or unavailable error"
-                )
+                raise ValueError("failed shutdown requires internal or unavailable error")
         if error.reason_code != self.reason_code:
             raise ValueError("shutdown safe_error reason must equal receipt reason")
 
@@ -578,10 +545,7 @@ class ShutdownReceipt:
             or error.causation_id != self.causation_id
         ):
             raise ValueError("shutdown safe_error must preserve request causal identity")
-        if (
-            error.operation_id != self.operation_id
-            or error.process_id != self.process_id
-        ):
+        if error.operation_id != self.operation_id or error.process_id != self.process_id:
             raise ValueError("shutdown safe_error must preserve public links")
 
 
@@ -936,7 +900,6 @@ def _validate_reason(value: str) -> str:
 def _validate_token(value: str, *, field_name: str) -> str:
     if not isinstance(value, str) or _TOKEN_PATTERN.fullmatch(value) is None:
         raise ValueError(
-            f"{field_name} must be 1-96 ASCII lower-case letters, digits, '.', "
-            "'_', ':' or '-'"
+            f"{field_name} must be 1-96 ASCII lower-case letters, digits, '.', '_', ':' or '-'"
         )
     return value

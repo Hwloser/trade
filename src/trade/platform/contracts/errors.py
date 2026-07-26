@@ -79,9 +79,7 @@ _ADMISSION_ERROR_PRODUCTS = {
         retryable=False,
         retry_after_required=False,
         occurred_at_required=True,
-        recovery_hint=(
-            "Retry the original replay binding or use a new replay request identity."
-        ),
+        recovery_hint=("Retry the original replay binding or use a new replay request identity."),
     ),
     "REPLAY_AUDIT_CLOCK_UNAVAILABLE": _AdmissionErrorProduct(
         category=ErrorCategory.UNAVAILABLE,
@@ -111,9 +109,7 @@ _ADMISSION_ERROR_PRODUCTS = {
         retryable=False,
         retry_after_required=False,
         occurred_at_required=True,
-        recovery_hint=(
-            "Submit the original command or use a new idempotency identity."
-        ),
+        recovery_hint=("Submit the original command or use a new idempotency identity."),
     ),
     "IDEMPOTENCY_CLAIM_CORRUPT": _AdmissionErrorProduct(
         category=ErrorCategory.INTERNAL,
@@ -129,9 +125,7 @@ _ADMISSION_ERROR_PRODUCTS = {
         retryable=True,
         retry_after_required=True,
         occurred_at_required=True,
-        recovery_hint=(
-            "Retry the same command and identity with a fresh finite deadline."
-        ),
+        recovery_hint=("Retry the same command and identity with a fresh finite deadline."),
     ),
     "IDEMPOTENCY_AUDIT_UNAVAILABLE": _AdmissionErrorProduct(
         category=ErrorCategory.UNAVAILABLE,
@@ -194,14 +188,10 @@ class ErrorEnvelope:
     def _validate_occurrence_time(self) -> None:
         if self.reason_code == "REPLAY_AUDIT_CLOCK_UNAVAILABLE":
             if self.occurred_at is not None:
-                raise ValueError(
-                    "REPLAY_AUDIT_CLOCK_UNAVAILABLE must not contain occurred_at"
-                )
+                raise ValueError("REPLAY_AUDIT_CLOCK_UNAVAILABLE must not contain occurred_at")
             return
         if self.occurred_at is None:
-            raise ValueError(
-                "occurred_at is required except for REPLAY_AUDIT_CLOCK_UNAVAILABLE"
-            )
+            raise ValueError("occurred_at is required except for REPLAY_AUDIT_CLOCK_UNAVAILABLE")
 
     def _validate_admission_product(self) -> None:
         product = _ADMISSION_ERROR_PRODUCTS.get(self.reason_code)
@@ -215,9 +205,7 @@ class ErrorEnvelope:
             raise ValueError(f"{self.reason_code} has an invalid retryable value")
         if product.retry_after_required:
             if self.retry_after_ms is None or not 1 <= self.retry_after_ms <= 1_000:
-                raise ValueError(
-                    f"{self.reason_code} requires retry_after_ms in 1..1,000"
-                )
+                raise ValueError(f"{self.reason_code} requires retry_after_ms in 1..1,000")
         elif self.retry_after_ms is not None:
             raise ValueError(f"{self.reason_code} forbids retry_after_ms")
         if (self.occurred_at is not None) is not product.occurred_at_required:

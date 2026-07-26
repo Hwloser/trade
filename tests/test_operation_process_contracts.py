@@ -60,8 +60,7 @@ def _id(namespace: str, value: str) -> OpaqueId:
 
 def _instant(second: int = 0) -> UtcInstant:
     return UtcInstant(
-        datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc)
-        + timedelta(seconds=second)
+        datetime(2026, 7, 27, 12, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=second)
     )
 
 
@@ -704,11 +703,7 @@ def test_query_status_accepts_only_the_closed_products(
     condition: QueryCondition | None,
     category: ErrorCategory | None,
 ) -> None:
-    error = (
-        None
-        if category is None
-        else _generic_error(category=category, observation=observation)
-    )
+    error = None if category is None else _generic_error(category=category, observation=observation)
 
     status = QueryStatus(
         observation_state=observation,
@@ -776,11 +771,7 @@ def test_query_status_rejects_every_unlisted_product(
         (listed_observation, listed_condition, listed_category)
         for listed_observation, listed_condition, listed_category in _QUERY_PRODUCTS
     }
-    error = (
-        None
-        if category is None
-        else _generic_error(category=category, observation=observation)
-    )
+    error = None if category is None else _generic_error(category=category, observation=observation)
 
     if (observation, condition, category) in valid_products:
         QueryStatus(
@@ -821,10 +812,7 @@ def test_process_start_key_is_owner_local_exact_identity() -> None:
 
 def test_history_window_empty_and_truncated_products_are_exact() -> None:
     assert _history() == HistoryWindow((), 0, 0, None, None, 0)
-    items = tuple(
-        _transition(sequence, ProcessState.RUNNING)
-        for sequence in range(51, 101)
-    )
+    items = tuple(_transition(sequence, ProcessState.RUNNING) for sequence in range(51, 101))
 
     window = _history(items, total_count=100)
 
@@ -932,9 +920,7 @@ def test_recovery_actions_are_closed_bounded_and_informational() -> None:
 
     view = replace(_process_view(), permitted_recovery_actions=actions)
 
-    assert {item.action for item in view.permitted_recovery_actions} == set(
-        RecoveryAction
-    )
+    assert {item.action for item in view.permitted_recovery_actions} == set(RecoveryAction)
     assert "redrive" not in {item.action.value for item in actions}
     with pytest.raises(ValueError, match="at most 16"):
         replace(view, permitted_recovery_actions=actions * 3)
@@ -1123,9 +1109,7 @@ def test_admission_metric_has_one_closed_counter_and_two_labels() -> None:
         outcome=AdmissionOutcome.CREATED,
     )
 
-    assert ADMISSION_OUTCOME_COUNTER_NAME == (
-        "platform_idempotency_admission_outcomes_total"
-    )
+    assert ADMISSION_OUTCOME_COUNTER_NAME == ("platform_idempotency_admission_outcomes_total")
     assert tuple(field.name for field in fields(labels)) == (
         "owner_namespace",
         "outcome",
