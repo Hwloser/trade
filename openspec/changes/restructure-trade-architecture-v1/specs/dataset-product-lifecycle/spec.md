@@ -24,6 +24,43 @@ directory listing, an unpinned DataFrame or a provider response.
   DatasetVersion or explicit failure/quarantine result, and never mutates an
   existing version in place
 
+### Requirement: Formal Dataset references SHALL reserve their evidence closure
+
+Datasets SHALL acquire durable, finite `EvidenceClosureReservationRef` values
+before it commits a formal `DatasetVersionRef`, `DatasetSnapshotRef` or
+`DatasetRelease`, covering
+every upstream immutable reference and its transitive evidence closure.
+Datasets-owned references SHALL be
+reserved and confirmed in the same owner-local transaction; Capture-owned
+closures SHALL be pre-reserved and then confirmed through the Datasets
+transaction's replayable outbox. A committed-but-unconfirmed reservation SHALL
+remain protected and reconcile idempotently. An uncommitted reservation MAY
+expire only under its owner policy. No part of this protocol SHALL require a
+cross-Context transaction.
+
+#### Scenario: A DatasetVersion commit crashes before Capture confirmation
+
+- **WHEN** Datasets commits a DatasetVersion, its Capture reservation refs and
+  confirmation outbox but crashes before Capture confirms the reservations
+- **THEN** replay confirms the exact refs idempotently, the Capture closure
+  remains protected from GC, and no duplicate DatasetVersion is created
+
+#### Scenario: A Snapshot references a DatasetVersion under a deletion fence
+
+- **WHEN** Datasets attempts to reserve a DatasetVersion closure whose target
+  set is already closed by a generation-fenced GC plan
+- **THEN** exactly one side wins the target-level fence; the Snapshot is either
+  durably protected before commit or rejected with a typed reservation refusal,
+  and the target is never both referenced and deleted
+
+#### Scenario: A build crashes before its DatasetVersion transaction
+
+- **WHEN** a build acquires upstream reservations but crashes before committing
+  the DatasetVersion
+- **THEN** no formal reference becomes visible, and each owner may release its
+  unconfirmed reservation after the finite lease and reconciliation window
+  without affecting other retained references
+
 ### Requirement: Datasets SHALL own quality, lineage, revisions and point-in-time resolution
 
 Datasets SHALL canonicalize schema, identity, units, timezone, event time,
@@ -54,6 +91,42 @@ missing temporal clock SHALL fail closed for formal point-in-time resolution.
 - **THEN** the configured reconciliation policy records a QualityReport and
   lineage evidence, chooses a documented canonical outcome only when policy
   permits it, or quarantines the candidate without advancing a release pointer
+
+### Requirement: Quality and source finality SHALL have a total publication disposition
+
+Datasets SHALL evaluate quality disposition `passed`, `warned` or `blocked`
+independently from source finality `provisional`, `final` or `retracted`.
+Quality policy SHALL define all nine combinations; an omitted pair SHALL fail
+closed. `passed+final` MAY be eligible for formal publication after all other
+PIT, rights and integrity gates pass. `warned+final` MAY be published only when
+the pinned policy explicitly authorizes the warning class and the release keeps
+that warning visible. `blocked+final` SHALL NOT publish.
+
+Both `passed+provisional` and `warned+provisional` SHALL retain provisional
+state and MAY produce only an explicitly non-formal candidate/provisional
+product; neither may be relabelled final because quality passed. A
+`blocked+provisional` product SHALL remain blocked. Any `retracted`
+combination SHALL prevent a new formal release and SHALL withdraw, supersede or
+restrict an affected release through a later immutable state according to
+policy, without deleting the prior version. Capture quarantine and artifact
+integrity failure remain separate fail-closed lifecycle states and cannot be
+converted to a quality/finality pair that publishes.
+
+#### Scenario: A quality-passed source record remains provisional
+
+- **WHEN** canonicalization and quality checks pass but one required source
+  input is still provisional
+- **THEN** Datasets preserves `passed+provisional`, exposes its provisional
+  reason and next-finality evidence, and does not issue a formal release or
+  formal Study-eligible DatasetSnapshotRef
+
+#### Scenario: A previously released source record is retracted
+
+- **WHEN** a later Capture receipt marks a referenced observation retracted,
+  regardless of its prior quality disposition
+- **THEN** Datasets records the corresponding retracted disposition, creates a
+  later withdrawal/supersession state, emits revision evidence for downstream
+  propagation and leaves the prior immutable version auditable
 
 ### Requirement: Formal PIT and revision semantics SHALL be proven before formal use
 

@@ -35,6 +35,44 @@ gate, including its immutable canonicalization and quality policy references.
   policy-lineage reason and does not downgrade the run to a hidden current-data
   query
 
+### Requirement: Formal Study references SHALL reserve their evidence closure
+
+Studies SHALL acquire a durable, finite `EvidenceClosureReservationRef` from
+each upstream evidence owner before committing a formal `StudyResultRef`,
+`ValidationReport` or `PromotionReceipt`, covering the exact immutable
+references and transitive closure it will retain. Studies SHALL then
+commit its aggregate, reservation refs and confirmation outbox in one
+Studies-owned transaction. Upstream owners SHALL confirm the reservation
+idempotently from that outbox, and a replayable reconciliation command SHALL
+recover a committed-but-unconfirmed reference. An expired uncommitted
+reservation SHALL be releasable by its owner, while a committed reference SHALL
+remain protected until explicit owner-authorized retirement. This protocol
+SHALL NOT use a cross-Context transaction.
+
+#### Scenario: A StudyResult commit crashes before reservation confirmation
+
+- **WHEN** Studies has committed a StudyResult and its confirmation outbox but
+  crashes before Datasets confirms the evidence-closure reservation
+- **THEN** replay uses the same result identity and reservation refs to confirm
+  protection idempotently; GC continues to treat the closure as reserved and
+  no duplicate StudyResult is created
+
+#### Scenario: A reservation cannot be acquired
+
+- **WHEN** an upstream closure is missing, withdrawn, digest-mismatched, already
+  fenced for deletion or cannot be durably reserved before its deadline
+- **THEN** Studies does not commit the formal result or promotion, records a
+  typed evidence-reservation refusal and leaves any acquired reservations for
+  bounded owner-managed release
+
+#### Scenario: A worker crashes before the StudyResult commit
+
+- **WHEN** Studies acquires reservations but crashes before its owner-local
+  result transaction commits
+- **THEN** no formal result becomes visible, and upstream owners release the
+  unconfirmed reservations after their finite lease and reconciliation policy
+  without deleting evidence protected by another reference
+
 ### Requirement: Studies SHALL express evidence gaps without performing capture
 
 Studies SHALL emit `EvidenceGapDeclared` when a registered input snapshot is

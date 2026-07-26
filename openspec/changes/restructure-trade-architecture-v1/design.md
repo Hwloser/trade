@@ -344,15 +344,21 @@ Capture validates every external interaction against a versioned SourceManifest
 that identifies verified source/provenance, license/attribution, retention,
 redistribution/export, allowed processors/regions, credential scope, durable
 source/credential admission, request/byte/cost budget, concurrency, retry
-classification, circuit breaker and availability state. Pull, push, stream,
-import, replay, correction and tombstone behavior writes immutable receipts,
-durable deduplication keys and quarantine/dead-letter evidence. Provider
-event/publication time remains absent when the provider did not supply it;
-collector-now is never substituted as a source clock. Rights revocation
-propagates an explicit restriction through retained downstream lineage.
-Provider unavailability, invalid content, rights restriction and rate limits
-remain explicit states; replay uses committed artifacts and never silently
-repeats a provider request.
+classification, circuit breaker and availability state. Quota, cost,
+concurrency, Retry-After and circuit generation are durable and shared by every
+worker in the same provider/credential/failure-domain scope; half-open probes
+use one fenced lease rather than one probe per process. Every formal source
+profile binds an approved `SourceAdapterConformanceReceiptRef` covering the
+exact executable, dependency lock, runtime, suite and declared capability
+matrix, and the passing receipt digest follows the CapturePlan, run, receipt and
+artifact lineage. Pull, push, stream, import, replay, correction and tombstone
+behavior writes immutable receipts, durable deduplication keys and
+quarantine/dead-letter evidence. Provider event/publication time remains absent
+when the provider did not supply it; collector-now is never substituted as a
+source clock. Rights revocation propagates an explicit restriction through
+retained downstream lineage. Provider unavailability, invalid content, rights
+restriction and rate limits remain explicit states; replay uses committed
+artifacts and never silently repeats a provider request.
 
 ### Failure and recovery
 
@@ -373,11 +379,28 @@ attempt policy, backlog age/count/byte visibility and audited DLQ/redrive.
 Capture reconciliation classifies prepared/orphaned/corrupt artifacts after
 crash. Ordered deliveries retain scope/sequence/consumer expected-sequence
 evidence and do not silently apply `N+1` before `N`. Backup restore first
-validates safe archive members, manifest and SHA-256 digests in a staged root,
-then fences writers, journals a generation activation, rebinds runtimes and
-passes a health window; failure leaves or restores the prior active generation.
-A compensation only changes a pointer or creates a later record; it does not
-rewrite a previously immutable artifact.
+binds one SQLite/WAL, artifact-generation and delivery/process consistency cut
+with declared, rehearsed RPO/RTO, then validates safe archive members, manifest
+and SHA-256 digests in a staged root, fences writers, journals a generation
+activation, restores owners before projections/interfaces, rebinds runtimes and
+passes a health window. A cut mismatch, objective miss or activation failure
+leaves or restores the prior active generation. A compensation only changes a
+pointer or creates a later record; it does not rewrite a previously immutable
+artifact.
+
+Formal Snapshot, StudyResult, DecisionCase, process and backup references
+reserve their transitive evidence closure before commit. A consumer pre-acquires
+finite owner-issued `EvidenceClosureReservationRef` values, commits its local
+aggregate, reservation refs and confirmation outbox atomically, and confirms
+upstream protection through idempotent delivery; committed-but-unconfirmed
+references reconcile, while uncommitted leases expire under their owner policy.
+This is not a cross-Context transaction. Retention/GC closes new reservations
+that intersect an immutable target set, repeats its final reachability census
+under the same target-level fence and persists planned/prepared/deleted target
+state plus an atomic deletion receipt. This prevents a new differently
+identified proof closure from racing between census and unlink, and makes an
+absent or changed target without matching prepared evidence an integrity
+refusal rather than a successful delete.
 
 Bootstrap owns one shutdown attempt and one monotonic deadline across CLI, Web,
 workers and schedulers. The order is: reject new ingress and schedules; settle
@@ -389,6 +412,13 @@ records the still-live resource and leaves retryable `stopping`; it never
 starts another full-duration wait, closes a database under live work, or
 reports `stopped` while owned processes/threads remain. Repeated signal,
 lifespan and caller stops join the same attempt.
+
+The same ownership starts during construction, not only after `running`.
+Bootstrap registers each acquired resource before admission; a later startup
+failure closes admission and cleans only acquired resources in reverse
+dependency order under one startup-cleanup deadline. A stuck startup worker,
+executor or lease therefore remains visible as retryable `stopping` and cannot
+be hidden behind a daemon cleanup thread or an unbounded legacy `wait=True`.
 
 ### Performance and capacity
 
@@ -413,6 +443,18 @@ explicit overload evidence. The numerical values in `design-quality.toml` are
 schema-fixture examples only, not production defaults; each SourceManifest and
 child reserves documented provider-supported and measured limits before
 activation.
+
+Isolated child results are necessary but not sufficient. Every cumulative
+cutover also emits one `CombinedCapacityEnvelope` for the exact deployment
+topology that will coexist after selection. It concurrently exercises the new
+surface with all already selected provider/stream, Dataset/Study, outbox/replay,
+Process, maintenance and BFF/SSE workloads and allocates the whole runner's
+CPU, memory, disk throughput/space, SQLite writer time, file descriptors,
+connections, workers and child processes. Per-subsystem reservations must sum
+within the whole-system envelope, and overload must demonstrate finite
+admission shedding, backlog and fair recovery. A set of isolated passes cannot
+approve a combined topology that starves scrub, replay, shutdown or interface
+traffic.
 
 Dataset policy declares physical layout (partition, sort, row-group/file and
 compression constraints) and each read handle carries a `QueryBudget` for
@@ -990,6 +1032,16 @@ process manager and record an outcome. They do not embed the entire workflow.
 Schedulers emit command envelopes only. A CLI or HTTP handler creates a command
 and returns a receipt/process ID; it does not synchronously own every step.
 
+Replacing a legacy workflow handler is itself a durable Process-owned semantic
+transition over a generic Platform selector. Forward selection is
+`legacy_selected -> denying_legacy -> quiescing_legacy ->
+process_switch_prepared -> process_selected`; rollback is symmetric. Selection
+requires durable admission denial, zero losing-handler owned operations and
+child processes, and settled or transferred Platform Events leases before one
+generation-fenced selector compare-and-swap. Crash recovery and every rollback
+step retain exactly one selected handler; a blocked non-cooperative legacy
+handler cannot coexist with a newly selected Process handler.
+
 ## Database and Artifact Ownership
 
 ### Target logical table ownership
@@ -1340,29 +1392,39 @@ tooling. The cross-cutting test inventory is:
     and safe error categories across implementations.
 14. Migration rollback test: additive schema, shadow replay, cutover and
     rollback retain old readers and immutable artifacts.
-15. Capacity-envelope fixture: measured 1x and 10x provider, stream,
-    SQLite/Parquet/DuckDB, outbox and BFF/SSE workloads stay within the
-    declared resource/SLO budget or fail explicitly.
-16. Backup-restore fixture: safe archive-member, manifest/digest verification,
-    staged activation and corruption rejection leave an active fixture root
-    unchanged.
+15. Capacity-envelope fixture: measured isolated and combined 1x/10x provider,
+    stream, SQLite/Parquet/DuckDB, outbox/replay, maintenance, Process and
+    BFF/SSE workloads fit a whole-runner allocation or fail explicitly with
+    bounded fair recovery.
+16. Backup-restore fixture: one SQLite/WAL, artifact and delivery/process
+    consistency cut, manifest/digest verification, measured RPO/RTO, ordered
+    staged activation and corruption/cut-mismatch rejection leave an active
+    fixture root unchanged.
 17. Rights/retention fixture: SourceManifest processor/region/license
-    rejection, revocation tombstone, legal hold and reachable-lineage GC guard.
+    rejection, revocation tombstone, legal hold, durable reference reservation,
+    intersecting-closure target fence, crash-safe deletion receipt and
+    reachable-lineage GC guard.
+18. Capture conformance fixture: trusted passing adapter receipt identity,
+    expiry/revocation, runtime/profile drift and shared circuit half-open
+    arbitration fail closed before provider interaction.
+19. Dataset disposition fixture: every quality `passed/warned/blocked` by
+    finality `provisional/final/retracted` pair has one explicit publication,
+    withdrawal or fail-closed outcome.
 
 ## Migration Phases and Child OpenSpec Changes
 
 | Order | Child change | Objective and exit criteria | Rollback |
 |---|---|---|---|
-| 1 | `architecture-guardrails-and-baselines` | Existing approved prerequisite: import/DB-owner/read-only guards and machine-readable package, native, table, artifact, pointer and interface inventory in `architecture-baseline.toml`. Extend route baselines to record both 72/81 capability modes and the OpenAPI defect before extraction. | Revert only guard/test additions; no data format change. |
+| 1 | `architecture-guardrails-and-baselines` | Existing approved prerequisite: import/DB-owner/read-only guards and machine-readable package, native, table, artifact, pointer and interface inventory in `architecture-baseline.toml`. Freeze CLI help/parse/exit, both 72/81 route modes, golden payload/SSE signatures, notebook/import consumers and the OpenAPI defect before extraction; this baseline step performs no interface delegation. | Revert only guard/test/baseline additions; no data format or interface implementation change. |
 | 2 | `kernel-and-public-contracts` | Existing governed prerequisite: introduce only justified Kernel and versioned refs/DTOs, including trusted ActorContext, OperationReceipt, ProcessView, ErrorEnvelope and policy references, with compatibility imports/serialization/status-taxonomy tests. | Stop new consumers; keep existing types/paths. |
-| 3 | `platform-persistence-events-and-bootstrap-foundation` | Establish transaction/outbox implementation, command ingress, inbox/lease/ack/DLQ, OrderingContract, EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator, CapacityEnvelope, verified staged restore and the one Bootstrap lifecycle owner, including bounded child/executor/SSE/database shutdown. | Disable the new Platform adapter, retain EventBus/TradeDB/Web-resource compatibility bridges and all delivery/shutdown records. |
+| 3 | `platform-persistence-events-and-bootstrap-foundation` | Establish transaction/outbox implementation, command ingress, inbox/lease/ack/DLQ, OrderingContract, generic handler selector, EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator, CapacityEnvelope/CombinedCapacityEnvelope, reference-reservation/GC fence primitives, consistency-cut RPO/RTO restore and the one Bootstrap lifecycle owner, including bounded startup cleanup and child/executor/SSE/database shutdown. | Disable the new Platform adapter, retain EventBus/TradeDB/Web-resource compatibility bridges and all delivery/shutdown/restore records. |
 | 4 | `formal-pit-and-revision-semantics` | Existing governed prerequisite under separate approval: correct fail-closed clock selection and actual as-known/latest-restated mapping using current PIT code and goldens. Formal adoption remains blocked until that child reaches strict approval and implementation evidence. | Retain existing reader for non-formal compatibility views; block formal release rather than publish an unproven snapshot. |
-| 5 | `capture-boundary` | Extract a pilot SourceManifest rights/temporal/admission policy, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine/revalidation and rights-restriction propagation behavior. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
-| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy and Datasets catalog/PIT projection, with QueryBudget, manifest-verified readers and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
-| 7 | `study-boundary` | Move one registered Study to proven-SnapshotRef-only input, EvidenceGap declaration and deterministic validation/result receipts. | Preserve legacy research query compatibility; expose new result as unpublished/stale if necessary. |
-| 8 | `decision-support-boundary` | Classify and migrate one recommendation/causal/action slice into DecisionCase, Review, Rationale, Override, Expiry and non-executable PortfolioIntent with immutable Dataset/Study evidence and append-only audit. | Stop new case admission and select legacy read adapter; retain all audit facts. |
-| 9 | `process-manager-boundary` | Introduce selected refresh/evidence-gap/revision/rights-restriction and decision-staleness flows using the proven Platform foundation and Context contracts; Process state never writes Context aggregates. | Disable selected command routing and replay pending events through the compatible handler. |
-| 10 | `cli-http-sdk-compatibility` | Freeze CLI and 72/81 route-registry/golden payload baselines, repair the `/predict` OpenAPI blocker, then delegate selected CLI/HTTP/SSE/SDK/notebook routes through a complete mutation receipt/recovery ledger, bounded BFF/SSE hub, ProcessView and RetentionView. | Re-enable legacy adapter path; retain payload/error aliases and registry baseline. |
+| 5 | `capture-boundary` | Extract a pilot SourceManifest rights/temporal/admission policy, trusted adapter conformance receipt, shared quota/circuit state, request/run/artifact/checkpoint, stage/commit reconciliation, replay/import/revision/quarantine/revalidation and rights-restriction propagation behavior. | Route compatibility adapter to existing source service; retain committed artifacts/tombstones. |
+| 6 | `dataset-product-boundary` | Extract pilot Dataset build/version/snapshot/release/quality/lineage/derivation policy, total quality-by-finality disposition and Datasets catalog/PIT projection, with QueryBudget, evidence-closure reservation/confirmation, manifest-verified readers and generation-stamped legacy pointer bridge. | Restore verified prior pointer/reader after reconciliation; keep new immutable versions. |
+| 7 | `study-boundary` | Move one registered Study to proven-SnapshotRef-only input, retention reservation/confirmation, EvidenceGap declaration and deterministic validation/result receipts. | Preserve legacy research query compatibility; expose new result as unpublished/stale if necessary. |
+| 8 | `decision-support-boundary` | Classify and migrate one recommendation/causal/action slice into DecisionCase, Review, Rationale, Override, Expiry and non-executable PortfolioIntent with immutable Dataset/Study evidence, evidence-closure reservation/confirmation and append-only audit. | Stop new case admission and select legacy read adapter; retain all audit facts and confirmed evidence protection. |
+| 9 | `process-manager-boundary` | Introduce selected refresh/evidence-gap/revision/rights-restriction and decision-staleness flows using the proven Platform foundation and Context contracts; Process state never writes Context aggregates. Prove symmetric generation-fenced legacy/Process handler selection with zero losing-owner work before the selector CAS. | Reverse the same selector state machine to the legacy handler and replay pending events only after lease settlement; retain both handler audit trails. |
+| 10 | `cli-http-sdk-compatibility` | Consume the already frozen interface baseline, repair the `/predict` OpenAPI blocker, then delegate selected CLI/HTTP/SSE/SDK/notebook routes through a complete mutation receipt/recovery ledger, bounded BFF/SSE hub, ProcessView and RetentionView. It does not re-own baseline discovery or delegate before required Process/Context handles exist. | Re-enable legacy adapter path; retain payload/error aliases and the guardrails-owned registry baseline. |
 | 11 | `operational-sli-slo-alert-runbook-matrix` | Create the versioned signal/SLI/SLO/threshold/owner/escalation/runbook matrix with synthetic-alert and authorized-recovery evidence before any production cutover. | Disable only the new alert/routing adapter; retain status and receipts. |
 | 12 | `btc-observation-analysis-ui-v1` | Compose one evidence-bound BTC Market/Quality/Research/Lineage workspace from Datasets/Studies queries, preserve granular routes/deep links/capability gates and prove responsive/accessibility/canvas/capacity goldens. | Select the current four-lens page and granular endpoints. |
 | 13 | `python-package-and-web-layout` | Make a prior package-transition decision, then introduce staged `src/trade`/`web` layout with dual discovery, import/console/native compatibility smoke tests. | Retain old distribution/import/entrypoint shims for the compatibility window. |
@@ -1382,6 +1444,12 @@ canonical distribution/import names, `trade_py` forwarding, dual package
 discovery, console/root-facade routing, `_trade_native` installation location,
 and source-tree/editable/wheel smoke coverage before it is designed.
 
+The interface contract baseline is frozen once in
+`architecture-guardrails-and-baselines`; `cli-http-sdk-compatibility` consumes
+that immutable generation later and owns delegation. If current registration
+changes before delegation, the guardrail baseline is explicitly regenerated
+and reviewed rather than silently rediscovered inside the cutover child.
+
 Before remote extension work, the `remote-execution-and-interface-adr` records
 that MCP, GraphQL and TUI remain Interfaces adapters over these versioned DTOs;
 remote data acquisition is Capture, while remote computation is a Platform
@@ -1400,14 +1468,16 @@ is proposed; it is not a current implementation dependency.
 | Capture rights or absent source time causes impermissible or temporally false use | Critical | Versioned SourceManifest rights/processor/region/revocation policy, absent-clock preservation and Capture policy fixtures; Capture owner. |
 | Capture artifact is visible before durable receipt or is lost across a crash | Critical | stage/digest/commit-marker protocol, receipt/outbox ordering and startup reconciliation fault matrix; Capture/Platform owner. |
 | Capture retry duplicates provider data or cost | High | durable request identity, receipt digest, source/credential quota accounting, bounded source policy and idempotent checkpoint; Capture owner. |
+| Private worker circuits or stale adapter conformance allow unsafe external interaction | High | shared durable circuit/half-open lease and trusted identity-bound conformance receipts propagated through artifact lineage; Capture owner. |
 | Outbox retry duplicates, reorders, stalls or drops downstream action | High | inbox idempotency, OrderingContract sequence/gap state, lease/ack, bounded batch/backlog policy, DLQ/redrive and crash fixtures; Platform Events and Processes owner. |
+| Legacy and Process handlers both claim work during cutover | Critical | symmetric admission denial/quiescence/delivery settlement and generation-fenced selector CAS; Processes semantic owner and Platform selector owner. |
 | Direct table reads persist through a new facade | High | static DB owner guard and repository API review; guardrails child owner. |
 | Web extraction changes payload/error contracts or slow SSE consumes unbounded memory | High | generated route/OpenAPI/SSE snapshots, ErrorEnvelope mapping, bounded shared fan-out and slow-client/resync fixtures; Interfaces owner. |
 | Process coordination becomes a hidden global manager | High | one process module per named flow, durable state schema and context commands only; Processes owner. |
 | Observatory retains a second authority or direct artifact-read path | High | Datasets owns catalog/release/PIT projection and manifest-verified reads, Studies owns research facts, Interfaces owns only BFF serialization/cache views; Observatory file matrix and query-port tests; Datasets/Studies/Interfaces owners. |
 | Release bridge advances two authorities or crashes between release and legacy pointer | High | generation-stamped Datasets authority, pointer materialization journal, startup reconciliation and dual-reader checks; Datasets owner. |
-| Unbounded immutable retention exhausts storage or GC breaks reproducibility | High | retention classes, legal holds, reachable-reference guard, tombstone/audit evidence and dry-run GC fixture; Platform/Datasets/Capture owners. |
-| Restore claim activates corrupt data or split-brain generations | Critical | safe archive validation, manifest/SHA-256 staged restore, writer fence, generation-CAS activation journal, health window/rebind and append-only restore receipt; Platform Backup owner. |
+| Unbounded immutable retention exhausts storage or GC races a new reference | Critical | retention classes, legal holds, durable evidence-closure reservation, target-level intersecting fence/final census, crash-atomic deletion receipt and dry-run fixture; Platform/Datasets/Capture owners. |
+| Restore claim activates corrupt, inconsistent or operationally obsolete data | Critical | consistency-cut SQLite/WAL/artifact/delivery watermarks, measured RPO/RTO, safe archive validation, manifest/SHA-256 staged restore, ordered owner-first restore, writer fence, generation-CAS activation journal, health window/rebind and append-only receipt; Platform Backup owner. |
 | C++ binding collision or native mutation bypasses a Context boundary | Medium | `_trade_native` namespace, port capability catalog, no-persistence guard and differential test; engine child owner. |
 | Existing PIT baseline remains permissive | Critical | dedicated child P0 gate before formal Study migration; missing required clocks block formal result. |
 
@@ -1443,6 +1513,8 @@ Every child proposal must include:
 - a capacity envelope with measured 1x/10x workloads, declared SLO/resource
   budgets and overload behavior for every new provider, stream, query,
   outbox/process or BFF/SSE surface;
+- a cumulative `CombinedCapacityEnvelope` for the exact post-cutover topology,
+  whole-runner allocation, subsystem reservations and overload/fairness proof;
 - a Design Quality Brief and all applicable impact evidence;
 - compatibility/default/fallback behavior;
 - temporary-root validation plus migration/replay/rollback evidence where
@@ -1453,8 +1525,9 @@ Every child proposal must include:
   authorized recovery evidence before any production cutover;
 - SourceManifest rights, retention/tombstone and temporal/finality controls
   when a child handles external data or semantic derivation;
-- a `MigrationReconciliationManifest`, mixed-version/leader plan and staged
-  verified backup restore rehearsal when a child changes durable ownership;
+- a `MigrationReconciliationManifest`, mixed-version/leader plan, evidence
+  reservation/GC fence and consistency-cut staged backup restore rehearsal with
+  measured RPO/RTO when a child changes durable ownership;
 - a review worktree six-role consensus before implementation and before merge.
 
 The architecture change itself is complete only after its deterministic design

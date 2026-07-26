@@ -116,6 +116,19 @@ overload outcome. A child SHALL reserve named limits in that envelope and
 shall not activate a source, query, delivery or interface surface using an
 illustrative parent value as a production limit.
 
+In addition to isolated child evidence, every cumulative cutover SHALL produce
+one `CombinedCapacityEnvelope` for the exact deployment topology that will
+coexist after that cutover. The combined fixture SHALL run the newly selected
+surface concurrently with all already selected Capture, Dataset, Study,
+Process, outbox/replay, BFF/SSE and maintenance workloads applicable to that
+deployment. It SHALL declare a whole-runner allocation for CPU, memory, disk
+space and throughput, SQLite writer/lock time, file descriptors, connections,
+workers and child processes; name each subsystem reservation; and prove that
+the aggregate allocation fits the runner without starvation. Isolated child
+passes SHALL NOT substitute for this cumulative result. An overload fixture
+SHALL prove admission shedding, bounded backlog and recovery fairness without
+silently dropping work or changing query semantics.
+
 #### Scenario: A Dataset child reports a 10x query result
 
 - **WHEN** a Dataset child completes its 10x QueryBudget fixture
@@ -123,6 +136,15 @@ illustrative parent value as a production limit.
   threshold, observed scan/resource/latency values and explicit pass, defer or
   overload result that can be compared with another child without inferring
   undocumented measurement conditions
+
+#### Scenario: A new BFF coexists with capture and replay load
+
+- **WHEN** an interface child proposes selecting a BFF while Capture workers,
+  Dataset queries, Process/outbox replay and existing SSE clients remain active
+- **THEN** the cutover runs one combined 10x topology, records both aggregate
+  and per-subsystem allocations and observed peaks, proves finite overload and
+  recovery behavior, and blocks selection even if every isolated child result
+  passed when the combined allocation or fairness contract fails
 
 ### Requirement: Platform composition SHALL have one explicit Bootstrap owner
 
@@ -140,6 +162,45 @@ runtime container or bypass Bootstrap.
 - **THEN** the BFF obtains a query/use-case handle from Bootstrap, does not
   instantiate a `TradeDB`, EventBus, provider client or native binding itself,
   and preserves its legacy route contract through the compatibility adapter
+
+### Requirement: Runtime handler selection SHALL be exclusive and reversible
+
+Platform SHALL provide a generic, generation-fenced handler selector, while
+Processes SHALL own the semantic decision to select a legacy or Process
+handler for a process type. A forward transition SHALL use
+`legacy_selected -> denying_legacy -> quiescing_legacy ->
+process_switch_prepared -> process_selected`. Rollback SHALL use the symmetric
+`process_selected -> denying_process -> quiescing_process ->
+legacy_switch_prepared -> legacy_selected` transition. Admission denial,
+owned-operation and delivery-lease census, selector compare-and-swap and
+terminal selection evidence SHALL be durable. Only the selected generation may
+claim new work.
+
+No forward or rollback selector compare-and-swap may occur until the losing
+handler has denied new admission, has zero owned operations and residual child
+processes, and Platform Events has settled or explicitly transferred its inbox,
+outbox and delivery leases. A blocked or crashed transition SHALL remain in its
+last durable state with one permitted recovery action; it SHALL NOT infer a
+winner from process liveness or run both handlers. Process handler selection
+therefore depends on the implemented Bootstrap lifecycle and Platform Events
+containment evidence, not only on compatible command DTOs.
+
+#### Scenario: A legacy handler ignores quiescence during forward selection
+
+- **WHEN** a Process child denies legacy admission but a non-cooperative legacy
+  handler still owns an operation or child process
+- **THEN** selection remains `quiescing_legacy`, the Process handler cannot
+  claim new work, Bootstrap applies its bounded cancellation and TERM/KILL
+  policy, and an operator sees the blocking owner and permitted retry or
+  rollback action
+
+#### Scenario: The runtime crashes around a selector compare-and-swap
+
+- **WHEN** the runtime crashes immediately before or after a forward or rollback
+  selector compare-and-swap
+- **THEN** restart uses the durable generation, quiescence census and delivery
+  settlement receipts to select exactly one handler, rejects stale-generation
+  claims and resumes or reverses the transition idempotently
 
 ### Requirement: Bootstrap SHALL own one bounded shutdown lifecycle
 
@@ -167,6 +228,17 @@ this lifecycle. Its owner deadline, stop ordering and retryable stopping state
 SHALL be preserved while the foundation extends the same contract to CLI,
 workers and schedulers.
 
+Bootstrap SHALL register each resource in the lifecycle owner immediately after
+acquisition and before the resource may admit work. If construction fails
+before `running`, Bootstrap SHALL deny admission and clean up only the acquired
+resource set in reverse dependency order under one monotonic startup-cleanup
+deadline. Startup cleanup SHALL use the same child-process group termination,
+executor/lease drain, database-last and typed receipt rules as ordinary
+shutdown. A cleanup timeout SHALL remain retryable `stopping` with the startup
+failure and live-resource census; it SHALL NOT report a clean startup failure
+while a daemon thread, non-daemon thread, process, lease or database user is
+still owned.
+
 #### Scenario: A child process ignores cooperative shutdown
 
 - **WHEN** an owned provider, native or worker child process does not exit after
@@ -191,6 +263,15 @@ workers and schedulers.
 - **THEN** all requests observe the same attempt and deadline, no component is
   closed concurrently twice, and a later retry resumes only unresolved cleanup
   steps from durable or in-memory owner state
+
+#### Scenario: Construction fails after a worker and database are acquired
+
+- **WHEN** Bootstrap has acquired a database and started a worker but a later
+  adapter fails before the runtime reaches `running`
+- **THEN** no external admission opens, both acquired resources are registered
+  under one startup attempt, the worker is cancelled and its process group
+  terminated before the database closes, and timeout leaves a visible,
+  retryable `stopping` state rather than an unbounded `wait=True` cleanup
 
 #### Scenario: Shutdown completes within its budget
 

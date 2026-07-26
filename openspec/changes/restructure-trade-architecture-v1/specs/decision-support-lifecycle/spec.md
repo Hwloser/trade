@@ -27,6 +27,45 @@ identity in the owner-local transaction.
   evidence-unavailable reason and does not synthesize a neutral score,
   recommendation or successful review state
 
+### Requirement: Formal Decision references SHALL reserve their evidence closure
+
+Decision Support SHALL acquire durable, finite
+`EvidenceClosureReservationRef` values from the Dataset and Study owners before
+committing a formal `DecisionCase` as `ready_for_review`, `under_review` or
+`accepted`, covering the exact immutable references and transitive evidence
+closures it retains.
+Decision Support SHALL commit its case transition, reservation refs, audit
+entry and confirmation outbox in one owner-local transaction. Upstream owners
+SHALL confirm those reservations idempotently, and reconciliation SHALL recover
+a committed-but-unconfirmed case without creating a duplicate case or review.
+Expiry, supersession or withdrawal SHALL release protection only through an
+explicit audited retirement command after no retained formal case requires the
+closure. This protocol SHALL NOT use a cross-Context transaction.
+
+#### Scenario: A case commit crashes before upstream confirmation
+
+- **WHEN** a DecisionCase transition and its confirmation outbox commit but the
+  process crashes before Dataset or Study owners confirm the reservations
+- **THEN** replay confirms the same reservation refs idempotently, the evidence
+  remains unavailable to GC, and the transition is not repeated
+
+#### Scenario: One evidence owner refuses reservation
+
+- **WHEN** a case references both a DatasetSnapshotRef and StudyResultRef and
+  either owner reports missing, withdrawn, digest-mismatched or deletion-fenced
+  evidence
+- **THEN** Decision Support does not make the case formally ready or accepted,
+  records the typed refusal and permits bounded release of any other
+  unconfirmed reservation
+
+#### Scenario: A case is retired after its evidence expires
+
+- **WHEN** an expired, superseded or withdrawn case is no longer retained by
+  policy and its audited retirement command is accepted
+- **THEN** Decision Support emits the retirement fact and the upstream owners
+  release only that case's confirmed protection; shared evidence remains
+  protected by every other reservation or formal reference
+
 ### Requirement: Decision evidence SHALL remain immutable and revision-aware
 
 An accepted Review, Rationale or Override SHALL be append-only evidence.

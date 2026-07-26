@@ -71,10 +71,22 @@ directory now exists.
 
 Platform Backup SHALL create a manifest that identifies archive members,
 immutable content digests, size, creation generation, schema capability range
-and required context artifacts. Restore SHALL validate archive member safety,
-manifest integrity and SHA-256 digests before extraction into a staged
-temporary root, validate the staged database/artifacts against the manifest,
-and only then activate the selected generation. Restore SHALL persist a
+required context artifacts, the SQLite snapshot/WAL boundary, each external
+artifact-store generation and the outbox/inbox/process watermark that forms one
+recoverable consistency cut. Each protected deployment SHALL declare measured
+recovery point and recovery time objectives, backup frequency and retention,
+and the maximum acceptable lag between owner databases, immutable artifacts and
+delivery/process state. A backup whose members cannot be proven to share the
+declared cut SHALL be marked incomplete and SHALL NOT be an activation source.
+
+Restore SHALL validate archive member safety, manifest integrity and SHA-256
+digests before extraction into a staged temporary root, validate the staged
+database/artifacts against the manifest, and only then activate the selected
+generation. Restore order SHALL be owner databases and migration ledgers,
+immutable artifact stores, outbox/inbox/process delivery state, authoritative
+release records, rebuildable projections and finally interface admission. A
+projection or current pointer SHALL be rebuilt or reconciled from the restored
+authority rather than used to override it. Restore SHALL persist a
 `RestoreOperation` state machine
 `prepared -> staged_verified -> writers_fenced -> activated ->
 health_verified -> committed`, with explicit rollback/reconciliation states.
@@ -103,6 +115,16 @@ window SHALL leave or restore the prior active generation.
   readiness succeeds, and records the rollback/health outcome without exposing
   two writable generations
 
+#### Scenario: A backup misses its declared consistency cut or recovery objective
+
+- **WHEN** the database snapshot, WAL watermark, immutable artifact generation
+  and delivery/process watermark do not form the same declared cut, or a restore
+  rehearsal exceeds its RPO or RTO
+- **THEN** Platform marks the backup or rehearsal non-compliant with measured
+  lag and duration, prevents production activation from that receipt, preserves
+  the previous active generation and raises the owner/escalation path from the
+  operational matrix
+
 ### Requirement: Retention and garbage collection SHALL preserve reachable lineage
 
 Retention governance SHALL assign Capture artifacts, Dataset
@@ -115,6 +137,26 @@ StudyResult, release, process, outbox delivery, backup or legal hold. A delete
 or archival action SHALL append a tombstone/receipt with prior digest, policy,
 actor and recovery location where applicable.
 
+Every retained or newly created formal reference SHALL first acquire a durable
+reservation over its complete transitive evidence closure and SHALL confirm or
+release that reservation in the owning transaction. A GC plan SHALL bind an
+immutable sorted target set and target-set generation, then atomically close
+new reservations that intersect any target before its final reachability
+census. The final census and per-target delete authorization SHALL share the
+same target-level fence generation. A reservation for any different proof,
+snapshot, StudyResult, DecisionCase, process, backup or legal hold whose closure
+intersects a target SHALL lose the fence compare-and-swap or force that target
+out of the plan; closure identity alone SHALL NOT make intersecting evidence
+independent.
+
+For each target, GC SHALL persist `planned -> prepared -> deleted` state before
+unlinking bytes. The immutable deletion receipt and `prepared -> deleted`
+transition SHALL commit atomically in the owner WAL domain. Restart SHALL
+distinguish a still-live target, an absent target with matching prepared
+evidence, and a mismatched/third state; the last state fails closed for
+operator reconciliation. A delete operation SHALL never treat an absent file
+as successful without the matching prepared target identity and digest.
+
 #### Scenario: A raw Capture artifact reaches its nominal expiry
 
 - **WHEN** retention evaluation finds a CaptureArtifact past its nominal
@@ -123,6 +165,23 @@ actor and recovery location where applicable.
 - **THEN** garbage collection retains or archives the artifact according to
   policy, records why deletion is blocked, and preserves replay/integrity
   verification for the protected lineage
+
+#### Scenario: Another reference races with an intersecting GC plan
+
+- **WHEN** GC has planned a manifest target and a concurrent DatasetSnapshot or
+  StudyResult reservation includes that same target through a different
+  evidence closure
+- **THEN** the target-level fence admits exactly one side: the reservation
+  prevents target preparation or the closed GC target rejects the reservation;
+  GC repeats its final census under the same generation and cannot unlink the
+  target while the concurrent reference can become formal
+
+#### Scenario: The runtime crashes around physical deletion
+
+- **WHEN** GC crashes before or after unlinking a prepared target
+- **THEN** restart reconciles the durable target identity, digest and state,
+  appends or verifies one deletion receipt without double deletion, and blocks
+  on an absent or changed target that lacks matching prepared evidence
 
 ### Requirement: Data safety SHALL be preserved during migration
 

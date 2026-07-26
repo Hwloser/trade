@@ -64,13 +64,21 @@
 - [ ] 2.1 Prepare `architecture-guardrails-and-baselines` as an independent [validates:architecture.boundaries] [validates:dependency.guardrails] [validation:test]
   child OpenSpec change. Objective: define static import guard, contract type
   leakage guard, DB-owner guard and baseline inventories before any module
-  extraction. Inputs: dependency graph, current imports and table inventory.
-  Outputs: scoped child proposal/tasks and baseline test plan. Affected
-  contracts: context imports and table ownership. Validation: proposed
-  architecture test validates allowed/forbidden import samples and DB owner
-  fixtures. Rollback: remove only guardrail additions if they prove invalid; do
-  not alter existing source ownership. Completion evidence: child scope maps
-  each rule to a current path and a test fixture. [validates:architecture.boundaries]
+  extraction. Inputs: dependency graph, current imports, table inventory, root
+  CLI, FastAPI registry, React/SDK/notebook consumers and current OpenAPI
+  failure. Outputs: scoped child proposal/tasks, baseline test plan and one
+  immutable interface-baseline generation covering CLI help/parse/exit, both
+  72/81 HTTP registration modes, representative payload/error/SSE goldens,
+  notebook/import consumers and the `/predict` schema defect. This task freezes
+  evidence only and performs no interface delegation. Affected contracts:
+  context imports, table ownership and every retained interface signature.
+  Validation: proposed architecture tests validate allowed/forbidden imports
+  and DB owners; registry/golden fixtures account for all modes and fail rather
+  than emit an empty OpenAPI snapshot. Rollback: remove only guardrail/baseline
+  additions if invalid; do not alter source ownership or interface behavior.
+  Completion evidence: each rule and surface maps to a current path, fixture and
+  baseline generation consumed by the later compatibility child.
+  [validates:architecture.boundaries]
   [validates:dependency.guardrails] [validation:test]
 
 - [ ] 2.2 Prepare `kernel-and-public-contracts` as an independent [validates:architecture.boundaries] [validates:processes.recovery] [validates:interfaces.compatibility] [validation:test]
@@ -92,23 +100,29 @@
 - [ ] 2.3 Prepare `platform-persistence-events-and-bootstrap-foundation` as [validates:platform.foundation] [validates:processes.recovery] [validates:migration.governance] [validation:test]
   an independent prerequisite child OpenSpec change. Objective: supply the
   transaction/outbox port, command ingress/OperationReceipt, inbox/lease/ack/
-  DLQ and OrderingContract delivery, EventBus/LegacySchemaBootstrapAdapter,
-  DatabaseRuntime/MigrationCoordinator, CapacityEnvelope, verified restore and
-  Bootstrap composition before any Context relies on cross-context delivery.
+  DLQ and OrderingContract delivery, generic generation-fenced handler selector,
+  EventBus/LegacySchemaBootstrapAdapter, DatabaseRuntime/MigrationCoordinator,
+  CapacityEnvelope/CombinedCapacityEnvelope, evidence-reservation/GC fence
+  primitives, consistency-cut restore and Bootstrap composition before any
+  Context relies on cross-context delivery.
   It consumes the prior Kernel/public contracts and does not require
   unextracted Context repositories. Inputs: EventBus, `TradeDB`, migrations,
   runtime resources, backup audit and public DTOs. Outputs: generic public
   APIs, compatibility bridge, crash/mixed-version/restore fixture plan,
-  capacity result schema and one Bootstrap-owned shutdown lifecycle for CLI,
-  Web, workers and schedulers. Affected contracts: event envelope, persistence
-  transaction, operation receipt, migration capability, runtime composition
-  and shutdown receipt.
+  isolated/combined capacity result schemas, consistency-cut/RPO/RTO restore
+  protocol, target-fence/deletion receipt primitives and one Bootstrap-owned
+  startup/shutdown lifecycle for CLI, Web, workers and schedulers. Affected
+  contracts: event envelope, persistence transaction, operation receipt,
+  migration capability, handler selector, runtime composition, startup-cleanup
+  and shutdown receipts.
   Validation:
   crash-after-commit, duplicate ingress, inbox dedup, lease recovery, DLQ,
   N+1-before-N ordering gap, mixed-binary fence, staged corrupted-backup
-  rejection, activation/rebind rollback, repeated stop, stuck child-process
-  TERM/KILL escalation, executor/heartbeat drain, database-close ordering and
-  1x/10x backlog tests. Rollback:
+  rejection, consistency-cut mismatch, measured restore RPO/RTO,
+  activation/rebind rollback, failed partial construction, repeated stop, stuck
+  child-process TERM/KILL escalation, executor/heartbeat drain,
+  database-close ordering, target-fence/delete crash recovery and isolated plus
+  combined 1x/10x backlog tests. Rollback:
   select the legacy EventBus/TradeDB construction bridge without deleting
   outbox, receipt or restore evidence. Completion evidence: no Context child
   has to invent an atomic outbox, command handoff, runtime container or
@@ -130,26 +144,22 @@
   verifier-visible; no missing clock is visible. [validates:datasets.products]
   [validates:studies.reproducibility] [validation:test]
 
-- [ ] 2.5 Prepare `cli-http-sdk-compatibility` as an independent child OpenSpec [validates:interfaces.compatibility] [validates:platform.foundation] [validation:test]
-  change. Objective: freeze actual CLI help/parse/exit behavior, HTTP/OpenAPI/
-  SSE route behavior, Web BFF payloads, Observatory capability semantics and
-  notebook entry contracts before delegation. Inputs: root `trade`, CLI
-  registries, FastAPI route inventory, React API consumers and current
-  notebook. The current FastAPI application registers 72 routes in the
-  default-off/error Observatory mode and 81 when its full data router is
+- [ ] 2.5 Reconcile the interface evidence extension inside [validates:interfaces.compatibility] [validates:platform.foundation] [validation:test]
+  `architecture-guardrails-and-baselines`. Objective: prove the early immutable
+  baseline is complete before later delegation. Inputs: the generated CLI,
+  route-registry, golden payload/SSE, Observatory capability, React/SDK/notebook
+  and import inventories. The current FastAPI application registers 72 routes
+  in the default-off/error mode and 81 when the full Observatory router is
   enabled, while schema generation fails on the unresolved local
-  `PredictRequest` forward reference;
-  therefore the child SHALL first freeze the registered route/method/signature
-  table and golden payloads, then repair and add the OpenAPI snapshot without
-  omitting `/predict`. Outputs: compatibility matrix, route-registry baseline,
-  golden-response fixtures and OpenAPI repair/snapshot plan. Affected
-  contracts: all retained interfaces. Validation: CLI, OpenAPI/SSE, BFF,
-  ProcessView/ErrorEnvelope/status taxonomy, RetentionView/GC receipt and SDK
-  contract snapshot tests against temporary roots. Rollback: keep legacy
-  interface adapter selected until snapshot parity returns. Completion evidence:
-  each legacy entrance and mutation has a named adapter, durable receipt/
-  recovery path and retirement condition; BFF/SSE budgets cannot cause an
-  unbounded client-specific poller or queue.
+  `PredictRequest`; therefore the baseline records all signatures and `/predict`
+  goldens and records schema generation as a failed check rather than a reduced
+  inventory. Outputs: signed/content-digested baseline generation and consumer
+  ledger. Affected contracts: all retained interfaces. Validation: counts,
+  mode/capability, CLI, payload/error/SSE and consumer fixtures reconcile.
+  Rollback: remove or regenerate only the baseline generation; no route,
+  command or adapter selection changes. Completion evidence: the later
+  `cli-http-sdk-compatibility` child can consume one frozen generation without
+  rediscovering or redefining the public contract.
   [validates:interfaces.compatibility] [validates:platform.foundation]
   [validation:test]
 
@@ -158,40 +168,49 @@
 - [ ] 3.1 Prepare `capture-boundary` implementation readiness for a pilot [validates:capture.receipts] [validates:platform.foundation] [validates:migration.governance] [validation:test]
   source after the Platform foundation and its child design are strictly
   approved. Objective: document context-owned capture tables/artifacts,
-  SourceManifest rights/temporal/finality policy, provider ports,
+  SourceManifest rights/temporal/finality policy, trusted adapter conformance
+  receipts, provider ports and durable shared quota/circuit state,
   stage/digest/commit reconciliation, checkpoint/retry/quarantine/redrive
   policy and compatibility bridge without moving implementation in this parent
   change. Inputs: child contract, source rights audit and crypto run-store
   audit. Outputs: migration slice, additive schema plan, retention/tombstone
-  plan, source/credential durable quota ledger, Retry-After/deadline and
-  stream-buffer/checkpoint admission plan, capacity envelope and capture
-  fixture matrix. Affected contracts: CaptureArtifactRef, QuarantineReceipt,
+  plan, source/credential durable quota/circuit ledger, half-open probe fence,
+  Retry-After/deadline and stream-buffer/checkpoint admission plan, capacity
+  envelope and capture fixture matrix. Affected contracts: SourceAdapterConformanceReceiptRef,
+  CaptureArtifactRef, QuarantineReceipt,
   rights-restriction propagation event and existing source commands.
   Validation: temporary-root replay, supersession, stream segment,
-  no-provider replay, shared-credential concurrent-worker admission, rights
+  no-provider replay, shared-credential concurrent-worker admission, shared
+  circuit/half-open arbitration, conformance expiry/revocation/profile/runtime
+  drift, rights
   revocation through retained lineage, absent publication time, quarantined
   access/revalidation, commit crash and 1x/10x admission tests defined in the
   child. Rollback: previous capture adapter and immutable prior artifacts.
   Completion evidence: child change has an owned migration/rollback design,
-  policy digest, explicitly persisted quota/Retry-After evidence and code
-  worktree plan. [validates:capture.receipts]
+  policy digest, identity-bound passing conformance receipt, explicitly
+  persisted quota/circuit/Retry-After evidence and code worktree plan.
+  [validates:capture.receipts]
   [validates:platform.foundation] [validates:migration.governance]
   [validation:test]
 
 - [ ] 3.2 Prepare `dataset-product-boundary` as an independent child OpenSpec [validates:datasets.products] [validates:migration.governance] [validation:test]
   change. Objective: define canonical build/version/snapshot/release, quality,
-  lineage, canonicalization/quality/revision/clock/transform environment and
+  lineage, total quality-by-finality publication disposition,
+  canonicalization/quality/revision/clock/transform environment and
   physical-layout identities, QueryBudget, catalog rebuild and
   generation-stamped legacy pointer bridge for the same pilot source. Inputs:
   proven PIT/revision contract, Capture artifact contract, crypto run store and
   warehouse/catalog audit. Outputs: Dataset repository/migration/projection
   plan, reference verifier, SemanticSchemaPolicyRef and
   MigrationReconciliationManifest schema. Affected contracts:
-  DatasetVersionRef, DatasetSnapshotRef, quality/PIT query and
-  DerivationReceipt. Validation: lineage, source reconciliation, catalog
+  DatasetVersionRef, DatasetSnapshotRef, evidence-closure reservation,
+  quality/PIT query and DerivationReceipt. Validation: all nine quality
+  passed/warned/blocked by provisional/final/retracted pairs, lineage, source
+  reconciliation, catalog
   rebuild, immutable build input, policy/clock/revision/reference tamper,
   manifest-verified formal and compatibility reads, deterministic and
-  provider-backed derivation receipts, physical query-budget, pointer
+  provider-backed derivation receipts, reservation/confirmation crash retry,
+  physical query-budget, pointer
   reconciliation and rollback fixtures.
   Rollback: restore verified prior release pointer and retain the newer
   immutable version for audit. Completion evidence: child proposal identifies
@@ -206,9 +225,11 @@
   Study's preregistration, proven pinned snapshot input, feature
   classification, validation, promotion, stale result and evidence-gap flow.
   Inputs: Dataset snapshot/policy contract and current research workflow audit.
-  Outputs: Study lifecycle migration plan and golden fixture matrix. Affected
-  contracts: StudyResultRef and Decision Support read inputs. Validation: PIT
-  proof rejection, raw-input rejection, deterministic rerun, revision
+  Outputs: Study lifecycle migration plan, evidence-closure reservation
+  integration and golden fixture matrix. Affected contracts: StudyResultRef,
+  reservation/confirmation receipts and Decision Support read inputs.
+  Validation: PIT proof rejection, raw-input rejection, reservation crash/retry
+  before StudyResultRef commit, deterministic rerun, revision
   staleness and insufficient-data tests. Rollback: preserve prior research
   query path and expose new outputs as unpublished/stale. Completion evidence:
   child proposal declares all metrics, horizon and unavailable semantics.
@@ -221,13 +242,16 @@
   rationale, trust and override records file by file; establish DecisionCase,
   Review, Rationale, Override, PortfolioIntent, Expiry and AuditTrail ownership
   without adding trade execution. Inputs: DatasetSnapshotRef, StudyResultRef,
-  existing recommendation/action/causal paths and compatibility snapshots.
-  Outputs: owner-local repository/migration plan, evidence/staleness/expiry
-  transition matrix, read-only query DTOs and legacy adapter plan. Affected
-  contracts: DecisionCase views, reviews, overrides, non-executable intents and
-  accepted/rejected/expired/stale compatibility states. Validation: immutable
-  evidence rejection, stale/revision propagation, append-only override,
-  expiry, GET read-only, audit correlation and unsupported-execution tests.
+  evidence-closure reservation/confirmation contracts, existing
+  recommendation/action/causal paths and compatibility snapshots. Outputs:
+  owner-local repository/migration plan, evidence reservation and
+  staleness/expiry transition matrices, read-only query DTOs and legacy adapter
+  plan. Affected contracts: DecisionCase views, reservation refs, reviews,
+  overrides, non-executable intents and accepted/rejected/expired/stale
+  compatibility states. Validation: immutable evidence rejection, refusal and
+  committed-but-unconfirmed reservation crash/retry, shared-evidence retirement,
+  stale/revision propagation, append-only override, expiry, GET read-only,
+  audit correlation and unsupported-execution tests.
   Rollback: select the legacy recommendation/action read adapter, stop new case
   admission and retain append-only decision/audit facts. Completion evidence:
   no child treats Decision Support as Studies, a Web page, a global service or
@@ -242,13 +266,15 @@
   and platform backup behavior. Outputs: migration test harness and rollback
   checklist design. Affected contracts: SQLite/parquet readers, release
   pointers and legacy imports. Validation: migration rollback, old/new reader,
-  reconciliation manifest, artifact digest, staged verified backup restore,
-  writer-fence/activate/rebind/health-window rollback, protected-reference
-  retention, GC dry-run/run receipts and projection rebuild tests. Rollback:
+  reconciliation manifest, artifact digest, consistency-cut staged verified
+  backup restore, measured RPO/RTO, writer-fence/activate/rebind/health-window
+  rollback, protected-reference reservation, intersecting-closure GC race,
+  prepare/unlink crash, dry-run/run receipts and projection rebuild tests.
+  Rollback:
   restore previous generation or verified backup snapshot without deleting
   immutable records. Completion evidence: every durable child has a selected
-  migration mode, mixed-version fence, RestoreOperation recovery state and
-  rollback source.
+  migration mode, mixed-version fence, RestoreOperation recovery state,
+  measured recovery objectives, target-level GC fence and rollback source.
   [validates:migration.governance] [validation:test]
 
 ## 4. Runtime and Interface Orchestration Preparation
@@ -261,11 +287,15 @@
   EventBus/runtime/job/agenda audit and Context contracts. Outputs: process
   state schema, ActorContext/OperationReceipt/ProcessView, idempotency/
   deadline/compensation policy and temporary-root recovery fixtures. Affected
-  contracts: commands, events, process receipts and schedule envelopes.
+  contracts: commands, events, process receipts, schedule envelopes and the
+  Process-owned semantic use of the generic Platform handler selector.
   Validation: duplicate delivery, crash-after-commit, inbox/lease recovery,
-  partial fan-out, deadline, cancellation, DLQ redrive and replay tests.
-  Rollback: disable new process command while retaining pending outbox/process
-  facts for compatible recovery. Completion evidence: each process maps every
+  partial fan-out, deadline, cancellation, DLQ redrive, replay and crash
+  injection before/after every forward/rollback selector CAS with a
+  non-cooperative legacy handler. Rollback: use the symmetric selector state
+  machine after admission denial, zero losing-owner work and Platform Events
+  settlement, retaining pending outbox/process facts for compatible recovery.
+  Completion evidence: each process maps every
   step to a context command, `PublishDataset` remains a Datasets transaction,
   and there is no cross-context transaction. [validates:studies.reproducibility]
   [validates:processes.recovery] [validates:platform.foundation]
@@ -276,13 +306,15 @@
   bind every Platform, Process, Capture, Dataset and interface operational
   state to a versioned signal, SLI/SLO, threshold, owner, escalation and
   recovery runbook. Inputs: OperationReceipt, ProcessView, ErrorEnvelope,
-  RetentionView, GC receipts, CapacityEnvelope and delivery/restore state
-  contracts. Outputs: operational matrix, bounded status/query DTO inventory,
+  RetentionView, GC receipts, CapacityEnvelope/CombinedCapacityEnvelope and
+  delivery/restore/RPO/RTO state contracts. Outputs: operational matrix,
+  bounded status/query DTO inventory,
   synthetic-alert fixture plan and authorized recovery evidence requirements.
   Affected contracts: operation/process/retention views, status taxonomy,
   alert payloads and operator commands. Validation: synthetic alert,
   correlation drill-down, stale/unknown/blocked distinction, authorized
-  recovery, retention forecast and error-envelope compatibility tests.
+  recovery, retention forecast, restore-objective breach and error-envelope
+  compatibility tests.
   Rollback: disable only the new alert/routing adapter while retaining durable
   receipts, views and recovery evidence. Completion evidence: each production
   cutover criterion names a measured signal, owner, escalation path and
@@ -290,18 +322,25 @@
   [validates:processes.recovery] [validates:platform.foundation]
   [validates:migration.governance] [validation:test]
 
-- [ ] 4.3 Prepare interface composition migration slices. Objective: select [validates:processes.recovery] [validates:interfaces.compatibility] [validation:test]
+- [ ] 4.3 Prepare `cli-http-sdk-compatibility` and interface composition [validates:processes.recovery] [validates:interfaces.compatibility] [validation:test]
+  migration slices only after the baseline generation and required
+  Process/Context handles exist. Objective: repair the `/predict` OpenAPI defect,
+  reconcile generated OpenAPI to the frozen registry/goldens, then select
   low-risk CLI/HTTP/Web/SDK surfaces and route them through read-only query
   handles or command receipts, preserving existing compatibility adapters.
-  Inputs: compatibility snapshots and Process/Platform contracts. Outputs:
+  Inputs: immutable guardrails-owned baseline generation, compatibility
+  snapshots and Process/Platform/Context contracts. Outputs:
   per-surface BFF/adapter sequence for Today, Observatory, Research, Data Ops
   and Operations before broader pages. Affected contracts: route payloads,
   SSE, page state and command receipts. Validation: BFF contract, GET
-  read-only guard, bounded query, 1x/10x BFF/SSE shared-hub slow-client and
-  compatibility snapshot tests. Rollback: route to the legacy adapter without
+  read-only guard, bounded query, isolated plus combined 1x/10x BFF/SSE
+  shared-hub slow-client and compatibility snapshot tests. Rollback: route to
+  the legacy adapter without
   removing URL/payload aliases. Completion evidence: no selected interface
   module directly queries an owner table, provider or lifecycle pointer, and
-  unavailable/process errors map through the versioned compatible envelope.
+  unavailable/process errors map through the versioned compatible envelope, and
+  current registration drift forces explicit baseline regeneration/review
+  instead of silent rediscovery during cutover.
   [validates:processes.recovery]
   [validates:interfaces.compatibility] [validation:test]
 
