@@ -2,17 +2,18 @@
 
 ### Requirement: Context imports SHALL follow the declared acyclic graph
 
-The system SHALL enforce this graph: Capture MAY depend on Kernel and Platform
-public contracts/ports; Datasets MAY depend on Kernel, Platform public
-contracts/ports and Capture contracts; Studies MAY depend on Kernel, Platform
-public contracts/ports and Datasets contracts; Decision Support MAY depend on
-Kernel, Platform public contracts/ports, Datasets contracts and Studies
-contracts; Processes MAY depend on all business contracts and Platform public
-APIs; Interfaces MAY depend on contracts, approved use-case/query handles,
-Processes and Platform public APIs; Platform SHALL NOT depend on business
-Context implementations or contracts; Bootstrap alone MAY compose concrete
-adapters, repositories, use cases, process managers and platform
-implementations.
+The system SHALL enforce this graph: Capture MAY depend on Kernel; Datasets MAY
+depend on Kernel and Capture contracts; Studies MAY depend on Kernel and
+Datasets contracts; Decision Support MAY depend on Kernel, Datasets contracts
+and Studies contracts; Processes MAY depend on all business contracts and
+Platform public APIs; Interfaces MAY depend on contracts, approved
+use-case/query handles, Processes and Platform public status/query APIs;
+Platform SHALL NOT depend on business Context implementations or contracts;
+Bootstrap alone MAY compose concrete adapters, repositories, use cases,
+process managers and Platform implementations. A business Context that needs
+persistence, event publication, execution or native computation SHALL declare
+an owner-local port. Bootstrap SHALL inject a Platform- or external-library-
+backed adapter without creating a Context-to-Platform source dependency.
 
 #### Scenario: A Study needs capture information
 
@@ -24,16 +25,17 @@ implementations.
 
 - **WHEN** a context requires persistence, events, scheduling or native
   computation
-- **THEN** it depends on its own port or a Platform public capability and does
-  not import a concrete adapter from another context
+- **THEN** it depends on its own port, Bootstrap injects the selected technical
+  adapter, and the Context imports neither Platform nor a concrete adapter from
+  another context
 
-#### Scenario: A context uses a Platform transaction capability
+#### Scenario: A context commits through an owner-local transaction port
 
 - **WHEN** a Context use case requires an outbox, read-only session, execution
   or native-compute capability
-- **THEN** it imports only the Platform's framework-free public port/DTO and
-  its own port adapter, while Platform imports no Context contract or
-  implementation and Bootstrap supplies the concrete binding
+- **THEN** it imports its own framework-free port and contract DTOs, while
+  Platform imports no Context contract or implementation and Bootstrap
+  supplies the concrete binding
 
 ### Requirement: Contracts and domain code SHALL not leak implementation types
 

@@ -108,17 +108,18 @@ The design establishes:
   validation, data safety, rollout and rollback for every implementation
   slice.
 
-Nine capabilities are introduced as architecture requirements:
+Ten capabilities are introduced as architecture requirements:
 
 1. `repository-architecture`
 2. `capture-contract`
 3. `dataset-product-lifecycle`
 4. `study-lifecycle`
-5. `process-orchestration`
-6. `interface-compatibility`
-7. `dependency-guardrails`
-8. `migration-governance`
-9. `platform-foundation`
+5. `decision-support-lifecycle`
+6. `process-orchestration`
+7. `interface-compatibility`
+8. `dependency-guardrails`
+9. `migration-governance`
+10. `platform-foundation`
 
 ## Design Scope
 

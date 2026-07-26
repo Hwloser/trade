@@ -140,3 +140,63 @@ runtime container or bypass Bootstrap.
 - **THEN** the BFF obtains a query/use-case handle from Bootstrap, does not
   instantiate a `TradeDB`, EventBus, provider client or native binding itself,
   and preserves its legacy route contract through the compatibility adapter
+
+### Requirement: Bootstrap SHALL own one bounded shutdown lifecycle
+
+Bootstrap SHALL expose one idempotent runtime lifecycle for CLI, Web, workers
+and schedulers. The first stop request SHALL atomically change admission from
+`running` to `stopping`, reject new commands and assign one monotonic shutdown
+deadline shared by every owned component. Components SHALL receive only their
+remaining budget and SHALL NOT create nested unbounded waits or replace the
+owner deadline with independent full-duration timeouts. Repeated stop requests
+SHALL join or inspect the same shutdown attempt.
+
+The owner SHALL stop resources in dependency order: close external command and
+schedule admission; stop Process and event dispatch claims; request cooperative
+task cancellation; send TERM and then KILL to owned child-process groups within
+finite sub-budgets; drain executors, queues, SSE heartbeats and delivery leases;
+flush owner-local receipts/outbox state; and close repositories/database
+connections last. A component that cannot stop before its budget expires SHALL
+record a typed timeout with resource identity and remaining work. The runtime
+SHALL remain `stopping` and retryable instead of reporting `stopped` while
+daemon threads, owned child processes, leases or database users remain live.
+
+The existing `converge-runtime-boundaries` Web resource-container behavior is
+the initial compatibility seed, not proof that all entrypoints already satisfy
+this lifecycle. Its owner deadline, stop ordering and retryable stopping state
+SHALL be preserved while the foundation extends the same contract to CLI,
+workers and schedulers.
+
+#### Scenario: A child process ignores cooperative shutdown
+
+- **WHEN** an owned provider, native or worker child process does not exit after
+  cancellation and TERM within its allocated deadline
+- **THEN** Bootstrap kills the entire owned process group within the remaining
+  global budget, records TERM/KILL and exit evidence, continues bounded cleanup
+  of independent resources, and leaves no untracked child consuming the runner
+
+#### Scenario: An executor is still draining at the deadline
+
+- **WHEN** executor work or an SSE heartbeat cannot drain before the shared
+  monotonic deadline
+- **THEN** Bootstrap records a shutdown-timeout receipt identifying the live
+  resource and cancellation outcome, does not close a database still in use,
+  and leaves the lifecycle in retryable `stopping` rather than blocking
+  indefinitely or falsely reporting success
+
+#### Scenario: Stop is requested more than once
+
+- **WHEN** signal handling, HTTP lifespan cleanup and a caller each request
+  shutdown for the same runtime
+- **THEN** all requests observe the same attempt and deadline, no component is
+  closed concurrently twice, and a later retry resumes only unresolved cleanup
+  steps from durable or in-memory owner state
+
+#### Scenario: Shutdown completes within its budget
+
+- **WHEN** all admitted operations settle or cancel, child process groups exit,
+  delivery and heartbeat work drains, and repositories close before the
+  deadline
+- **THEN** Bootstrap records one terminal `stopped` receipt with component
+  outcomes and no owned non-daemon thread, process, lease or open database
+  connection remains

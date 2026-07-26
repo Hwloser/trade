@@ -5,25 +5,30 @@
   artifact stores, Observatory/PIT, notebooks and C++ boundary without mutating
   real data. Objective: establish code facts rather than rely on historic
   documents. Inputs: current source tree and OpenSpec policy. Outputs:
-  current-state inventory and ownership evidence in `design.md`. Affected
-  contracts: all retained public surfaces. Validation: source-only audit and
-  `git status -sb` preservation check. Rollback: none because no runtime state
-  changes. Completion evidence: audited paths and findings cited in
-  `design.md`. [validation:test]
+  `current-state-inventory.md`, `file-ownership-map.md`,
+  `table-and-artifact-ownership.md`, `interface-compatibility-matrix.md` and
+  summarized evidence in `design.md`. Affected contracts: all retained public
+  surfaces. Validation: source-only audit, route/CLI registry reconciliation
+  and `git status -sb` preservation check. Rollback: none because no runtime
+  state changes. Completion evidence: audited paths, 56-table/eight-artifact
+  ledger, 13+8 CLI registry and 68/77 HTTP registry are cited from the governed
+  design. [validation:test]
 
 - [x] 1.2 Write proposal, Design Quality Brief, target architecture, dependency [validates:architecture.boundaries] [validation:test]
   graph, runtime diagrams, compatibility matrix, ownership map, risks, rollback
   and child-change plan. Objective: create an implementation-independent design
   baseline. Inputs: audited facts and `design-policy/v1.toml`. Outputs:
-  governed OpenSpec proposal, design and eight capability specs. Affected
-  contracts: architecture and dependency rules. Validation: OpenSpec scenario
-  and Design Quality Brief completeness check. Rollback: edit only governed
-  design artifacts before review. Completion evidence: required artifacts exist
-  under the change directory. [validates:architecture.boundaries]
+  governed OpenSpec proposal, design, tasks, four audit attachments and ten
+  capability specs. Affected contracts: architecture and dependency rules.
+  Validation: OpenSpec scenario, attachment reconciliation and Design Quality
+  Brief completeness check. Rollback: edit only governed design artifacts
+  before review. Completion evidence: required artifacts exist under the
+  change directory and every attachment is referenced by `design.md`.
+  [validates:architecture.boundaries]
   [validation:test]
 
-- [x] 1.3 Run `./trade dev design-check restructure-trade-architecture-v1` [validates:architecture.boundaries] [validates:migration.governance] [validation:test]
-  restructure-trade-architecture-v1`, resolve deterministic blockers and assign
+- [x] 1.3 Run `./trade dev design-check restructure-trade-architecture-v1`, [validates:architecture.boundaries] [validates:migration.governance] [validation:test]
+  resolve deterministic blockers and assign
   every warning to design, task or explicit future follow-up. Objective: make
   the initial design evidence machine-valid. Inputs: proposal, design, specs,
   tasks and quality declaration. Outputs: passing non-strict report. Affected
@@ -33,7 +38,7 @@
   zero blocker report saved in the design review record. [validates:architecture.boundaries]
   [validates:migration.governance] [validation:test]
 
-- [x] 1.4 Run the required six-role design review from an isolated review
+- [ ] 1.4 Run the required six-role design review from an isolated review
   worktree and synthesize architecture, reliability, performance, data-quality,
   observability and news/future findings. Objective: challenge the design
   before strict approval. Inputs: frozen design artifact generation and real
@@ -44,7 +49,7 @@
   changed. Completion evidence: six judge reports and a synthesized finding
   list. [validation:review]
 
-- [x] 1.5 Resolve every P0 and material P1 design finding, refresh the
+- [ ] 1.5 Resolve every P0 and material P1 design finding, refresh the
   non-strict design check, record digest-bound review approval and run strict
   design-check. Objective: make the architecture implementable but still
   design-only. Inputs: review consensus and current artifact digest. Outputs:
@@ -93,13 +98,17 @@
   It consumes the prior Kernel/public contracts and does not require
   unextracted Context repositories. Inputs: EventBus, `TradeDB`, migrations,
   runtime resources, backup audit and public DTOs. Outputs: generic public
-  APIs, compatibility bridge, crash/mixed-version/restore fixture plan and
-  capacity result schema. Affected contracts: event envelope, persistence
-  transaction, operation receipt, migration capability and runtime composition.
+  APIs, compatibility bridge, crash/mixed-version/restore fixture plan,
+  capacity result schema and one Bootstrap-owned shutdown lifecycle for CLI,
+  Web, workers and schedulers. Affected contracts: event envelope, persistence
+  transaction, operation receipt, migration capability, runtime composition
+  and shutdown receipt.
   Validation:
   crash-after-commit, duplicate ingress, inbox dedup, lease recovery, DLQ,
   N+1-before-N ordering gap, mixed-binary fence, staged corrupted-backup
-  rejection, activation/rebind rollback and 1x/10x backlog tests. Rollback:
+  rejection, activation/rebind rollback, repeated stop, stuck child-process
+  TERM/KILL escalation, executor/heartbeat drain, database-close ordering and
+  1x/10x backlog tests. Rollback:
   select the legacy EventBus/TradeDB construction bridge without deleting
   outbox, receipt or restore evidence. Completion evidence: no Context child
   has to invent an atomic outbox, command handoff, runtime container or
@@ -126,7 +135,14 @@
   SSE route behavior, Web BFF payloads, Observatory capability semantics and
   notebook entry contracts before delegation. Inputs: root `trade`, CLI
   registries, FastAPI route inventory, React API consumers and current
-  notebook. Outputs: compatibility matrix and snapshot fixture plan. Affected
+  notebook. The current FastAPI application registers 72 routes in the
+  default-off/error Observatory mode and 81 when its full data router is
+  enabled, while schema generation fails on the unresolved local
+  `PredictRequest` forward reference;
+  therefore the child SHALL first freeze the registered route/method/signature
+  table and golden payloads, then repair and add the OpenAPI snapshot without
+  omitting `/predict`. Outputs: compatibility matrix, route-registry baseline,
+  golden-response fixtures and OpenAPI repair/snapshot plan. Affected
   contracts: all retained interfaces. Validation: CLI, OpenAPI/SSE, BFF,
   ProcessView/ErrorEnvelope/status taxonomy, RetentionView/GC receipt and SDK
   contract snapshot tests against temporary roots. Rollback: keep legacy
@@ -199,7 +215,27 @@
   [validates:datasets.products] [validates:studies.reproducibility]
   [validation:test]
 
-- [ ] 3.4 Prepare `tests-and-legacy-cleanup` migration rehearsal criteria. [validates:migration.governance] [validation:test]
+- [ ] 3.4 Prepare `decision-support-boundary` implementation readiness after [validates:decision_support.audit] [validates:interfaces.compatibility] [validates:migration.governance] [validation:test]
+  Study contracts exist and before Process/interface cutover. Objective:
+  classify recommendation, causal decision, picks, actions, portfolio-intent,
+  rationale, trust and override records file by file; establish DecisionCase,
+  Review, Rationale, Override, PortfolioIntent, Expiry and AuditTrail ownership
+  without adding trade execution. Inputs: DatasetSnapshotRef, StudyResultRef,
+  existing recommendation/action/causal paths and compatibility snapshots.
+  Outputs: owner-local repository/migration plan, evidence/staleness/expiry
+  transition matrix, read-only query DTOs and legacy adapter plan. Affected
+  contracts: DecisionCase views, reviews, overrides, non-executable intents and
+  accepted/rejected/expired/stale compatibility states. Validation: immutable
+  evidence rejection, stale/revision propagation, append-only override,
+  expiry, GET read-only, audit correlation and unsupported-execution tests.
+  Rollback: select the legacy recommendation/action read adapter, stop new case
+  admission and retain append-only decision/audit facts. Completion evidence:
+  no child treats Decision Support as Studies, a Web page, a global service or
+  an execution context, and every migrated table/artifact has one writer.
+  [validates:decision_support.audit] [validates:interfaces.compatibility]
+  [validates:migration.governance] [validation:test]
+
+- [ ] 3.5 Prepare `tests-and-legacy-cleanup` migration rehearsal criteria. [validates:migration.governance] [validation:test]
   Objective: define additive schema/version, old reader preservation,
   idempotent replay/shadow-copy, dual-read comparison, pointer switch and
   retirement checks for all later children. Inputs: table/artifact ownership map
@@ -269,9 +305,30 @@
   [validates:processes.recovery]
   [validates:interfaces.compatibility] [validation:test]
 
+- [ ] 4.4 Prepare `btc-observation-analysis-ui-v1` as an independent child [validates:interfaces.compatibility] [validates:datasets.products] [validates:studies.reproducibility] [validation:test]
+  after compatibility baselines and Dataset/Study query contracts. Objective:
+  reorganize the existing BTC Observatory into Market, Quality, Research and
+  Lineage work views without creating a business Context or changing old
+  routes. Inputs: current capability gate, URL/local state, decimal-string DTOs,
+  K-line/date/Trust/run/research components, BFF matrix and immutable query
+  contracts. Outputs: `BtcWorkspaceView` contract or equivalent bounded batched
+  BFF, responsive interaction design, route/payload compatibility adapter and
+  page migration plan. Affected contracts: Observatory capability, `obsLens`
+  deep links, granular BTC routes, snapshot identity, typed panel states and
+  workspace cache/ETag metadata. Validation: disabled/error/ready capability,
+  URL restore, old/new payload goldens, snapshot mismatch, partial/stale panel,
+  decimal precision, bounded fan-out, keyboard/ARIA, desktop/mobile screenshot,
+  no-overlap and chart nonblank pixel tests. Rollback: select the current
+  four-lens page and granular endpoints while preserving URL state and immutable
+  evidence. Completion evidence: every visible metric names source/ref and
+  unavailable state; no UI/BFF query performs capture, repair, publication,
+  Study execution or Decision transition.
+  [validates:interfaces.compatibility] [validates:datasets.products]
+  [validates:studies.reproducibility] [validation:test]
+
 ## 5. Final Design Approval and Handoff
 
-- [x] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validates:platform.foundation] [validation:test]
+- [ ] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validates:platform.foundation] [validation:test]
   dependency baselines. Objective: ensure the child-change order has no hidden
   import, table-owner or interface dependency. Inputs: completed design review,
   contract inventories and task graph. Outputs: final child-change ordering and
@@ -287,7 +344,7 @@
   [validates:dependency.guardrails] [validates:platform.foundation]
   [validation:test]
 
-- [x] 5.2 Record digest-bound six-role design consensus and strict approval. [validates:migration.governance] [validates:platform.foundation] [validation:review]
+- [ ] 5.2 Record digest-bound six-role design consensus and strict approval. [validates:migration.governance] [validates:platform.foundation] [validation:review]
   Objective: formally gate implementation until the current design is
   approved. Inputs: current artifact digest, non-strict report and six judges'
   file/line evidence. Outputs: `design-review.toml`, strict gate report and

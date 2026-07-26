@@ -146,7 +146,7 @@ ownership = "Capture owns provider attempt and checkpoint admission; each busine
 bound = "Every provider/credential, stream, Dataset query, outbox/process and BFF/SSE surface declares finite 1x/10x-tested request/byte/item/batch/in-flight/connections/deadline/resource budgets; no unbounded queue, poller-per-client or payload-bearing event envelope is permitted."
 ordering = "A command ingress idempotency claim and OperationReceipt precede its context transaction; aggregate state and outbox commit precede delivery lease; a consumer inbox claim precedes side effect and acknowledgement; immutable artifact receipt precedes Dataset build, Dataset release precedes Study rerun, and projection rebuild follows its authoritative event."
 atomicity = "The Platform foundation supplies each aggregate transaction plus corresponding outbox record and consumer inbox/ack mechanics. Cross-context progress is eventually coordinated by events and Process state, never by a shared transaction or synchronous callback chain."
-timeout_cancellation = "Platform execution assigns finite timeout and cancellation receipts; Capture retries are classified and bounded; process deadlines stop further retry; cancellation leaves committed artifacts and state auditable while downstream consumers observe explicit cancelled, blocked or unavailable results."
+timeout_cancellation = "Platform execution assigns finite timeout and cancellation receipts; Capture retries are classified and bounded; process deadlines stop further retry; cancellation leaves committed artifacts and state auditable while downstream consumers observe explicit cancelled, blocked or unavailable results. Bootstrap owns one monotonic shutdown deadline, closes admission first, bounds TERM/KILL for owned process groups, drains executors/heartbeats/leases, closes databases last and leaves a typed retryable stopping state on timeout."
 backpressure = "Capture rejects or defers intake at source policy limits, delivery batches admit finite work, Process Managers coalesce duplicate idempotency keys, and BFFs enforce bounded query windows without converting saturation into success."
 partial_failure = "A capture group, Dataset build, outbox fan-out or Study rerun can complete partially; owners persist per-input/per-step outcome, do not advance a formal release/result incorrectly, and resume or compensate from durable state."
 capacity_validation = "Temporary-root 1x/10x tests block provider ports, stream buffers, SQLite/Parquet/DuckDB queries, outbox consumers, multi-source joins, process steps and shared BFF/SSE fan-out to assert measured SLO/resource budgets, finite admission, retry/deadline behavior, idempotent recovery, fair replay, no duplicate commit and clear overload status."
@@ -222,6 +222,7 @@ contracts = [
   "command ingress and OperationReceipt",
   "inbox lease acknowledgement DLQ and redrive",
   "DatabaseRuntime MigrationCoordinator and verified restore",
+  "Bootstrap lifecycle and shutdown receipt",
 ]
 failure_states = [
   "crash after context commit",
@@ -229,6 +230,9 @@ failure_states = [
   "delivery lease expiry",
   "mixed-version writer",
   "corrupt backup archive",
+  "non-cooperative child process",
+  "executor or heartbeat shutdown timeout",
+  "database close while still in use",
 ]
 spec_requirements = [
   "platform-foundation:Platform persistence and events SHALL precede Context extraction",
@@ -237,6 +241,7 @@ spec_requirements = [
   "platform-foundation:Migration startup SHALL be coordinated and mixed-version safe",
   "platform-foundation:Capacity evidence SHALL be comparable across child changes",
   "platform-foundation:Platform composition SHALL have one explicit Bootstrap owner",
+  "platform-foundation:Bootstrap SHALL own one bounded shutdown lifecycle",
 ]
 validation_tasks = ["2.3", "3.1", "4.1", "4.2", "5.1", "5.2"]
 
@@ -300,6 +305,34 @@ spec_requirements = [
 validation_tasks = ["2.4", "3.3", "4.1"]
 
 [[obligations]]
+id = "decision_support.audit"
+owner = "decision support context"
+paths = [
+  "src/trade/decision_support/",
+  "tests/contract/decision_support/",
+  "tests/golden/decision_support/",
+]
+contracts = [
+  "DecisionCase lifecycle and immutable evidence refs",
+  "Review Rationale Override and AuditTrail",
+  "non-executable PortfolioIntent and expiry view",
+]
+failure_states = [
+  "moving or unavailable evidence",
+  "stale upstream StudyResult",
+  "expired case",
+  "unauthorized override",
+  "attempted trade execution",
+]
+spec_requirements = [
+  "decision-support-lifecycle:Decision Support SHALL own human-assist decision state",
+  "decision-support-lifecycle:Decision evidence SHALL remain immutable and revision-aware",
+  "decision-support-lifecycle:Overrides and portfolio intents SHALL be bounded and auditable",
+  "decision-support-lifecycle:Decision Support SHALL remain outside trade execution",
+]
+validation_tasks = ["3.4"]
+
+[[obligations]]
 id = "processes.recovery"
 owner = "process orchestration"
 paths = [
@@ -358,8 +391,9 @@ spec_requirements = [
   "interface-compatibility:Interfaces SHALL expose bounded retention and recovery operations",
   "interface-compatibility:BFF and SSE fan-out SHALL have finite client budgets",
   "interface-compatibility:SDK, notebooks and imports SHALL use shared contracts",
+  "interface-compatibility:BTC observation and analysis SHALL use one evidence identity",
 ]
-validation_tasks = ["2.2", "2.5", "4.2", "4.3", "5.1"]
+validation_tasks = ["2.2", "2.5", "3.4", "4.2", "4.3", "4.4", "5.1"]
 
 [[obligations]]
 id = "dependency.guardrails"
@@ -417,4 +451,4 @@ spec_requirements = [
   "migration-governance:Retention and garbage collection SHALL preserve reachable lineage",
   "migration-governance:Data safety SHALL be preserved during migration",
 ]
-validation_tasks = ["1.3", "2.3", "3.4", "4.2", "5.2"]
+validation_tasks = ["1.3", "2.3", "3.4", "3.5", "4.2", "5.2"]
