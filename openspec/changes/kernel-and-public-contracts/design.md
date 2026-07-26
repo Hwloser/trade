@@ -433,15 +433,23 @@ exact, at-most 2,048-byte replay-audit fact before the unchanged historical
 static owner namespace, the current replay request message/correlation/optional
 direct causation, historical message/operation/envelope digest, the internal
 admission binding digest, current safe principal ID, policy ref, `resolved`
-outcome and occurrence time. A same-key, same-binding retry/redelivery resolves
+outcome and `occurred_at: UtcInstant`. For a new key, the Platform owner samples
+`occurred_at` exactly once after the operation/claim resolves successfully and
+immediately before constructing the fact to commit. A clock failure returns
+`REPLAY_AUDIT_UNAVAILABLE`, commits no replay-audit fact and returns no receipt.
+The value is the Platform owner's first replay-audit observation time, not
+historical event, provider/source, publication, received, available, PIT,
+deadline, transaction-completion or response time. A same-key, same-binding
+retry/redelivery preserves the originally committed `occurred_at` and resolves
 that existing fact and the same receipt in the one transaction without a
-second audit row.
+second audit row or another wall-clock sample.
 
-If the transaction cannot start or commit within the shared deadline, or its
-persistence fails, replay returns `REPLAY_AUDIT_UNAVAILABLE` with no receipt or
-operation/process link. It does not silently succeed, retry or continue in the
-background. Audit commit followed by response loss is recovered by the
-same-key/same-binding path; a crash before commit leaves no replay-audit fact.
+If the clock sample fails, the transaction cannot start or commit within the
+shared deadline, or persistence fails, replay returns
+`REPLAY_AUDIT_UNAVAILABLE` with no receipt or operation/process link. It does
+not silently succeed, retry or continue in the background. Audit commit
+followed by response loss is recovered by the same-key/same-binding path; a
+crash before commit leaves no replay-audit fact.
 One bounded failure signal goes to the same future Platform operator health
 owner required for admission-audit failures, and runtime adoption remains
 blocked until that health query exists. To execute work again, replay derives a

@@ -102,20 +102,29 @@ and contain only schema/version, static owner namespace, current replay request
 message/correlation/optional direct causation, historical message and operation
 identities, historical-envelope digest, internal admission binding digest,
 current safe principal identity, immutable policy reference, `resolved` outcome
-and occurrence time. A same-key, same-binding retry/redelivery SHALL resolve
-that existing audit and the same receipt in the single transaction without
-creating a second audit row.
+and `occurred_at: UtcInstant`. For a new key, the Platform owner SHALL sample
+`occurred_at` exactly once after the operation/claim resolves successfully and
+immediately before constructing the audit fact to commit. Clock failure SHALL
+return `REPLAY_AUDIT_UNAVAILABLE`, commit no replay-audit fact and return no
+receipt. This value SHALL mean only the Platform owner's first replay-audit
+observation time; it SHALL NOT be interpreted as historical event,
+provider/source, publication, received, available, PIT, deadline,
+transaction-completion or response time. A same-key, same-binding
+retry/redelivery SHALL preserve the originally committed `occurred_at` and
+resolve that existing audit and the same receipt in the single transaction
+without another wall-clock sample or a second audit row.
 
-If the transaction cannot start or commit within the remaining deadline, or
-persistence fails, replay SHALL return `REPLAY_AUDIT_UNAVAILABLE` with no
-receipt or operation/process link. It SHALL NOT silently succeed, retry or
-continue in the background. A crash before commit SHALL leave no replay-audit
-fact. A crash after commit but before response SHALL recover through the
-same-key, same-binding path. The owner SHALL make at most one bounded failure
-signal to the same Platform operator health owner required for admission-audit
-failure; runtime adoption SHALL remain blocked until that bounded health query
-exists. Authorization denial SHALL occur before the replay transaction and
-SHALL disclose no existence fact. Re-executing work requires a new
+If that clock sample fails, the transaction cannot start or commit within the
+remaining deadline, or persistence fails, replay SHALL return
+`REPLAY_AUDIT_UNAVAILABLE` with no receipt or operation/process link. It SHALL
+NOT silently succeed, retry or continue in the background. A crash before
+commit SHALL leave no replay-audit fact. A crash after commit but before
+response SHALL recover through the same-key, same-binding path. The owner SHALL
+make at most one bounded failure signal to the same Platform operator health
+owner required for admission-audit failure; runtime adoption SHALL remain
+blocked until that bounded health query exists. Authorization denial SHALL
+occur before the replay transaction and SHALL disclose no existence fact.
+Re-executing work requires a new
 replay-derived command under the ordinary child-message rule with current actor,
 subject, policy and immutable input references.
 
@@ -160,12 +169,16 @@ subject, policy and immutable input references.
 - **THEN** replay denies the request before a replay transaction starts or operation or claim existence is read or disclosed
 
 #### Scenario: Replay audit persistence is unavailable
-- **WHEN** the single replay transaction cannot start or commit within the remaining deadline or persistence fails
+- **WHEN** the first-audit wall-clock sample fails, the single replay transaction cannot start or commit within the remaining deadline, or persistence fails
 - **THEN** replay returns `REPLAY_AUDIT_UNAVAILABLE` without a receipt, operation/process link, retry, background continuation or unaudited success
 
 #### Scenario: Replay response is lost after audit commit
 - **WHEN** the owner commits the resolved replay audit and crashes before the historical receipt response arrives
-- **THEN** retry/redelivery with the same current request tuple and binding resolves the same audit and receipt without a second audit row
+- **THEN** retry/redelivery with the same current request tuple and binding preserves the first `occurred_at` and resolves the same audit and receipt without another wall-clock sample or a second audit row
+
+#### Scenario: Replay audit time is not market time
+- **WHEN** a consumer reads replay-audit `occurred_at`
+- **THEN** it is interpreted only as the Platform owner's first replay-audit observation time and never as historical event, provider/source, publication, received, available, PIT, deadline, transaction-completion or response time
 
 #### Scenario: A replay request identity is reused for another binding
 - **WHEN** an existing replay-audit key is submitted with a different historical digest, identity, operation, current subject, actor or policy binding
