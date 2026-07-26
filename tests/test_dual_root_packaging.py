@@ -40,6 +40,7 @@ class WheelEvidence:
 
 
 class ImportProbe(TypedDict):
+    exports: dict[str, list[str]]
     modules: dict[str, str]
     sys_path: list[str]
 
@@ -206,10 +207,18 @@ import importlib
 import json
 import sys
 
+modules = {
+    name: importlib.import_module(name)
+    for name in sys.argv[1:]
+}
 payload = {
     "modules": {
-        name: str(importlib.import_module(name).__file__)
-        for name in sys.argv[1:]
+        name: str(module.__file__)
+        for name, module in modules.items()
+    },
+    "exports": {
+        name: sorted(getattr(module, "__all__", ()))
+        for name, module in modules.items()
     },
     "sys_path": sys.path,
 }
@@ -340,12 +349,31 @@ def test_dual_root_source_editable_and_wheel_contract(tmp_path: Path) -> None:
     installed = _probe_imports(
         wheel_python,
         cwd=tmp_path,
-        modules=("trade_py", "trade"),
+        modules=(
+            "trade_py",
+            "trade",
+            "trade.kernel.ids",
+            "trade.kernel.time",
+            "trade.kernel.digest",
+            "trade.kernel.errors",
+            "trade.kernel.result",
+            "trade.kernel.envelope",
+        ),
     )
-    for module in ("trade_py", "trade"):
+    for module in installed["modules"]:
         module_path = Path(installed["modules"][module]).resolve()
         assert module_path.is_relative_to((tmp_path / "wheel-venv").resolve())
         assert not module_path.is_relative_to(REPO_ROOT.resolve())
+    assert installed["exports"] == {
+        "trade": [],
+        "trade.kernel.digest": ["ContentDigest"],
+        "trade.kernel.envelope": ["Envelope", "EnvelopeMeta"],
+        "trade.kernel.errors": ["ContractErrorCode", "ContractViolation"],
+        "trade.kernel.ids": ["IdNamespace", "OpaqueId"],
+        "trade.kernel.result": ["Result"],
+        "trade.kernel.time": ["Deadline", "DurationMs", "UtcInstant"],
+        "trade_py": [],
+    }
     installed_sys_path = tuple(Path(entry).resolve() for entry in installed["sys_path"] if entry)
     assert REPO_ROOT.resolve() not in installed_sys_path
     assert build_root.resolve() not in installed_sys_path
