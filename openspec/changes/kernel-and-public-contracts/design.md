@@ -17,7 +17,7 @@ were treated as intent, not as current implementation.
 |---|---|---|---|
 | `trade_py.bus.Event` | Mutable event contains integer ID, arbitrary mapping and a live `EventBus` back-reference | Cannot cross a Context boundary or serialize without implementation leakage | Map only durable metadata; exclude `bus`; typed event payloads remain later Context work |
 | `trade_py.bus.models` | Admission, lifecycle and capacity use several local enums; handler failure may carry a live `Exception` | Useful runtime facts, but not a stable public command/error schema | Preserve legacy enums; define separate closed public state families and safe errors |
-| `trade_py.data.operations.contracts` | Operation and step statuses are open strings and evidence is `dict[str, Any]` | Data-operation semantics would be falsely generalized as global operation semantics | Keep Data Operations as legacy owner; do not re-export these DTOs |
+| `trade_py.data.operations.contracts` | Operation and step statuses are open strings and evidence is `dict[str, Any]` | Data-operation semantics would be falsely generalized as global operation semantics | Keep Data Operations as inventoried legacy-only owner; add no canonical mapper until the Dataset/interface owner defines it |
 | `trade_py.data.contracts` | Quality/freshness DTOs are mutable and contain business dataset semantics | They belong to Datasets, not Kernel or Platform | Defer to `dataset-product-boundary` |
 | `trade_py.observatory.domain.models.ArtifactRef` | Frozen reference includes `relative_path` and Observatory run identity | Filesystem location and product-surface ownership are not a cross-context immutable reference | Preserve legacy shape; never expose its path through the new reference identity |
 | `trade_py.observatory.domain.vocab.ObservatoryError` | Stable reason enum exists, but error payload accepts arbitrary `extra` and messages | A direct global promotion could leak unsafe fields and Observatory vocabulary | Use a whitelist mapper into a framework-free `ErrorEnvelope` |
@@ -25,7 +25,7 @@ were treated as intent, not as current implementation.
 | `trade_web.backend.runtime.resources` | Web shutdown has a shared 10-second deadline and reports an incomplete stage | A timed-out daemon shutdown thread may remain; there is no public residual-work receipt | Define `ShutdownReceipt`; adoption is gated by `runtime-owner-shutdown-and-recovery-hardening-v1` |
 | `trade_py.cli.event` and `trade_py.cli.run` | Existing waits include 300, 3600 and 7200 seconds; event wait timeout can retain legacy exit code zero | Long synchronous observation owns the caller and conflates command admission with completion | Freeze compatibility; new interfaces return receipt quickly and observe through `ProcessView` |
 | `trade_web.backend.app:/api/run` | Stable success/failure payloads, 503 mapping and `Retry-After` are covered by tests | Shape differs from the target operation/error contracts | Add pure mapper fixtures; do not reroute the endpoint in this child |
-| `TradeDB.job_runs` | Shared rows expose running/ok/error/terminated and recovery reconciliation | Status is not enough to prove user cancellation or process completion | Map conservatively; never infer `cancelled` without cancellation evidence |
+| `TradeDB.job_runs` | Shared rows expose running/ok/error/terminated; schema defaults are naive UTC while ordinary writes use naive local time | Status is not enough to prove user cancellation/process completion, and mixed-origin naive timestamps cannot prove a UTC instant or freshness | Preserve time tokens as bounded `unproven` observations; never infer `cancelled`, `UtcInstant` or current ownership without separate evidence |
 | `pyproject.toml` | Distribution is `trade-py`; discovery includes only `trade_py*` and `scripts*` | `src/trade` is not currently installed in editable or wheel builds | Require a proven additive dual-root package discovery change or stop implementation |
 
 The observed user symptom in this design session was a TRAE control-plane
@@ -52,6 +52,12 @@ Trade production runtime behavior.
    one informal `terminated` status.
 6. The target `src/trade` package is not yet discoverable by the current build.
    A source-only test import would hide a broken wheel contract.
+7. The parent normative specs and task sequence place durable command ingress
+   and `OperationReceipt` in Platform, but one parent ownership-table row
+   combines operation receipts and process state under Processes. A repository
+   implementation could misread that prose as dual ownership.
+8. Canonical JSON settings alone do not choose among all legal Unicode and
+   escape spellings. Fingerprinted bytes need one exact output grammar.
 
 ### Constraints and stakeholders
 
@@ -413,9 +419,26 @@ terminal_at
 process_id: OpaqueId | None
 ```
 
-`process_id` is a Platform-owned non-semantic opaque link. Platform must not
-import the Processes-owned `ProcessId`; Processes may wrap the same wire
-identity in its own contract.
+Platform command ingress is the sole future authority and writer for
+idempotency claims, operation identity, every `OperationReceipt` state
+transition and terminal receipt. Processes owns only Process Manager workflow
+state and its `ProcessView`; a Process transition cannot rewrite or become an
+alternate source of truth for an OperationReceipt. `process_id` is a
+Platform-owned non-semantic opaque link. Platform must not import the
+Processes-owned `ProcessId`; Processes may wrap the same wire identity in its
+own contract. Process creation/linkage is coordinated by durable command/event
+handoff and owner-local transactions, never a shared Platform/Processes
+transaction.
+
+This split follows the parent normative `platform-foundation` requirement and
+task 2.3, which assign command ingress and `OperationReceipt` to Platform, while
+`process-orchestration` assigns Process Manager records and `ProcessView` to
+Processes. The parent design table currently merges "operation receipts/process
+state" into one Processes row. Before either child creates a repository, a
+governed parent clarification must split that row into Platform operation
+receipt ownership and Processes workflow ownership and regain strict approval.
+This contract-only child creates no repository and does not use the ambiguous
+table prose to authorize a writer.
 
 Every public fingerprint is an exact `FingerprintV1` value:
 
@@ -634,9 +657,19 @@ producers negotiate against an explicit accepted-version set. Additive wire
 fields therefore require a new version or a separately specified compatibility
 projection. No decoder silently drops unknown fields.
 
-Canonical JSON is UTF-8, sorted by key, compact separators, `allow_nan=False`,
-RFC3339 UTC `Z`, enum values as strings, integers only for durations/counts,
-and no binary or floating point values. Platform error links use
+Canonical JSON is UTF-8, sorted by the decoded Unicode scalar-value sequence of
+each object key, compact separators, `allow_nan=False`, RFC3339 UTC `Z`, enum
+values as strings, integers only for durations/counts, and no binary or
+floating point values. Canonical output preserves the exact decoded Unicode
+scalar sequence without NFC/NFD/NFKC/NFKD normalization and encodes non-ASCII
+scalars directly as UTF-8 (`ensure_ascii=False`). It rejects lone surrogates.
+It never escapes `/`; it escapes `"` and `\` with `\"` and `\\`; it uses only
+the short lower-case control escapes `\b`, `\t`, `\n`, `\f`, `\r` where
+applicable and lower-case `\u00xx` for every other U+0000-U+001F control.
+No other character uses `\u` escaping. Decoding may accept any grammar-valid
+escape spelling, but duplicate-key detection and ordering use decoded scalar
+sequences, and re-encoding always emits this one canonical spelling. Platform
+error links use
 `process_id: OpaqueId | None` and never import Processes-owned `ProcessId`.
 Limits are:
 
@@ -670,7 +703,10 @@ settings cannot change behavior.
 
 Only bytes accepted by the scanner reach JSON materialization. The decoded tree
 is then checked again with an explicit bounded stack/queue before DTO
-construction and public fingerprint calculation. Root scalar depth is zero; a
+construction and public fingerprint calculation. Golden cases freeze CJK,
+composed/decomposed combining sequences as distinct values, control escapes,
+solidus, reverse solidus, quotation mark, escape-equivalent duplicate keys and
+decoded-key ordering. Root scalar depth is zero; a
 root array/object has depth one; each array/object nested as a value increments
 depth by one. A value node is the root or any object value/array element; object
 keys consume string and member budgets but are not additional value nodes.
@@ -838,10 +874,10 @@ Web/FastAPI types.
 | Legacy surface | Canonical interpretation | Preserved legacy behavior | Refusal/fallback |
 |---|---|---|---|
 | EventBus publish result | Durable legacy event observation plus bounded handler-admission summary/counts | Existing aggregate outcome, event ID/topic/output and handler behavior | Aggregate spelling alone never erases mixed accepted/saturated/stopping/failed admissions or implies handler completion |
-| `job_runs.running` | Running only when observed row is current | Existing row/status | Stale/owner-lost remains explicit |
-| `job_runs.ok` | Completed | Existing `ok` | No inferred business result |
-| `job_runs.error` | Failed | Existing `error` | Raw result summary is not public error text |
-| `job_runs.terminated` | Cancelled only with durable cancel intent; otherwise failed/unknown terminal observation | Existing `terminated` | Never infer user cancellation from signal/exit alone |
+| `job_runs.running` | Legacy running observation only; it is current only with separately supplied row-bound owner instance, fence generation and unexpired liveness/reconciliation evidence | Existing row/status | Missing/mismatched/stale evidence is owner-lost or unknown, never current |
+| `job_runs.ok` | Completed legacy status with unproved business-result meaning | Existing `ok` | No inferred business result; naive timestamps remain unproven |
+| `job_runs.error` | Failed legacy status | Existing `error` | Raw result summary is not public error text; naive timestamps remain unproven |
+| `job_runs.terminated` | Cancelled only with durable cancel intent; otherwise failed/unknown terminal observation | Existing `terminated` | Never infer user cancellation from signal/exit alone; missing terminal time stays explicit |
 | `/api/run` accepted | Legacy run-admission observation only; `run_id` is durable legacy identity | Exact current 200 payload including PID | No formal OperationReceipt until the same admission has trusted actor, correlation/causation and versioned command/idempotency fingerprints; PID remains legacy-only |
 | `/api/run` `saturated` | Admission `saturated` plus `COMMAND_CAPACITY_EXHAUSTED` | Exact 503 body and `Retry-After: 1` | Capacity rejection precedes `run_id`; no receipt or operation ID |
 | `/api/run` `stopping` without `run_id` | Admission `unavailable` plus `COMMAND_RUNTIME_STOPPING` | Exact 503 body and `Retry-After: 5` | No receipt, operation ID or cancellation |
@@ -862,6 +898,25 @@ never map to success.
 Mappings are implemented only in the four owner-specific modules named in
 Decision 1. Package `__init__` modules must not aggregate or re-export them.
 
+Data Operations is an explicit inventory-only disposition, not a fifth mapper.
+Its `OperationResult` and `StepResult` retain open statuses and arbitrary
+evidence under `trade_py.data.operations`; this child preserves their current
+CLI/JSON snapshots and refuses canonical mapping. The later
+`dataset-product-boundary` plus owning interface child must define the semantic
+owner, closed source version, target contract, lossiness/refusal behavior and
+retirement condition before a mapper can be added.
+
+`LegacyJobRunObservation` preserves legacy time fields only as optional bounded
+raw ASCII tokens plus `time_provenance = unproven` unless an owner-specific
+reader supplies independent offset/timezone evidence bound to the same row and
+generation. The mapper never assumes local timezone, UTC, host timezone or DST
+fold/gap and never constructs `UtcInstant` from a naive token. A running row is
+`current` only when separate evidence binds the row ID, owner instance, fence
+generation, observed-at instant and unexpired liveness/reconciliation result.
+Absent, mismatched or stale evidence yields `unknown`/owner-lost. Malformed,
+mixed-origin, DST gap/overlap, missing terminal-time and owner-lost fixtures
+freeze this fail-closed behavior.
+
 The EventBus mapper preserves `accepted_count`, `saturated_count`,
 `shutting_down_count` and `submission_failed_count`, total handler count, and a
 deterministic latest-at-most-50 summary ordered by existing handler tuple order.
@@ -872,6 +927,12 @@ mixed result remains `mixed`; it is never flattened to the aggregate
 precedence outcome. If the target schema cannot represent every count and
 truncation invariant, the mapper refuses the canonical projection and retains
 only the unchanged legacy result.
+Because current EventBus materializes one result per handler and has no
+registration cardinality contract, the mapper accepts at most 1,024 source
+handler results. At 1,025 it refuses canonical projection before allocating a
+second DTO collection and retains only the unchanged legacy result. Tests cover
+1,024, 1,025 and a 10x over-limit iterable while proving no proportional target
+summary allocation.
 
 The runtime mapper exposes an owner-local `LegacyRunAdmissionObservation` for
 current `/api/run`. It may carry the durable `run_id`, target, closed start
@@ -966,7 +1027,13 @@ to directory migration. Its target-graph fixture enforces:
 5. each compatibility mapper imports only its reviewed target contracts and
    legacy owner; and
 6. no compatibility package, `__init__` or alias re-exports an aggregate mapper
-   facade.
+   facade; and
+7. every legacy `trade_py`/`trade_web` module outside the four exact
+   `trade_py.compat.*_contracts` allowlist is forbidden from importing
+   `trade.platform.contracts` or `trade.processes.contracts` until the
+   hardening/adoption child deliberately revises the baseline. Negative fixtures
+   cover EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner` and
+   `WebResourceContainer`.
 
 The guard reports the importing file, imported symbol and violated edge. Its
 fixtures include a direct import, relative import, alias/re-export and
@@ -991,9 +1058,10 @@ tail join.
 ### Ownership and boundaries
 
 Kernel owns only the parent-approved identity/time/digest/error/result/envelope
-modules. Platform contracts own actors, command/query metadata, operations,
-safe errors and controls. Processes contracts own `ProcessView` and process
-state. All business and policy references remain future owner contracts under
+modules. Platform contracts own actors, command/query metadata, operation
+identity and the complete `OperationReceipt` lifecycle, safe errors and
+controls. Processes contracts own only Process Manager workflow state and
+`ProcessView`. All business and policy references remain future owner contracts under
 the normative reference policy. Owner-specific legacy adapters own mapping and
 import target contracts; there is no aggregate facade and target packages never
 import legacy implementation. Package configuration owns additive discovery
@@ -1042,6 +1110,8 @@ parse and during an iterative traversal. Wire bytes, nesting, strings,
 per-container items, aggregate members, nodes, scopes, delegation, recovery
 descriptors and process history have fixed limits. No queue, worker, polling
 loop, database call, network call or artifact read exists in this child.
+Legacy EventBus canonical projection has a 1,024-source-result admission bound;
+larger materialized legacy results remain available only in their existing form.
 Admission test doubles perform at most three attempts, twelve HMAC derivations,
 three candidate queries, three claim transaction/CAS acquisitions and one
 refusal-audit transaction for one command. They attempt one counter, one event
@@ -1051,8 +1121,19 @@ Ordinary control tests use a fake monotonic clock and no real sleeps at exactly
 1 and 10 owners in each closed residual category. One minimal real subprocess
 fixture uses one child, one shared 2-second deadline, at most 250 ms elapsed
 tolerance, no retry, and a 5-second whole-fixture wall-clock ceiling. Packaging
-builds one wheel and installs it offline with `--no-deps`. No claim about
-production throughput is made.
+builds one wheel and installs it offline with `--no-deps`. Its normalized member
+inventory must equal the union of discovered source `.py` packages plus the
+single `trade_py-*.dist-info` metadata/entry-point family: no repository data,
+test, Web frontend, engine, generated, vendor, cache or undeclared package-data
+member is accepted. Every packaged `.py` member must equal its source bytes.
+Let `S` be the sum of those source bytes. The dist-info family has at most eight
+regular members, at most 65,536 bytes each and at most 262,144 uncompressed
+bytes in aggregate. Total uncompressed member bytes must be at most
+`S + 262,144`; the wheel file must be at most `S + 524,288` bytes. The proof
+records member count, compressed and uncompressed bytes and refuses any member
+or byte budget outside these formulas; these are deterministic source-relative
+budgets rather than wall-clock thresholds. No claim about production
+throughput is made.
 
 ### Persistent-write safety
 
@@ -1092,10 +1173,13 @@ exception text and tracebacks are not public telemetry.
 
 Unit tests cover every primitive invariant and transition. Contract tests cover
 canonical bytes, round trip, version negotiation, unknown fields, size/depth
-limits and no forbidden runtime types/imports. Actor tests cover trusted local
+limits, exact Unicode/escape/solidus/key ordering and no forbidden runtime
+types/imports. Actor tests cover trusted local
 sources, payload spoofing, anonymous policy and wire downgrade. Legacy snapshots
-cover EventBus, job runs, `/api/run`, CLI wait timeout, Observatory error/ref
-and shutdown-incomplete mapping. Concurrency fixtures cover observation
+cover bounded/refused EventBus cardinality, job-run mixed-origin naive-time and
+row-bound current evidence, `/api/run`, CLI wait timeout, Observatory error/ref
+and shutdown-incomplete mapping; Data Operations remains snapshot-tested
+legacy-only with canonical mapping refused. Concurrency fixtures cover observation
 deadline, cancellation acceptance versus terminalization, process-tree control,
 all residual categories, stale-writer rejection, crash takeover, concurrent
 callers and an executor whose final join would block. Fake-clock tests own most
@@ -1107,7 +1191,8 @@ products, forbidden field combinations, the 2,048-byte audit allowlist, closed
 metric labels, one-shot redacted event/counter/alert behavior and no background
 continuation. The minimal real subprocess
 fixture proves process-tree reap under a fixed wall-clock ceiling. Packaging
-tests cover source, editable and one offline/no-deps clean-wheel environment.
+tests cover source, editable and one offline/no-deps clean-wheel environment
+with exact source-derived member and compressed/uncompressed byte inventory.
 Existing focused tests run unchanged.
 
 ### Alternatives and trade-offs
@@ -1148,7 +1233,16 @@ additive files/config. No data restore is needed.
   unknown fields.
 - **Legacy state mapping overstates certainty** -> Use conservative mapping,
   lossiness records and `unknown`/`not_observed`; require durable evidence for
-  cancellation or completion.
+  cancellation or completion; naive mixed-origin job-run times remain
+  `unproven` and cannot establish current ownership.
+- **Platform and Processes both appear to own an operation receipt** -> Platform
+  alone owns admission and the full OperationReceipt lifecycle; Processes owns
+  workflow/ProcessView and links by opaque ID. Require a governed parent-table
+  clarification before any repository implementation.
+- **A legacy runtime imports a new control DTO and appears migrated before
+  shutdown is bounded** -> Architecture guard permits target imports only from
+  the four pure compatibility modules until the hardening child changes the
+  allowlist with strict approval.
 - **Actor provenance is treated as authentication by name only** -> Wire decode
   always downgrades assurance; only trusted adapter evidence can establish it;
   mutation rejects unknown actors.

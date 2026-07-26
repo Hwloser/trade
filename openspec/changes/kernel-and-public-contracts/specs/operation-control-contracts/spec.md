@@ -135,8 +135,19 @@ identity is created. Only a command-equivalent duplicate admission SHALL return
 the existing receipt; an idempotency identity reused for another command SHALL
 return the conflict error above without that receipt. Raw payloads and raw
 idempotency keys SHALL NOT be exposed.
+Platform command ingress SHALL be the sole future authority and writer for
+idempotency claims, operation identity and every initial, intermediate and
+terminal `OperationReceipt`. Processes SHALL own Process Manager workflow state
+and `ProcessView` only; it SHALL NOT create, rewrite or become a second source
+of truth for an OperationReceipt. Platform and Processes SHALL link by opaque
+identity plus durable command/event handoff, not a shared transaction.
 The Platform-owned optional process link SHALL be `OpaqueId | None`; Platform
 SHALL NOT import the Processes-owned `ProcessId`.
+
+Before a Platform or Processes child creates a repository, the parent
+architecture ownership matrix SHALL be governedly clarified to split Platform
+operation-receipt ownership from Processes workflow ownership. Until then, this
+child SHALL remain contract-only and SHALL authorize no durable writer.
 
 The exact allowed state transitions SHALL be:
 `requested -> accepted|failed|cancelled|deadline_exceeded`;
@@ -175,6 +186,10 @@ process to owner `deadline_exceeded`.
 #### Scenario: Caller observation expires while the owner still runs
 - **WHEN** the observation deadline expires before a newer owner state and the worker has neither exited nor been durably write-fenced
 - **THEN** the query reports `not_observed` while owner state remains non-terminal
+
+#### Scenario: A Process Manager advances its workflow
+- **WHEN** Processes records a new current step or terminal Process state
+- **THEN** it updates only its Process Manager record and ProcessView, and any OperationReceipt change requires a separate Platform-owned transition through durable handoff
 
 ### Requirement: Process views SHALL be bounded read-only recovery projections
 

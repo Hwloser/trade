@@ -34,8 +34,11 @@ reported as successful cancellation.
 - Define deterministic, bounded JSON serialization and schema-version
   negotiation with a pre-materialization lexical/structural scan for bytes,
   duplicate keys, depth, string/integer tokens, aggregate nodes and
-  per-container limits. Public DTOs contain no FastAPI/Pydantic/ORM/DataFrame,
-  connection, filesystem path, live exception, callback, or service object.
+  per-container limits. Version 1 also freezes exact Unicode preservation,
+  escaping, solidus and key-order bytes so equivalent encoder choices cannot
+  change fingerprints. Public DTOs contain no
+  FastAPI/Pydantic/ORM/DataFrame, connection, filesystem path, live exception,
+  callback, or service object.
 - Define versioned, domain-separated keyed public fingerprints for command and
   idempotency identity, exact zero/one/multi-match admission, command-conflict
   rejection, generation-serialized rotation, three-attempt contention bounds
@@ -46,15 +49,24 @@ reported as successful cancellation.
   owner/schema/purpose shape but grant no authority or external-content rights;
   cross-Context provider/news/L2/stream content must first become a
   Capture-owned immutable artifact reference.
+- Make Platform command ingress the sole future owner of idempotency claims,
+  operation identity and the complete `OperationReceipt` lifecycle. Processes
+  owns only Process Manager workflow state and `ProcessView`; linkage uses an
+  opaque ID and never a shared transaction or dual-writer receipt.
 - Define an explicit legacy compatibility mapping inventory for current
-  EventBus admission, `job_runs`, Web `/api/run`, data-operation,
-  Observatory error/artifact, CLI wait, and runtime shutdown surfaces. This
-  child adds owner-specific mappers and snapshot fixtures only; it creates no
-  global mapper facade and does not reroute a CLI, HTTP route, scheduler, event
-  handler, or runtime owner.
+  EventBus admission, `job_runs`, Web `/api/run`, Observatory error/artifact,
+  CLI wait, and runtime shutdown surfaces. Data Operations remains an explicitly
+  inventoried legacy-only owner with no canonical mapper in this child because
+  its open status/evidence dictionaries require the later Dataset/interface
+  owner decision. This child adds only the four named owner-specific mappers and
+  snapshot fixtures; it creates no global mapper facade and does not reroute a
+  CLI, HTTP route, scheduler, event handler, or runtime owner.
 - Preserve mixed EventBus handler admission facts and map current `/api/run`
   acceptance only as a legacy observation; no mapper fabricates trusted actor,
   fingerprints or a formal operation receipt from `run_id`.
+- Preserve legacy `job_runs` naive time strings only as bounded unproven
+  observations. No mapper creates `UtcInstant` or calls a row current without
+  separately supplied row-bound owner-generation/liveness evidence.
 - Require every synchronous wait/cancel/shutdown contract to have a finite
   deadline, distinguish caller observation timeout from owner deadline, report
   closed residual ownership, fence stale writers, support crash takeover, and
@@ -68,7 +80,11 @@ reported as successful cancellation.
   size/depth-budget, legacy-snapshot, and bounded-control fixtures.
 - Extend the existing architecture guard for the six-module Kernel,
   Platform-not-to-Processes, target-not-to-legacy, owner-specific compatibility
-  imports and no aggregate re-export.
+  imports and no aggregate re-export. Until the shutdown/recovery child is
+  approved, the guard also rejects direct imports of new control/operation
+  contracts from EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner`,
+  `WebResourceContainer` and every other legacy runtime module; only the four
+  pure compatibility modules are allowed to import those target contracts.
 - Apply the `public_contract` and `runtime_concurrency` design-quality profiles,
   six-role digest-bound review, and current-date strict approval before code.
 
@@ -102,7 +118,8 @@ The later implementation is limited to the six approved `src/trade/kernel`
 modules, `src/trade/platform/contracts`, `src/trade/processes/contracts`, and narrow
 owner-specific compatibility/contract-test paths, plus the minimum explicit
 additive package discovery needed to import those modules. The package proof
-builds one wheel and installs it offline/no-deps; failure promotes the later
+builds one wheel, verifies an exact source-derived member/byte inventory and
+installs that exact artifact offline/no-deps; failure promotes the later
 package-layout ADR rather than adding a shim. It does not create Platform
 implementations, Process Managers, Context repositories, business DTOs,
 database tables, outbox delivery, provider access, Web routing, native bindings,

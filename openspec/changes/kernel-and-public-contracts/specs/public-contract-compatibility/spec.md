@@ -9,6 +9,16 @@ SHALL accept exactly version 1 and the exact declared field set. Unknown fields,
 unknown versions, excessive depth/items/string/bytes or unregistered owner
 payloads SHALL fail before object construction or digest calculation.
 
+Version 1 canonical output SHALL sort object keys by decoded Unicode
+scalar-value sequence, preserve decoded scalar sequences without Unicode
+normalization, encode non-ASCII scalars directly as UTF-8 and reject lone
+surrogates. It SHALL never escape `/`; SHALL encode quotation mark and reverse
+solidus as `\"` and `\\`; SHALL use only `\b`, `\t`, `\n`, `\f`, `\r` for
+those controls and lower-case `\u00xx` for every other U+0000-U+001F control;
+and SHALL use no other `\u` escape. Input MAY use any grammar-valid equivalent
+escape, but duplicate-key checks and ordering SHALL operate on decoded scalar
+sequences and canonical re-encoding SHALL emit only the spelling above.
+
 Version 1 SHALL limit raw UTF-8 input before parsing and canonical output each
 to 65,536 bytes; one string/key to 2,048 UTF-8 bytes; every container to 100
 items/members; aggregate array items plus object members to 1,024; total value
@@ -33,6 +43,10 @@ deep, integer and duplicate-key fixtures.
 #### Scenario: The same DTO is serialized twice
 - **WHEN** code, contract version and values are identical
 - **THEN** canonical bytes and digest are identical across source, editable-install and wheel-install environments
+
+#### Scenario: Equivalent JSON spellings are decoded
+- **WHEN** CJK, composed/decomposed combining sequences, controls, solidus, reverse solidus, quotation marks or escape-equivalent object keys are decoded and re-encoded
+- **THEN** one golden canonical byte sequence is emitted, composed and decomposed scalar sequences remain distinct, and decoded duplicate keys are rejected
 
 #### Scenario: A producer sends an additive unknown field
 - **WHEN** a version 1 consumer receives a field absent from the exact version 1 schema
@@ -66,6 +80,21 @@ SHALL run outside the repository cwd. Source/editable checks SHALL reuse the
 locked development environment and SHALL NOT reinstall the full dependency
 graph per mode. This additive proof SHALL NOT move legacy packages or replace
 the later canonical package-layout child.
+
+The normalized wheel member inventory SHALL equal the source-derived set of
+discovered `trade_py`, `scripts` and `src/trade` Python package members plus the
+single expected `trade_py-*.dist-info` metadata/entry-point family. The proof
+SHALL record member count and compressed/uncompressed bytes and SHALL reject
+every test, repository data, frontend, engine, generated, vendor, cache,
+undeclared package-data or unexpected top-level package member. The exact
+source-derived allowlist and byte totals are the deterministic artifact budget.
+Every packaged Python member SHALL byte-equal its source. If `S` is the sum of
+source Python member bytes, the one dist-info family SHALL contain at most eight
+regular members, each at most 65,536 bytes and at most 262,144 uncompressed
+bytes in aggregate; total uncompressed wheel members SHALL be at most
+`S + 262,144`, and the wheel file SHALL be at most `S + 524,288` bytes. A broad
+wildcard, an absolute budget unrelated to source, or a wall-clock-only threshold
+SHALL NOT substitute for these checks.
 
 #### Scenario: Dual-root packaging cannot be proven
 - **WHEN** the current build backend cannot produce both installed packages without broader migration or import ambiguity
@@ -106,11 +135,31 @@ bounded summary with returned/omitted metadata. A mixed handler set SHALL remain
 explicitly mixed and SHALL NOT be flattened to the aggregate precedence value.
 If the target schema cannot preserve these facts, the canonical mapping SHALL
 be refused while the unchanged legacy result remains available.
+Because the current legacy result materializes one value per handler and has no
+registration cardinality contract, canonical mapping SHALL accept at most 1,024
+source handler results. At 1,025 or more it SHALL refuse before allocating a
+second proportional DTO collection and SHALL leave the legacy result unchanged.
 
 Current `/api/run` accepted output SHALL map only to an owner-local legacy run
 admission observation. A durable `run_id` alone SHALL NOT fabricate a formal
 `OperationReceipt`: trusted actor, correlation/causation and versioned command/
 idempotency fingerprints must come from the same future admission boundary.
+
+`LegacyJobRunObservation` SHALL preserve each naive legacy time only as an
+optional bounded raw ASCII token with `time_provenance = unproven`, unless an
+owner reader supplies independent offset/timezone evidence bound to the same
+row and owner generation. A mapper SHALL NOT assume UTC, local/host timezone or
+DST fold/gap and SHALL NOT construct `UtcInstant` from a naive token. A running
+row SHALL be current only when separate evidence binds row ID, owner instance,
+fence generation, observed-at instant and unexpired liveness/reconciliation.
+Missing, mismatched or stale evidence SHALL be unknown/owner-lost.
+
+Data Operations SHALL remain an explicitly inventoried legacy-only surface in
+this child. Its open `OperationResult`/`StepResult` status strings and arbitrary
+evidence dictionaries SHALL retain their existing CLI/JSON snapshots, but no
+canonical mapper SHALL be created. The later Dataset/interface owners SHALL
+define source version, target schema, lossiness, refusal and retirement before
+mapping is admitted.
 
 #### Scenario: A legacy value is lossy
 - **WHEN** a legacy event, artifact, error or status contains fields that are unsafe or have no target semantics
@@ -131,6 +180,18 @@ idempotency fingerprints must come from the same future admission boundary.
 #### Scenario: Event handlers have mixed admission outcomes
 - **WHEN** one durable event has accepted, saturated and submission-failed handler results
 - **THEN** the canonical observation retains each count and bounded summary or refuses mapping; it does not report all handlers as the aggregate precedence outcome
+
+#### Scenario: Event handler cardinality is unbounded
+- **WHEN** a legacy publish result contains 1,025 or a 10x-over-limit number of handler results
+- **THEN** canonical mapping is refused before a proportional target collection is allocated and the unchanged legacy result remains available
+
+#### Scenario: A legacy job row has a naive timestamp
+- **WHEN** `CURRENT_TIMESTAMP`, `datetime('now', 'localtime')`, malformed, mixed-origin, DST-gap or DST-overlap text lacks independently bound timezone evidence
+- **THEN** the mapper preserves at most a bounded unproven token, emits no UtcInstant and cannot use that time to declare the row current
+
+#### Scenario: Data Operations is observed
+- **WHEN** an `OperationResult` contains open status strings or arbitrary evidence
+- **THEN** its current legacy snapshot remains available and canonical mapping is refused until an owning child defines a closed contract
 
 ### Requirement: Current mutation and status surfaces SHALL retain snapshots until owning migration
 
@@ -199,6 +260,15 @@ preserve current CLI output/exit and HTTP payload/status snapshots while proving
 bounded terminal-persistence retry, monotonic observation, concurrent stop,
 startup cleanup, executor tail, owner-generation takeover and real Uvicorn
 signal-to-process-tree reap.
+
+Until that adoption gate passes, the architecture guard SHALL forbid imports
+of `trade.platform.contracts` or `trade.processes.contracts` from every legacy
+`trade_py`/`trade_web` runtime module except the exact four pure compatibility
+modules `bus_contracts`, `job_run_contracts`, `observatory_contracts` and
+`runtime_contracts`. Direct, relative, aliased and package re-export imports
+from EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner` and
+`WebResourceContainer` SHALL fail. The hardening/adoption child MAY revise this
+allowlist only after its own strict approval and fixtures pass.
 
 #### Scenario: Contract DTOs exist before runtime hardening
 - **WHEN** this child has shipped but the named runtime hardening child has not passed its gates
