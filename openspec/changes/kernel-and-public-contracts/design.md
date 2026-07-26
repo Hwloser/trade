@@ -364,6 +364,36 @@ re-establishes it from local evidence. Unknown actors are denied for mutation;
 anonymous actors require an explicit command/query policy. Logs and receipts use
 safe principal identifiers, never tokens, credentials or full claims.
 
+Command idempotency does not hash the mutable `ActorContext`. A separate exact
+`IdempotencySubjectV1` contains schema version, owner namespace, tenant ID,
+principal kind, principal ID and zero to eight ordered delegated-subject IDs.
+Only authenticated/system principals have such a subject. Origin, authority
+scopes, assurance, provenance/evidence IDs, establishment/expiry time and
+credentials are excluded. Reauthentication or permission changes for the same
+tenant/principal/delegation therefore resolve one claim, while equal permissions
+for different principals, different tenants or a different ordered delegation
+chain cannot collide. Anonymous/unknown mutation is denied before
+fingerprinting. The subject wire value is the exact canonical JSON object with
+all six fields and an always-present delegation array. Idempotency HMAC input is
+the ordered domain, subject bytes, UTF-8 command scope and raw key bytes, each
+framed by an unsigned four-byte big-endian byte length; delimiter joins,
+`str()` conversion and omitted empty arrays are invalid.
+
+Origin names the verified trust-establishment channel rather than a product
+protocol. GraphQL over HTTP remains `http`, a local TUI remains `cli`, MCP uses
+its actual authenticated CLI/HTTP/SDK channel, and a remote worker uses its
+verified Platform execution/event channel. A genuinely different trust semantic
+requires a versioned origin extension.
+
+Durable replay keeps historical bytes and attribution immutable but never
+revives historical authority. `ReplayContextV1` separately names the replay
+request message, historical message/actor attribution, current verified replay
+initiator and immutable replay policy reference. Decoded historical actors are
+unverified attribution. Redispatch and replay-derived commands use current
+replay-initiator plus owner/Process policy; expired/revoked historical
+provenance grants nothing. A derived mutating command establishes a current
+idempotency subject rather than reusing the historical subject.
+
 Alternative: accept caller-provided actor dictionaries. It enables authority
 spoofing. Alternative: put authentication framework objects in the contract.
 It couples every Context to HTTP/auth implementation. Explicit provenance keeps
@@ -438,10 +468,11 @@ process_id: OpaqueId | None
 ```
 
 Platform command ingress is the sole future authority and writer for
-idempotency claims, operation identity, every `OperationReceipt` state
-transition and terminal receipt. Processes owns only Process Manager workflow
-state and its `ProcessView`; a Process transition cannot rewrite or become an
-alternate source of truth for an OperationReceipt. `process_id` is a
+command-admission idempotency claims, operation identity, every
+`OperationReceipt` state transition and terminal receipt. Processes owns only
+its separate `ProcessStartKeyV1`/inbox claims, Process Manager workflow state
+and `ProcessView`; a Process transition cannot rewrite or become an alternate
+source of truth for an OperationReceipt. `process_id` is a
 Platform-owned non-semantic opaque link. Platform must not import the
 Processes-owned `ProcessId`; Processes may wrap the same wire identity in its
 own contract. Process creation/linkage is coordinated by durable command/event
@@ -468,8 +499,9 @@ value
 ```
 
 Command fingerprints use domain `trade.command.v1`; idempotency fingerprints
-use `trade.idempotency.v1` and length-prefixed canonical actor scope,
-idempotency scope and raw key bytes. `value` is lower-case 64-character
+use `trade.idempotency.v1` and length-prefixed canonical
+`IdempotencySubjectV1`, idempotency scope and raw key bytes. `value` is
+lower-case 64-character
 hexadecimal and `key_version` is an integer 1-2,147,483,647. The secret is at
 least 256 bits from a CSPRNG, is held through a secret-store port owned by
 Platform persistence/ingress, is never serialized, and is distinct from
@@ -481,10 +513,12 @@ ingress derives exactly one command HMAC with the unchanged active key before
 atomically creating the claim, operation and receipt. After a stable one-match
 result, it derives exactly one command HMAC with the claim's recorded key and
 returns either the original receipt or `IDEMPOTENCY_COMMAND_CONFLICT`.
-Multi-match corruption, exhausted contention, audit-unavailable and
-pre-admission rejection derive no command HMAC. Therefore the worst case is
-exactly twelve candidate HMACs plus at most one command HMAC, never a
-precomputed thirteenth followed by recomputation.
+Multi-match corruption, exhausted contention and pre-admission rejection derive
+no command HMAC. An audit-unavailable result that replaces a provisional command
+conflict retains the one command HMAC already required to detect that conflict;
+audit-unavailable replacing corruption/contention has zero. Therefore the worst
+case remains exactly twelve candidate HMACs plus at most one command HMAC, never
+a precomputed thirteenth followed by recomputation.
 
 The key set contains exactly one active write version, at most three retained
 read-only versions and a monotonically increasing `key_set_generation` in the
@@ -505,6 +539,17 @@ respectively, the unchanged active key version or the matched claim's recorded
 key version; total HMAC derivations are therefore at most thirteen.
 Multi-match corruption and exhausted-contention paths do not spend that
 additional command-fingerprint derivation.
+
+There are two owner-local idempotency namespaces, not one shared claim. Platform
+owns command-admission claims and every `OperationReceipt`; its unique identity
+is the canonical idempotency subject, command scope and keyed raw-key
+fingerprint. Processes owns `ProcessStartKeyV1`, composed from process type,
+triggering operation ID and immutable workflow key, for durable handoff,
+process-start and inbox deduplication. Processes never receives the raw
+interface key, Platform HMAC or secret. Platform writes its repository/outbox
+transaction; Processes writes ProcessRepository/inbox/process view in a later
+transaction. No cross-owner transaction or write is allowed. The parent
+ownership matrix must split these rows before either repository child begins.
 
 On every admission, one owner-local transaction reads the generation, derives
 candidate idempotency fingerprints for the active and all retained versions and
@@ -620,6 +665,7 @@ retryable
 retry_after_ms
 correlation_id
 request_message_id
+causation_id?
 operation_id
 process_id: OpaqueId | None
 occurred_at
@@ -649,10 +695,10 @@ link or retry field not shown as present is absent:
 
 | Reason | Category / observation | Retry | Public links | Recovery |
 |---|---|---|---|---|
-| `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current request message + correlation; no operation/process ID | submit the original command or use a new idempotency identity |
-| `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | current request message + correlation; no operation/process ID | audited operator inspection |
-| `IDEMPOTENCY_KEYSET_CONTENTION` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request message + correlation; no operation/process ID | retry the same command and identity with a fresh finite deadline |
-| `IDEMPOTENCY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request message + correlation; no operation/process ID | inspect Platform persistence and retry after recovery |
+| `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current request + correlation + root-absent/child-present causation; no operation/process ID | submit the original command or use a new idempotency identity |
+| `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | current request + correlation + root-absent/child-present causation; no operation/process ID | audited operator inspection |
+| `IDEMPOTENCY_KEYSET_CONTENTION` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request + correlation + root-absent/child-present causation; no operation/process ID | retry the same command and identity with a fresh finite deadline |
+| `IDEMPOTENCY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request + correlation + root-absent/child-present causation; no operation/process ID | inspect Platform persistence and retry after recovery |
 
 These products forbid an old receipt, a fabricated operation ID, a raw key,
 the command payload and claim internals. The Platform persistence owner records
@@ -660,9 +706,11 @@ one immutable admission-audit fact for each terminal conflict, corruption or
 contention outcome before returning that exact outcome. This fact uses one
 optional repository transaction after the claim attempt ends and has an exact
 2,048-byte canonical limit and closed fields: schema/version, reason,
-current request message ID, correlation ID, static owner namespace, sorted
-matched key versions (at most four), key-set generation, attempt count and
-occurred-at. It contains no raw key, command DTO/payload, provider/source body, artifact bytes, actor
+current request message ID, correlation ID, optional direct causation, static
+owner namespace, sorted matched key versions (at most four), key-set generation,
+attempt count and occurred-at. Root causation is absent; child causation equals
+the current envelope parent. It contains no raw key, command DTO/payload,
+provider/source body, artifact bytes, actor
 identifier, credential, path or fingerprint. It is visible only through an
 authorized Platform operator audit query and never enters an ErrorEnvelope,
 HTTP/SDK response or cross-Context projection. The audit transaction cannot
@@ -681,8 +729,9 @@ the bounded `attempt_count` in event/audit evidence. The counter, one bounded
 structured event and, for corruption, one integrity alert are each attempted at
 most once, synchronously under the same remaining deadline, with no retry or
 background continuation. The event carries only reason, current request message,
-correlation, owner, sorted matched key versions (at most four), key-set
-generation and attempt count. Telemetry emission failure is surfaced once to
+correlation, optional direct causation, owner, sorted matched key versions (at
+most four), key-set generation and attempt count. Telemetry emission failure is
+surfaced once to
 the owner health/audit channel and never converts refusal into success or
 permits claim creation. The
 `platform-persistence-events-and-bootstrap-foundation` child owns the bounded
@@ -788,6 +837,46 @@ owned worker has exited, or after a durable generation fence prevents every
 residual worker from writing and the residual ownership is recorded. A caller
 observation deadline never creates that terminal fact.
 
+`ControlReceipt` is an exact immutable v1 record:
+
+```text
+schema_name = "trade.control_receipt"
+schema_version = 1
+control_id
+control_kind
+request_message_id
+correlation_id
+causation_id?
+initiator
+operation_id XOR process_id: OpaqueId
+requested_at
+deadline
+finished_at
+disposition
+reason_code
+target_terminal_receipt_id?
+safe_error?
+```
+
+It copies the admitted envelope causal identities and preserves them across
+retry/redelivery/replay. A newly submitted duplicate has a new envelope identity
+but may return the original immutable receipt only after resolving the same
+durable control claim; it never rewrites attribution. `finished_at` is required
+and ordered after request time. The exact state product is:
+
+| Disposition | Reason | Error/link invariant |
+|---|---|---|
+| `accepted` | `CONTROL_ACCEPTED` | no error or terminal link; durable intent only |
+| `already_terminal` | `CONTROL_ALREADY_TERMINAL` | immutable target terminal receipt required; no error |
+| `denied` | `CONTROL_DENIED` | observed/denied non-retryable error; no terminal link or intent write |
+| `not_found` | `CONTROL_TARGET_NOT_FOUND` | observed/invalid non-retryable error; no terminal link or intent write |
+| `unavailable` | `CONTROL_UNAVAILABLE` | unavailable/unavailable retryable error with bounded retry-after; no terminal link |
+| `deadline_exceeded` | `CONTROL_DEADLINE_EXCEEDED` | not-observed/timeout retryable error; no terminal link |
+
+Every other reason/error/link combination is invalid. Replay-derived controls
+use current verified replay authority; historical actors remain attribution in
+`ReplayContextV1`.
+
 `ShutdownReceipt` is a closed v1 record:
 
 ```text
@@ -796,6 +885,7 @@ owner_namespace
 owner_instance_id
 fence_generation
 control_id
+request_message_id
 correlation_id
 causation_id
 operation_id?
@@ -817,9 +907,9 @@ safe_error?
 `initiator` is the trusted bounded `ActorContext` that requested the control.
 It contains no credential or raw claim. `control_id` must resolve for the full
 receipt retention period to the immutable actor-bearing `ControlReceipt` with
-the same initiator, correlation and causation; a mismatch is corruption. The
-direct initiator copy keeps shutdown audit attribution available without a
-second read, while the linked control receipt proves the admission lifecycle.
+the same request message, initiator, correlation and causation; a mismatch is
+corruption. The direct initiator copy keeps shutdown audit attribution available
+without a second read, while the linked control receipt proves the admission lifecycle.
 The optional Platform `process_id` remains a non-semantic `OpaqueId` and does
 not import Processes contracts.
 
@@ -1015,11 +1105,15 @@ product is:
 
 The pure mapper can produce only `not_checked`. `matched` or `mismatched`
 requires owner-local `LegacyArtifactVerificationEvidence` containing verifier
-namespace/version, verified time, declared and actual `ContentDigest`, legacy
-artifact identity, owner generation, root identity and stable file identity
-captured before and after hashing. `matched` proves only that the bytes read by
-that verifier at that time matched the declaration; it proves no authorization,
-publication, quality, PIT or later-file state.
+namespace/version, `verified_at: UtcInstant`, declared and actual
+`ContentDigest`, legacy artifact identity, owner generation, root identity and
+stable file identity captured before and after hashing. The verifier samples
+`verified_at` only after successful stable post-hash identity/root/generation
+checks and immediately before evidence construction; clock/read failure emits
+no verification evidence. It is verifier observation time only, never source
+event/publication/received/available/PIT time. `matched` proves only that those
+stable bytes matched the declaration before that verifier observation; it
+proves no authorization, publication, quality, PIT or later-file state.
 
 The owner verifier accepts an already-authorized root descriptor, traverses
 root-relative path components with no-follow semantics, rejects absolute paths,
@@ -1035,9 +1129,12 @@ single-byte digest mismatch can never be promoted to a formal reference.
 
 No new table, schema, migration, file format, artifact, manifest or data root is
 introduced. DTOs are immutable in-memory values. Tests use literals and
-temporary build/install roots. Operation/process persistence and outbox
-transactions belong to
-`platform-persistence-events-and-bootstrap-foundation`.
+temporary build/install roots. The later Platform foundation owns generic
+transaction/outbox mechanics, Platform command-admission claims and
+OperationReceipt repositories only. Processes owns ProcessRepository,
+ProcessStartKey/inbox claims and ProcessView persistence. Before either repository
+is implemented, the parent ownership row must be governedly split and regain
+strict approval; this child authorizes neither repository.
 
 ## Code Dependency Graph
 
@@ -1094,8 +1191,13 @@ to directory migration. Its target-graph fixture enforces:
    or any of those four adapters until the hardening/adoption child deliberately
    revises the baseline. Direct, relative, aliased, literal dynamic-import and
    package re-export fixtures cover EventBus, CLI, FastAPI lifespan,
-   `RuntimeCommandRunner` and `WebResourceContainer`; only focused contract
-   tests are positive consumers of the leaf adapters.
+   `RuntimeCommandRunner` and `WebResourceContainer`. In protected production
+   roots, unresolved computed `import_module`, `__import__`, module `__getattr__`
+   or equivalent dynamic re-export fails closed unless its exact file/call-site
+   and finite legacy-only targets are reviewed. The current CLI loader may admit
+   only the finite `trade_py.cli` domain set and never caller-computed `trade.*`
+   or `trade_py.compat.*`; only focused contract tests are positive consumers of
+   the leaf adapters.
 
 The guard reports the importing file, imported symbol and violated edge. Its
 fixtures include a direct import, relative import, alias/re-export and

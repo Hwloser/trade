@@ -10,6 +10,25 @@ Bootstrap system evidence. Caller payload fields SHALL NOT establish identity
 or authority. A decoded wire actor SHALL remain unverified until re-established
 against trusted local evidence.
 
+For mutating command idempotency, the adapter SHALL also establish an immutable
+`IdempotencySubjectV1` with exact fields `schema_version=1`,
+`owner_namespace`, `tenant_id`, `principal_kind`, `principal_id` and an ordered
+tuple of zero to eight `delegated_subject_ids`. Namespace and every identity
+SHALL use bounded Kernel values. Only `authenticated` and `system` principals
+are valid idempotency subjects; anonymous and unknown actors SHALL NOT submit a
+mutating command. The canonical subject SHALL exclude origin, authority scopes,
+assurance, provenance verifier/evidence identity, establishment/expiry time and
+credentials. Reauthentication and permission-scope changes for the same
+tenant/principal/delegation therefore retain one subject; a different tenant,
+principal or ordered delegation subject chain is a different subject.
+Its wire bytes SHALL be the exact bounded canonical JSON object for those six
+fields, with `delegated_subject_ids` always present as an array. The
+idempotency HMAC input SHALL be the ordered sequence of domain,
+canonical-subject bytes, UTF-8 command idempotency scope and raw key bytes, with
+each component prefixed by its unsigned four-byte big-endian byte length. No
+delimiter, `str()` conversion, omitted empty array or alternate field set is
+admitted.
+
 Provenance SHALL be a bounded `ActorProvenanceRef`, not an arbitrary mapping.
 It SHALL contain a closed provenance type, bounded verifier namespace, opaque
 evidence ID, establishment time, optional expiry and stable reason code, and
@@ -18,6 +37,25 @@ raw claim set, environment dump or parent payload.
 Authority scopes SHALL be 1-96 ASCII lower-case letters/digits plus `._:-`,
 sorted and unique, with at most 32 entries. Delegation SHALL contain at most
 eight provenance references.
+
+`origin` SHALL describe the verified admission channel, not a product protocol.
+GraphQL over authenticated HTTP remains `http`; a local TUI remains `cli`;
+MCP uses its actual authenticated `http`, `sdk` or `cli` channel; and a remote
+worker uses its verified Platform execution/event channel. A new origin enum
+requires a distinct trust-establishment semantic and a new schema version.
+
+Durable replay SHALL separate immutable historical attribution from current
+execution authority. The replayed historical envelope and historical actor
+bytes remain unchanged, but the decoded historical actor is attribution-only
+and unverified. A new `ReplayContextV1` SHALL contain the replay request message
+identity, historical message identity, historical actor attribution, current
+verified `replay_initiator`, and immutable replay policy reference. Re-dispatch
+and every replay-derived command SHALL be authorized from the current replay
+initiator plus owner/Process policy; they SHALL NOT copy authority scopes or
+assurance from the historical actor. Revoked/expired historical provenance does
+not erase attribution and does not grant current authority. Replay never changes
+the historical idempotency subject; a newly derived mutating command establishes
+its own current idempotency subject.
 
 #### Scenario: A payload claims an administrator actor
 - **WHEN** a command body contains actor, user, principal or authority fields that are not established by the adapter
@@ -30,6 +68,26 @@ eight provenance references.
 #### Scenario: An anonymous query is allowed
 - **WHEN** an interface policy explicitly permits an anonymous read-only query
 - **THEN** the actor is marked `anonymous` with `anonymous_allowed` assurance and receives only the declared query scope
+
+#### Scenario: A principal reauthenticates or changes permission scopes
+- **WHEN** the same verified tenant, principal and delegation subject chain receives new provenance or a different authority-scope set
+- **THEN** its idempotency subject remains byte-identical while the current command is separately authorized against the current scopes
+
+#### Scenario: Two principals have equal permissions
+- **WHEN** two verified principals in one tenant have identical authority scopes or one principal acts in two different tenants
+- **THEN** their idempotency subjects remain distinct and one principal cannot resolve the other's claim
+
+#### Scenario: An anonymous actor submits a mutation
+- **WHEN** an anonymous or unknown actor attempts command admission
+- **THEN** authorization rejects it before idempotency fingerprinting and no anonymous shared subject is constructed
+
+#### Scenario: Expired or revoked historical provenance is replayed
+- **WHEN** a durable command or event is replayed after its historical actor provenance expires or is revoked
+- **THEN** the historical actor remains immutable attribution, while replay execution requires a separately verified replay initiator and current owner/Process authorization
+
+#### Scenario: A future interface protocol establishes an actor
+- **WHEN** GraphQL, TUI, MCP or a remote worker submits through an existing verified transport
+- **THEN** origin records the verified transport trust semantic and does not create a protocol-branded origin without a schema change
 
 ### Requirement: Command and query envelopes SHALL use typed owner payloads
 
@@ -69,9 +127,12 @@ atomically creating the claim, operation and receipt. After a final stable
 one-match result, admission SHALL derive exactly one command-fingerprint HMAC
 using that claim's recorded key before returning either the original receipt or
 `IDEMPOTENCY_COMMAND_CONFLICT`. Total HMAC derivations SHALL therefore be at
-most thirteen. Multi-match corruption, exhausted contention, audit-unavailable
-and every pre-admission rejection SHALL perform zero command-fingerprint HMAC
-derivations.
+most thirteen. Multi-match corruption, exhausted contention and every
+pre-admission rejection SHALL perform zero command-fingerprint HMAC
+derivations. `IDEMPOTENCY_AUDIT_UNAVAILABLE` after a provisional command
+conflict preserves the one command HMAC already required to detect that
+conflict; audit-unavailable after provisional corruption or contention has zero
+command HMACs.
 
 In one owner-local admission transaction, ingress SHALL read generation, derive
 and query candidate idempotency fingerprints for every active or retained key
@@ -99,10 +160,20 @@ rotation. Each key SHALL be retained for at least the owner operation-retention
 horizon; retirement SHALL fail if safe retention cannot fit the four-version
 bound. A retired unknown version SHALL report unavailable rather than recompute
 with the current key. An unkeyed digest SHALL NOT be published for low-entropy
-idempotency keys or commands.
+idempotency keys or commands. The Platform command-admission claim SHALL be
+uniquely scoped by the canonical `IdempotencySubjectV1`, command idempotency
+scope and keyed raw-key fingerprint. It is distinct from a Processes-owned
+workflow/process-start claim. Processes SHALL use an owner-local
+`ProcessStartKeyV1` composed from process type, triggering operation identity
+and the process owner's immutable workflow key. It SHALL NOT store or reuse the
+raw interface idempotency key, Platform HMAC fingerprint or secret, and it
+deduplicates durable handoff/process creation only. Platform owns command
+claims/OperationReceipt in a Platform repository transaction; Processes owns
+process-start/inbox claims/ProcessView in a ProcessRepository transaction. No
+shared transaction or cross-owner write is permitted.
 
 #### Scenario: A command is retried after transport timeout
-- **WHEN** the same actor scope, canonical command and idempotency identity are resubmitted
+- **WHEN** the same idempotency subject, canonical command and idempotency identity are resubmitted
 - **THEN** command ingress can resolve the same digest and existing operation without depending on transport retry metadata
 
 #### Scenario: A retry crosses an HMAC key rotation
@@ -140,7 +211,11 @@ idempotency keys or commands.
 
 #### Scenario: A corrupt claim set or audit-unavailable refusal is returned
 - **WHEN** the stable result has multiple claims or a required refusal audit cannot commit
-- **THEN** admission performs zero command-fingerprint HMAC derivations and exposes no command fingerprint
+- **THEN** corruption-to-audit-unavailable performs zero command-fingerprint HMAC derivations, while conflict-to-audit-unavailable retains exactly the one command HMAC already used to detect conflict; neither exposes a command fingerprint
+
+#### Scenario: A durable operation handoff is delivered twice to Processes
+- **WHEN** the same triggering operation and immutable workflow key reach a Process Manager more than once
+- **THEN** Processes resolves one owner-local ProcessStartKey claim and existing ProcessView without reading or writing the Platform command-admission claim
 
 #### Scenario: Deadline expires before contention audit
 - **WHEN** claim contention leaves no remaining time to start and commit its refusal audit
@@ -303,14 +378,16 @@ rejected.
 
 `ErrorEnvelope` SHALL contain exact schema name/version, stable reason code,
 closed category and observation state, retryability and optional bounded
-retry-after, `request_message_id`, correlation/operation/process links,
-occurrence time, safe message and safe recovery hint. For an error caused while
-handling a specific admitted or rejected envelope, `request_message_id` SHALL
-equal that envelope's message identity; it is the safe concrete request link
-when no operation/process identity exists. It SHALL NOT contain arbitrary extra
-fields, raw exception text, traceback, credential, SQL, path or raw payload.
-HTTP status, CLI exit code and SSE framing SHALL remain interface-adapter
-mappings.
+retry-after, `request_message_id`, correlation/optional causation and
+operation/process links, occurrence time, safe message and safe recovery hint.
+For an error caused while handling a specific admitted or rejected envelope,
+`request_message_id` SHALL equal that envelope's message identity,
+`correlation_id` SHALL equal its correlation identity, and `causation_id` SHALL
+be absent for a root envelope or equal its direct parent for a child envelope.
+These are the safe concrete request links when no operation/process identity
+exists. It SHALL NOT contain arbitrary extra fields, raw exception text,
+traceback, credential, SQL, path or raw payload. HTTP status, CLI exit code and
+SSE framing SHALL remain interface-adapter mappings.
 
 Reason codes SHALL be 1-96 ASCII upper-case letters/digits plus `._-`;
 `retry_after_ms` SHALL be absent or an integer 0-86,400,000; safe message and
@@ -322,23 +399,23 @@ observation, retry fields, public links and safe recovery hint. Every unlisted
 field combination SHALL be rejected:
 
 - `IDEMPOTENCY_COMMAND_CONFLICT`: category `conflict`, observation `observed`,
-  `retryable=false`, no retry-after, correlation ID only, no operation/process
-  ID, required current `request_message_id`, and a safe hint to submit the
-  original command or a new idempotency identity.
+  `retryable=false`, no retry-after, required current request/correlation and
+  root-absent or child-present causation, no operation/process ID, and a safe
+  hint to submit the original command or a new idempotency identity.
 - `IDEMPOTENCY_CLAIM_CORRUPT`: category `internal`, observation `observed`,
-  `retryable=false`, no retry-after, correlation ID only, no operation/process
-  ID, required current `request_message_id`, and a safe hint requiring audited
-  operator inspection.
+  `retryable=false`, no retry-after, required current request/correlation and
+  root-absent or child-present causation, no operation/process ID, and a safe
+  hint requiring audited operator inspection.
 - `IDEMPOTENCY_KEYSET_CONTENTION`: category `unavailable`, observation
   `unavailable`, `retryable=true`, required `retry_after_ms` in 1-1,000,
-  correlation ID only, no operation/process ID, required current
-  `request_message_id`, and a safe hint to retry the same command/identity with
-  a fresh finite deadline.
+  required current request/correlation and root-absent or child-present
+  causation, no operation/process ID, and a safe hint to retry the same
+  command/identity with a fresh finite deadline.
 - `IDEMPOTENCY_AUDIT_UNAVAILABLE`: category `unavailable`, observation
   `unavailable`, `retryable=true`, required `retry_after_ms` in 1-1,000,
-  correlation ID only, no operation/process ID, required current
-  `request_message_id`, and a safe hint to inspect Platform persistence and
-  retry after recovery.
+  required current request/correlation and root-absent or child-present
+  causation, no operation/process ID, and a safe hint to inspect Platform
+  persistence and retry after recovery.
 
 These errors SHALL contain no old receipt, raw key, command payload, claim
 internals, actor identifier or fingerprint. The future Platform persistence
@@ -346,10 +423,11 @@ owner SHALL record one immutable admission-audit fact for every terminal
 conflict, corruption and contention outcome before returning that exact
 outcome. The fact SHALL use one optional repository transaction after the claim
 attempt ends, SHALL have canonical size at most 2,048 bytes, and SHALL contain
-only schema/version, reason, correlation ID, static owner namespace, sorted
-matched key versions (at most four), key-set generation, attempt count,
-`request_message_id` and occurred-at. The request link SHALL equal the current
-command envelope's message identity. It SHALL contain no raw key, command
+only schema/version, reason, request/correlation/optional causation identities,
+static owner namespace, sorted matched key versions (at most four), key-set
+generation, attempt count and occurred-at. The causal fields SHALL exactly copy
+the current command envelope, with causation absent for a root and present for a
+child. It SHALL contain no raw key, command
 DTO/payload, provider/source body, artifact bytes, actor identifier, credential,
 path or fingerprint. It SHALL be visible only through an authorized Platform
 operator audit query and SHALL NOT enter an `ErrorEnvelope`, HTTP/SDK response
@@ -370,8 +448,8 @@ event/audit and SHALL NOT replace the terminal outcome. The counter, one bounded
 structured event and, for corruption, one integrity alert SHALL each be
 attempted at most once, synchronously under the same remaining deadline, with
 no retry or background continuation. The event SHALL contain only reason,
-correlation, `request_message_id`, owner, sorted matched key versions (at most
-four), key-set generation and attempt count. Telemetry emission failure SHALL
+request/correlation/optional causation, owner, sorted matched key versions (at
+most four), key-set generation and attempt count. Telemetry emission failure SHALL
 surface once to the owner health/audit channel and SHALL NOT convert a refusal
 to success or permit claim creation. The
 `platform-persistence-events-and-bootstrap-foundation` child SHALL own a
@@ -389,7 +467,7 @@ production ingress may wire this telemetry path.
 
 #### Scenario: Idempotency errors are encoded
 - **WHEN** admission reports a command conflict, corrupt claim set, exhausted key-set contention or unavailable refusal audit
-- **THEN** the exact reason/category/observation/retry/link/recovery product above is emitted, its request message link identifies the current command envelope, and every forbidden combination is rejected
+- **THEN** the exact reason/category/observation/retry/link/recovery product above is emitted, its request/correlation/optional causation links copy the current command envelope, and every forbidden combination is rejected
 
 #### Scenario: Generation retries end in a stable result
 - **WHEN** one or two key-set generation changes precede a stable creation, replay or refusal
@@ -410,12 +488,42 @@ production ingress may wire this telemetry path.
 
 ### Requirement: Cancellation SHALL distinguish request acceptance from terminal cancellation
 
-A cancellation API SHALL return a `ControlReceipt` with control identity,
-operation/process linkage, actor, request time, finite control deadline and
-closed disposition. `accepted` SHALL mean only that cancellation intent was
-durably admitted. An operation or process SHALL enter `cancelled` only after
-the owner records terminal cancellation evidence. Signal delivery, caller
-disconnect or observation timeout alone SHALL NOT prove cancellation.
+A cancellation API SHALL return an exact immutable `ControlReceipt` v1 with:
+schema name/version, control identity/kind, `request_message_id`,
+correlation/optional causation, trusted initiator, exactly one operation or
+opaque process target, requested/finished times, finite control deadline, closed
+disposition, stable reason code, optional `target_terminal_receipt_id`, and
+optional safe `ErrorEnvelope`. The request/correlation/causation identities
+SHALL copy the admitted control envelope. A retried/redelivered/replayed logical
+envelope preserves its receipt; a newly submitted duplicate has a new request
+identity but returns the original control receipt only when it resolves the same
+durable control claim, without rewriting original attribution.
+
+The v1 disposition product SHALL be exact:
+
+- `accepted`: reason `CONTROL_ACCEPTED`; safe error and terminal receipt link
+  forbidden; intent is durably admitted but target terminal state is unproved.
+- `already_terminal`: reason `CONTROL_ALREADY_TERMINAL`; required immutable
+  `target_terminal_receipt_id`; safe error forbidden; the link proves the target
+  was terminal before this control.
+- `denied`: reason `CONTROL_DENIED`; required observed/denied non-retryable
+  safe error; terminal receipt link forbidden; no control intent is written.
+- `not_found`: reason `CONTROL_TARGET_NOT_FOUND`; required observed/invalid
+  non-retryable safe error; terminal receipt link forbidden; no intent is
+  written.
+- `unavailable`: reason `CONTROL_UNAVAILABLE`; required unavailable/unavailable
+  retryable safe error and bounded retry-after; terminal receipt link forbidden;
+  no terminal target claim is made.
+- `deadline_exceeded`: reason `CONTROL_DEADLINE_EXCEEDED`; required
+  not-observed/timeout retryable safe error; terminal receipt link forbidden;
+  the last target link is retained and no terminal target claim is made.
+
+Every disposition requires `finished_at` no earlier than `requested_at`; every
+unlisted reason/error/link combination is rejected. `accepted` SHALL mean only
+that cancellation intent was durably admitted. An operation or process SHALL
+enter `cancelled` only after the owner records terminal cancellation evidence.
+Signal delivery, caller disconnect or observation timeout alone SHALL NOT prove
+cancellation.
 
 #### Scenario: A cancel request is accepted while work is still running
 - **WHEN** the owner durably records cancellation intent before work exits
@@ -425,25 +533,33 @@ disconnect or observation timeout alone SHALL NOT prove cancellation.
 - **WHEN** intent cannot be admitted or applied before the finite control deadline
 - **THEN** the response reports deadline-exceeded or unavailable with the last operation/process link and does not claim the work was cancelled
 
+#### Scenario: Multiple child controls share one parent
+- **WHEN** two control commands inherit one correlation and causation but have different request message identities
+- **THEN** their receipts remain distinguishable by request identity, and retry/redelivery preserves each original receipt identity
+
+#### Scenario: A replay-derived control is authorized
+- **WHEN** replay processing derives a new cancellation or shutdown control
+- **THEN** the receipt attributes the new request to the current verified replay initiator while historical attribution remains only in ReplayContext
+
 ### Requirement: Shutdown SHALL have one finite deadline and explicit residual ownership
 
 A shutdown API SHALL close admission and return a `ShutdownReceipt` containing
 owner namespace/instance identity, fence generation, control/correlation/
-causation identities, trusted initiator, optional operation/process links, request/deadline/
-finished time, closed shutdown state/current stage/reason, graceful/forced
-termination counts, bounded residual owners, owner-scoped recovery descriptors
-and a safe error. `completed` SHALL require stage `done`, zero live owned work,
-durable terminal audit, released non-reentrant resources and release of only
-the matching generation fence. Deadline-exceeded, incomplete or failed
-shutdown SHALL retain owner fencing and report stage/reason/residual/recovery
-facts.
+causation identities, the exact original `request_message_id`, trusted
+initiator, optional operation/process links, request/deadline/finished time,
+closed shutdown state/current stage/reason, graceful/forced termination counts,
+bounded residual owners, owner-scoped recovery descriptors and a safe error.
+`completed` SHALL require stage `done`, zero live owned work, durable terminal
+audit, released non-reentrant resources and release of only the matching
+generation fence. Deadline-exceeded, incomplete or failed shutdown SHALL retain
+owner fencing and report stage/reason/residual/recovery facts.
 
 The trusted initiator SHALL be the bounded credential-free `ActorContext` that
 requested shutdown. `control_id` SHALL resolve for the receipt retention period
-to an immutable actor-bearing `ControlReceipt` with the same initiator,
-correlation and causation. A mismatch SHALL be corruption. The optional Platform
-process link SHALL be `OpaqueId | None` and SHALL NOT require a Platform import
-of Processes contracts.
+to an immutable actor-bearing `ControlReceipt` with the same request message,
+initiator, correlation and causation. A mismatch SHALL be corruption. The
+optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require
+a Platform import of Processes contracts.
 
 Fence generation SHALL be an integer 1-9,223,372,036,854,775,807 durably
 claimed before admission. Every write or terminal receipt from an older

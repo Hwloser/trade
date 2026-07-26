@@ -294,9 +294,16 @@ inbound imports from non-test `trade_py` or `trade_web` production modules. The 
 SHALL reject direct, relative, aliased, literal dynamic-import and package
 re-export paths from EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner`,
 `WebResourceContainer` and every other non-test legacy module to either target
-contracts or a compatibility adapter. Only focused contract tests are admitted
-consumers before hardening. The hardening/adoption child MAY revise these
-allowlists only after its own strict approval and fixtures pass.
+contracts or a compatibility adapter. In those protected production roots, any
+computed `importlib.import_module`, computed `__import__`, module `__getattr__`
+dynamic re-export or equivalent import target that the guard cannot resolve
+statically SHALL fail closed unless the exact importing file, call site and
+finite target set are present in a reviewed allowlist. Existing resolved legacy
+CLI domain loading MAY be allowlisted only to the finite `trade_py.cli` domain
+set; it SHALL never admit `trade.*`, `trade_py.compat.*` or a target assembled
+from caller text. Only focused contract tests are admitted consumers before
+hardening. The hardening/adoption child MAY revise these allowlists only after
+its own strict approval and fixtures pass.
 
 #### Scenario: Contract DTOs exist before runtime hardening
 - **WHEN** this child has shipped but the named runtime hardening child has not passed its gates
@@ -305,3 +312,7 @@ allowlists only after its own strict approval and fixtures pass.
 #### Scenario: A runtime imports a compatibility adapter indirectly
 - **WHEN** EventBus, CLI, FastAPI lifespan, RuntimeCommandRunner or WebResourceContainer imports or re-exports one of the four leaf adapters instead of importing target contracts directly
 - **THEN** the architecture guard rejects that inbound production edge before the runtime-hardening gate passes
+
+#### Scenario: A protected runtime computes an import target
+- **WHEN** a non-test legacy production module builds an `import_module`, `__import__` or module `__getattr__` target that is not statically resolved to a reviewed finite legacy-only allowlist
+- **THEN** the architecture guard rejects the unresolved import/re-export rather than assuming it cannot reach target contracts or a compatibility adapter

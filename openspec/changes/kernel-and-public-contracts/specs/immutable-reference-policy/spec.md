@@ -77,15 +77,21 @@ The exact state product SHALL allow `unresolved`, `unavailable` and
 `mismatched`. A pure mapper SHALL NOT produce `matched` or `mismatched`.
 
 Matched/mismatched state SHALL require owner-local
-`LegacyArtifactVerificationEvidence` with verifier namespace/version, verified
-time, declared and actual content digests, legacy artifact identity, owner
-generation, authorized root identity and stable pre/post file identity. The
-owner verifier SHALL use root-relative no-follow traversal, reject symlinks and
-non-regular files, prove root containment, and compare pre/post identity, size
-and generation around hashing. Symlink replacement, TOCTOU change, unsupported
-filesystem proof or generation change SHALL fail closed without matched
-evidence. `matched` proves only that the bytes read at the specified time match
-the declaration; it proves no authorization, publication, quality or PIT state.
+`LegacyArtifactVerificationEvidence` with verifier namespace/version,
+`verified_at: UtcInstant`, declared and actual content digests, legacy artifact
+identity, owner generation, authorized root identity and stable pre/post file
+identity. The verifier SHALL sample `verified_at` only after hashing and the
+stable post-hash file/root/generation checks succeed, immediately before
+constructing evidence; a clock/read failure emits no matched/mismatched
+evidence. The owner verifier SHALL use root-relative no-follow traversal, reject
+symlinks and non-regular files, prove root containment, and compare pre/post
+identity, size and generation around hashing. Symlink replacement, TOCTOU
+change, unsupported filesystem proof or generation change SHALL fail closed
+without matched evidence. `verified_at` is verifier observation time only; it
+is not event, publication, observed-at-source, received, available or PIT time.
+`matched` proves only that the stable bytes read by that verifier before
+`verified_at` match the declaration; it proves no authorization, publication,
+quality, PIT or later-file state.
 
 #### Scenario: A legacy path attempts traversal
 - **WHEN** a legacy artifact contains an absolute path, traversal segment or credential-bearing URI
@@ -102,3 +108,7 @@ the declaration; it proves no authorization, publication, quality or PIT state.
 #### Scenario: A path changes while content is hashed
 - **WHEN** a symlink, file identity, size or owner generation changes between the verifier's pre/post checks
 - **THEN** verification fails closed as unavailable or unsafe-path and emits no matched evidence
+
+#### Scenario: Verification time is sampled
+- **WHEN** hashing and stable post-hash file/root/generation checks succeed
+- **THEN** the verifier samples one canonical UtcInstant before evidence construction, labels it only as verifier observation time and emits no evidence if that sample fails
