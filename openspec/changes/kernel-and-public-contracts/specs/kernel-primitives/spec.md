@@ -39,15 +39,30 @@ globally generated target identifier.
 
 ### Requirement: Kernel time and deadline values SHALL preserve UTC and elapsed-time semantics
 
-Wire instants SHALL be timezone-aware UTC values serialized as RFC3339 with a
-`Z` suffix. Durations SHALL be integer milliseconds in 1-86,400,000. A durable
-deadline SHALL record a UTC wall-clock instant, while a local wait SHALL derive
-and consume a monotonic remaining duration; wall-clock movement SHALL NOT
-extend a local wait.
+Wire instants SHALL be timezone-aware UTC values serialized in the sole
+canonical form `YYYY-MM-DDTHH:MM:SS.ffffffZ`: a four-digit year from `0001`
+through `9999`, seconds from `00` through `59`, exactly six fractional-second
+digits including `.000000`, and the literal `Z` suffix. Version 1 wire decoding
+SHALL accept only that form; it SHALL reject an offset spelling such as
+`+00:00`, omitted or non-six-digit fractional seconds, precision beyond
+microseconds and leap seconds. Direct Python construction SHALL accept only an
+aware datetime whose UTC offset is exactly zero and SHALL preserve its
+microsecond value without an implicit timezone conversion. Durations SHALL be
+integer milliseconds in 1-86,400,000. A durable deadline SHALL record a UTC
+wall-clock instant, while a local wait SHALL derive and consume a monotonic
+remaining duration; wall-clock movement SHALL NOT extend a local wait.
 
 #### Scenario: A naive datetime is supplied
 - **WHEN** a caller constructs or decodes a time without timezone evidence
 - **THEN** the Kernel rejects it rather than assuming local time or UTC
+
+#### Scenario: Equivalent or over-precise UTC spellings are supplied
+- **WHEN** a wire value uses `+00:00`, omits the six fractional digits, carries more than six fractional digits or uses a leap second
+- **THEN** version 1 rejects it rather than creating a second spelling or rounding a different instant into the canonical identity
+
+#### Scenario: Canonical fractional-second boundaries are serialized
+- **WHEN** accepted UTC values carry zero, one or 999,999 microseconds
+- **THEN** they serialize respectively with `.000000Z`, `.000001Z` and `.999999Z`
 
 #### Scenario: Wall clock changes during a wait
 - **WHEN** the system wall clock moves after a local deadline has been admitted
@@ -94,6 +109,19 @@ finality. The envelope payload SHALL be supplied by a typed owner codec. Kernel
 SHALL NOT dispatch, persist, retry, acknowledge or inspect business payload
 dictionaries.
 
+The v1 causal relation SHALL be exact. A root command/query receives a new
+`message_id`, sets `correlation_id=message_id` and has no `causation_id`. A
+child command/event receives a new `message_id`, inherits its verified parent's
+`correlation_id` and sets `causation_id` to that parent's `message_id`.
+Transport retry or redelivery of the same logical envelope preserves all three
+identities and canonical envelope bytes; attempt metadata remains outside the
+canonical envelope. A newly submitted idempotent duplicate is a new root or
+child envelope under these rules, while any returned existing receipt preserves
+the original admitted envelope identities. Durable replay preserves the
+historical envelope identities; a message newly derived during replay follows
+the child rule and points to the replayed historical `message_id`. No adapter
+may accept caller payload values as trusted correlation or causation evidence.
+
 Platform message contracts SHALL describe an owner codec with an immutable
 descriptor binding owner namespace, schema name/version, payload purpose,
 maximum canonical bytes, content policy and deterministic codec identity. This
@@ -116,6 +144,14 @@ committed owner-controlled Capture artifact reference.
 #### Scenario: A caller supplies an arbitrary mapping payload
 - **WHEN** no registered owner codec exists for that mapping
 - **THEN** canonical envelope construction fails rather than accepting `dict[str, Any]` as a public contract
+
+#### Scenario: A child command is emitted from a verified parent event
+- **WHEN** a handler creates a new command from an admitted parent envelope
+- **THEN** the command gets a new message identity, inherits the parent's correlation identity and names the parent message as its direct causation
+
+#### Scenario: An envelope is redelivered or replayed
+- **WHEN** transport redelivers the same logical envelope or an operator replays a durable historical envelope
+- **THEN** the canonical message, correlation and causation identities remain unchanged and retry/replay attempt metadata stays outside the envelope
 
 #### Scenario: Two codecs claim one wire identity
 - **WHEN** Bootstrap receives duplicate owner/schema/version/purpose descriptors or a codec identity is not deterministic

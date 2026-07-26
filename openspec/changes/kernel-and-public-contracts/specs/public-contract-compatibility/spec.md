@@ -4,10 +4,16 @@
 
 Each public wire DTO SHALL declare schema name and positive integer schema
 version. Canonical JSON SHALL use UTF-8, sorted keys, compact separators,
-finite values, UTC `Z` instants and explicit enum strings. Version 1 decoders
-SHALL accept exactly version 1 and the exact declared field set. Unknown fields,
-unknown versions, excessive depth/items/string/bytes or unregistered owner
-payloads SHALL fail before object construction or digest calculation.
+finite values, explicit enum strings and UTC instants in the sole form
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`. The instant form SHALL use a four-digit year
+from `0001` through `9999`, seconds from `00` through `59`, exactly six
+fractional-second digits and literal `Z`; version 1 SHALL reject offset
+spellings, omitted or variable fractional precision, precision beyond
+microseconds and leap seconds rather than normalizing or rounding them.
+Version 1 decoders SHALL accept exactly version 1 and the exact declared field
+set. Unknown fields, unknown versions, excessive depth/items/string/bytes or
+unregistered owner payloads SHALL fail before object construction or digest
+calculation.
 
 Version 1 canonical output SHALL sort object keys by decoded Unicode
 scalar-value sequence, preserve decoded scalar sequences without Unicode
@@ -47,6 +53,10 @@ deep, integer and duplicate-key fixtures.
 #### Scenario: Equivalent JSON spellings are decoded
 - **WHEN** CJK, composed/decomposed combining sequences, controls, solidus, reverse solidus, quotation marks or escape-equivalent object keys are decoded and re-encoded
 - **THEN** one golden canonical byte sequence is emitted, composed and decomposed scalar sequences remain distinct, and decoded duplicate keys are rejected
+
+#### Scenario: An instant uses a non-canonical UTC spelling
+- **WHEN** an otherwise equivalent instant uses `+00:00`, no fractional seconds, a non-six-digit fraction, more than microsecond precision or a leap second
+- **THEN** version 1 rejects it before DTO construction or fingerprint calculation rather than normalizing it to another canonical identity
 
 #### Scenario: A producer sends an additive unknown field
 - **WHEN** a version 1 consumer receives a field absent from the exact version 1 schema

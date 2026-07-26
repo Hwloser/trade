@@ -190,7 +190,7 @@ The admitted primitives are:
 | Module | Primitive | Invariant |
 |---|---|---|
 | `ids` | `OpaqueId`, `IdNamespace` | Namespace is 1-64 ASCII lower-case letters/digits plus `._-`; value is 1-128 printable ASCII characters excluding whitespace/control; generated values use UUID4; ordering is never inferred |
-| `time` | `UtcInstant`, `DurationMs`, `Deadline` | RFC3339 UTC `Z` on wire; aware datetime only; duration is integer 1-86,400,000 ms; wall-clock deadline is evidence, monotonic time owns local waits |
+| `time` | `UtcInstant`, `DurationMs`, `Deadline` | Sole wire form `YYYY-MM-DDTHH:MM:SS.ffffffZ`; four-digit year `0001..9999`, seconds `00..59`, exact microsecond precision and literal `Z`; direct construction accepts only aware zero-offset datetime; duration is integer 1-86,400,000 ms; wall-clock deadline is evidence, monotonic time owns local waits |
 | `digest` | `ContentDigest` | Algorithm is explicit; v1 permits SHA-256 lower hex only |
 | `errors` | `ContractViolation`, `ContractErrorCode` | Closed code plus UTF-8 detail of at most 1,024 bytes; no live cause or traceback on wire |
 | `result` | `Result[T, E]` | Exactly one of value/error; no implicit truthiness or exception swallowing |
@@ -376,6 +376,23 @@ the boundary framework-free and auditable.
 are not defined here. Serialization requires the owner codec; arbitrary
 `dict[str, Any]` payload admission is forbidden.
 
+Envelope causality is closed rather than adapter-defined:
+
+| Case | `message_id` | `correlation_id` | `causation_id` |
+|---|---|---|---|
+| Root command/query | new | same as `message_id` | absent |
+| Child command/event | new | inherited from verified parent | parent `message_id` |
+| Transport retry/redelivery | preserved | preserved | preserved |
+| Newly submitted idempotent duplicate | new under root/child rule | new/inherited under that rule | absent/parent under that rule |
+| Durable replay of historical envelope | preserved | preserved | preserved |
+| New message derived during replay | new | inherited from replayed envelope | replayed envelope `message_id` |
+
+Retry, redelivery and replay attempt metadata stays outside canonical envelope
+bytes. Caller payload values never establish trusted causal identity. An
+existing receipt returned to an idempotent duplicate keeps the original
+admitted request message/correlation/causation identities; it does not rewrite
+history to the duplicate request.
+
 Owner codecs are registered through immutable `OwnerCodecDescriptor` values.
 A descriptor is owned by `trade.platform.contracts.messages` and binds owner
 namespace, schema name, positive schema version,
@@ -407,6 +424,7 @@ operation_kind
 command_name
 command_fingerprint
 actor
+request_message_id
 correlation_id
 causation_id
 idempotency_scope
@@ -456,6 +474,17 @@ hexadecimal and `key_version` is an integer 1-2,147,483,647. The secret is at
 least 256 bits from a CSPRNG, is held through a secret-store port owned by
 Platform persistence/ingress, is never serialized, and is distinct from
 `ContentDigest`.
+
+The pre-admission `CommandEnvelope` contains canonical payload bytes/schema
+identity but no keyed command fingerprint. After a stable zero-match result,
+ingress derives exactly one command HMAC with the unchanged active key before
+atomically creating the claim, operation and receipt. After a stable one-match
+result, it derives exactly one command HMAC with the claim's recorded key and
+returns either the original receipt or `IDEMPOTENCY_COMMAND_CONFLICT`.
+Multi-match corruption, exhausted contention, audit-unavailable and
+pre-admission rejection derive no command HMAC. Therefore the worst case is
+exactly twelve candidate HMACs plus at most one command HMAC, never a
+precomputed thirteenth followed by recomputation.
 
 The key set contains exactly one active write version, at most three retained
 read-only versions and a monotonically increasing `key_set_generation` in the
@@ -590,6 +619,7 @@ observation_state
 retryable
 retry_after_ms
 correlation_id
+request_message_id
 operation_id
 process_id: OpaqueId | None
 occurred_at
@@ -619,10 +649,10 @@ link or retry field not shown as present is absent:
 
 | Reason | Category / observation | Retry | Public links | Recovery |
 |---|---|---|---|---|
-| `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | correlation only; no operation/process ID | submit the original command or use a new idempotency identity |
-| `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | correlation only; no operation/process ID | audited operator inspection |
-| `IDEMPOTENCY_KEYSET_CONTENTION` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | correlation only; no operation/process ID | retry the same command and identity with a fresh finite deadline |
-| `IDEMPOTENCY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | correlation only; no operation/process ID | inspect Platform persistence and retry after recovery |
+| `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current request message + correlation; no operation/process ID | submit the original command or use a new idempotency identity |
+| `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | current request message + correlation; no operation/process ID | audited operator inspection |
+| `IDEMPOTENCY_KEYSET_CONTENTION` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request message + correlation; no operation/process ID | retry the same command and identity with a fresh finite deadline |
+| `IDEMPOTENCY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current request message + correlation; no operation/process ID | inspect Platform persistence and retry after recovery |
 
 These products forbid an old receipt, a fabricated operation ID, a raw key,
 the command payload and claim internals. The Platform persistence owner records
@@ -630,9 +660,9 @@ one immutable admission-audit fact for each terminal conflict, corruption or
 contention outcome before returning that exact outcome. This fact uses one
 optional repository transaction after the claim attempt ends and has an exact
 2,048-byte canonical limit and closed fields: schema/version, reason,
-correlation ID, static owner namespace, sorted matched key versions (at most
-four), key-set generation, attempt count and occurred-at. It contains no raw
-key, command DTO/payload, provider/source body, artifact bytes, actor
+current request message ID, correlation ID, static owner namespace, sorted
+matched key versions (at most four), key-set generation, attempt count and
+occurred-at. It contains no raw key, command DTO/payload, provider/source body, artifact bytes, actor
 identifier, credential, path or fingerprint. It is visible only through an
 authorized Platform operator audit query and never enters an ErrorEnvelope,
 HTTP/SDK response or cross-Context projection. The audit transaction cannot
@@ -645,15 +675,19 @@ most three claim transactions plus one refusal-audit transaction. The owner also
 emits
 `platform_idempotency_admission_outcomes_total` with only
 `owner_namespace` and the closed outcome
-`created|replayed|command_conflict|claim_corrupt|keyset_retry|keyset_contention|audit_unavailable`
-as labels. The counter, one bounded structured event and, for corruption, one
-integrity alert are each attempted at most once, synchronously under the same
-remaining deadline, with no retry or background continuation. The event carries
-only reason, correlation, owner, sorted matched key versions (at most four),
-key-set generation and attempt count. Telemetry emission failure is surfaced
-once to the owner health/audit channel and never converts refusal into success
-or permits claim creation; the owning Platform child must preserve these bounds
-before adoption.
+`created|replayed|command_conflict|claim_corrupt|keyset_contention|audit_unavailable`
+as labels. It records only the final admission result; generation retries remain
+the bounded `attempt_count` in event/audit evidence. The counter, one bounded
+structured event and, for corruption, one integrity alert are each attempted at
+most once, synchronously under the same remaining deadline, with no retry or
+background continuation. The event carries only reason, current request message,
+correlation, owner, sorted matched key versions (at most four), key-set
+generation and attempt count. Telemetry emission failure is surfaced once to
+the owner health/audit channel and never converts refusal into success or
+permits claim creation. The
+`platform-persistence-events-and-bootstrap-foundation` child owns the bounded
+operator health observation and must freeze its reason/state/query contract
+before any runtime ingress adoption.
 
 ### 8. Canonical serialization is exact, deterministic and bounded
 
@@ -664,9 +698,10 @@ fields therefore require a new version or a separately specified compatibility
 projection. No decoder silently drops unknown fields.
 
 Canonical JSON is UTF-8, sorted by the decoded Unicode scalar-value sequence of
-each object key, compact separators, `allow_nan=False`, RFC3339 UTC `Z`, enum
-values as strings, integers only for durations/counts, and no binary or
-floating point values. Canonical output preserves the exact decoded Unicode
+each object key, compact separators, `allow_nan=False`, the sole instant form
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`, enum values as strings, integers only for
+durations/counts, and no binary or floating point values. Canonical output
+preserves the exact decoded Unicode
 scalar sequence without NFC/NFD/NFKC/NFKD normalization and encodes non-ASCII
 scalars directly as UTF-8 (`ensure_ascii=False`). It rejects lone surrogates.
 It never escapes `/`; it escapes `"` and `\` with `\"` and `\\`; it uses only
@@ -724,6 +759,15 @@ interpreter-specific conversion errors. Command fingerprints use canonical
 bytes of the typed command DTO and exclude transport retry metadata.
 Serialization failure is a contract error, never a fallback to `str(object)` or
 `default=str`.
+
+`UtcInstant` encoding always emits exactly six fractional-second digits,
+including `.000000Z`; zero, one and 999,999 microseconds freeze
+`.000000Z`, `.000001Z` and `.999999Z`. Version 1 input accepts only that exact
+syntax and rejects `+00:00`, omitted or variable fractional digits, precision
+beyond microseconds and leap seconds before DTO construction or fingerprint
+calculation. It does not round or silently normalize a second wire identity.
+Direct Python construction requires an aware datetime with a zero UTC offset;
+the boundary does not convert a non-zero offset into UTC implicitly.
 
 ### 9. Bound observation, cancellation and shutdown truthfully
 

@@ -34,9 +34,12 @@ eight provenance references.
 ### Requirement: Command and query envelopes SHALL use typed owner payloads
 
 Command and query envelopes SHALL compose Kernel metadata, trusted
-`ActorContext`, a finite deadline and one typed owner DTO. They SHALL expose a
-canonical payload fingerprint but SHALL NOT expose raw idempotency secrets,
-live callbacks, framework request objects or arbitrary payload dictionaries.
+`ActorContext`, a finite deadline and one typed owner DTO. The pre-admission
+envelope SHALL expose deterministic canonical payload bytes and schema identity,
+but SHALL NOT expose or precompute a keyed command fingerprint. Platform
+ingress derives that fingerprint only after a stable idempotency result under
+the exact rules below. Envelopes SHALL NOT expose raw idempotency secrets, live
+callbacks, framework request objects or arbitrary payload dictionaries.
 
 Public command and idempotency fingerprints SHALL use exact
 `FingerprintV1 {algorithm, domain, key_version, value}` values. `algorithm`
@@ -60,12 +63,15 @@ transaction/CAS acquisition, any contention backoff, one optional refusal-audit
 transaction and telemetry SHALL consume one `CommandEnvelope` monotonic
 remaining deadline.
 Across three attempts, admission SHALL derive at most twelve idempotency-
-candidate HMACs. A final stable zero-match creation or one-match replay MAY
-derive exactly one additional command-fingerprint HMAC using, respectively,
-the unchanged active key version or that claim's recorded key version and the
-distinct command domain. Total HMAC derivations SHALL therefore be at most
-thirteen. Multi-match corruption and exhausted contention SHALL NOT perform
-that additional command-fingerprint derivation.
+candidate HMACs. After a final stable zero-match result, admission SHALL derive
+exactly one command-fingerprint HMAC using the unchanged active key before
+atomically creating the claim, operation and receipt. After a final stable
+one-match result, admission SHALL derive exactly one command-fingerprint HMAC
+using that claim's recorded key before returning either the original receipt or
+`IDEMPOTENCY_COMMAND_CONFLICT`. Total HMAC derivations SHALL therefore be at
+most thirteen. Multi-match corruption, exhausted contention, audit-unavailable
+and every pre-admission rejection SHALL perform zero command-fingerprint HMAC
+derivations.
 
 In one owner-local admission transaction, ingress SHALL read generation, derive
 and query candidate idempotency fingerprints for every active or retained key
@@ -128,6 +134,14 @@ idempotency keys or commands.
 - **WHEN** two attempts end on generation changes and the third has zero matches under an unchanged active generation
 - **THEN** admission performs at most twelve idempotency-candidate HMAC derivations plus one command-fingerprint HMAC, thirteen total, before atomically creating the claim, operation and initial receipt
 
+#### Scenario: A stable command conflict follows generation retries
+- **WHEN** two attempts end on generation changes and the third finds exactly one claim whose command identity differs
+- **THEN** admission performs at most twelve idempotency-candidate HMAC derivations plus exactly one command-fingerprint HMAC, thirteen total, and returns no old receipt or new operation
+
+#### Scenario: A corrupt claim set or audit-unavailable refusal is returned
+- **WHEN** the stable result has multiple claims or a required refusal audit cannot commit
+- **THEN** admission performs zero command-fingerprint HMAC derivations and exposes no command fingerprint
+
 #### Scenario: Deadline expires before contention audit
 - **WHEN** claim contention leaves no remaining time to start and commit its refusal audit
 - **THEN** ingress returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` without starting another transaction or reporting contention as durably recorded
@@ -143,13 +157,17 @@ idempotency keys or commands.
 ### Requirement: Operation receipts SHALL report durable admission and terminal state truthfully
 
 An `OperationReceipt` SHALL contain version, operation identity and kind,
-command fingerprint, trusted actor, correlation/causation identities, scoped
-idempotency fingerprint, closed operation state, safe reason, timestamps and
-optional process linkage. A receipt SHALL exist only after durable admission
+command fingerprint, trusted actor, admitted request message identity,
+correlation/causation identities, scoped idempotency fingerprint, closed
+operation state, safe reason, timestamps and optional process linkage. These
+message/correlation/causation values SHALL be copied from the envelope that
+created the operation. A receipt SHALL exist only after durable admission
 identity is created. Only a command-equivalent duplicate admission SHALL return
-the existing receipt; an idempotency identity reused for another command SHALL
-return the conflict error above without that receipt. Raw payloads and raw
-idempotency keys SHALL NOT be exposed.
+the existing receipt, preserving the original admitted request and causal
+identities rather than replacing them with the duplicate request's identities;
+an idempotency identity reused for another command SHALL return the conflict
+error below without that receipt. Raw payloads and raw idempotency keys SHALL
+NOT be exposed.
 Platform command ingress SHALL be the sole future authority and writer for
 idempotency claims, operation identity and every initial, intermediate and
 terminal `OperationReceipt`. Processes SHALL own Process Manager workflow state
@@ -285,10 +303,14 @@ rejected.
 
 `ErrorEnvelope` SHALL contain exact schema name/version, stable reason code,
 closed category and observation state, retryability and optional bounded
-retry-after, correlation/operation/process links, occurrence time, safe message
-and safe recovery hint. It SHALL NOT contain arbitrary extra fields, raw
-exception text, traceback, credential, SQL, path or raw payload. HTTP status,
-CLI exit code and SSE framing SHALL remain interface-adapter mappings.
+retry-after, `request_message_id`, correlation/operation/process links,
+occurrence time, safe message and safe recovery hint. For an error caused while
+handling a specific admitted or rejected envelope, `request_message_id` SHALL
+equal that envelope's message identity; it is the safe concrete request link
+when no operation/process identity exists. It SHALL NOT contain arbitrary extra
+fields, raw exception text, traceback, credential, SQL, path or raw payload.
+HTTP status, CLI exit code and SSE framing SHALL remain interface-adapter
+mappings.
 
 Reason codes SHALL be 1-96 ASCII upper-case letters/digits plus `._-`;
 `retry_after_ms` SHALL be absent or an integer 0-86,400,000; safe message and
@@ -301,19 +323,22 @@ field combination SHALL be rejected:
 
 - `IDEMPOTENCY_COMMAND_CONFLICT`: category `conflict`, observation `observed`,
   `retryable=false`, no retry-after, correlation ID only, no operation/process
-  ID, and a safe hint to submit the original command or a new idempotency
-  identity.
+  ID, required current `request_message_id`, and a safe hint to submit the
+  original command or a new idempotency identity.
 - `IDEMPOTENCY_CLAIM_CORRUPT`: category `internal`, observation `observed`,
   `retryable=false`, no retry-after, correlation ID only, no operation/process
-  ID, and a safe hint requiring audited operator inspection.
+  ID, required current `request_message_id`, and a safe hint requiring audited
+  operator inspection.
 - `IDEMPOTENCY_KEYSET_CONTENTION`: category `unavailable`, observation
   `unavailable`, `retryable=true`, required `retry_after_ms` in 1-1,000,
-  correlation ID only, no operation/process ID, and a safe hint to retry the
-  same command/identity with a fresh finite deadline.
+  correlation ID only, no operation/process ID, required current
+  `request_message_id`, and a safe hint to retry the same command/identity with
+  a fresh finite deadline.
 - `IDEMPOTENCY_AUDIT_UNAVAILABLE`: category `unavailable`, observation
   `unavailable`, `retryable=true`, required `retry_after_ms` in 1-1,000,
-  correlation ID only, no operation/process ID, and a safe hint to inspect
-  Platform persistence and retry after recovery.
+  correlation ID only, no operation/process ID, required current
+  `request_message_id`, and a safe hint to inspect Platform persistence and
+  retry after recovery.
 
 These errors SHALL contain no old receipt, raw key, command payload, claim
 internals, actor identifier or fingerprint. The future Platform persistence
@@ -322,12 +347,13 @@ conflict, corruption and contention outcome before returning that exact
 outcome. The fact SHALL use one optional repository transaction after the claim
 attempt ends, SHALL have canonical size at most 2,048 bytes, and SHALL contain
 only schema/version, reason, correlation ID, static owner namespace, sorted
-matched key versions (at most four), key-set generation, attempt count and
-occurred-at. It SHALL contain no raw key, command DTO/payload, provider/source
-body, artifact bytes, actor identifier, credential, path or fingerprint. It
-SHALL be visible only through an authorized Platform operator audit query and
-SHALL NOT enter an `ErrorEnvelope`, HTTP/SDK response or cross-Context
-projection. The audit transaction SHALL NOT create or reopen a claim,
+matched key versions (at most four), key-set generation, attempt count,
+`request_message_id` and occurred-at. The request link SHALL equal the current
+command envelope's message identity. It SHALL contain no raw key, command
+DTO/payload, provider/source body, artifact bytes, actor identifier, credential,
+path or fingerprint. It SHALL be visible only through an authorized Platform
+operator audit query and SHALL NOT enter an `ErrorEnvelope`, HTTP/SDK response
+or cross-Context projection. The audit transaction SHALL NOT create or reopen a claim,
 operation, receipt or dispatch. If the audit fact cannot start or commit within
 the remaining deadline, admission SHALL return
 `IDEMPOTENCY_AUDIT_UNAVAILABLE` instead and SHALL still create no claim,
@@ -337,15 +363,21 @@ therefore start at most three claim
 transactions plus one refusal-audit transaction. The owner SHALL expose only the
 low-cardinality counter `platform_idempotency_admission_outcomes_total` with
 `owner_namespace` and the closed outcome
-`created|replayed|command_conflict|claim_corrupt|keyset_retry|keyset_contention|audit_unavailable`
-as labels. The counter, one bounded structured event and, for corruption, one
-integrity alert SHALL each be attempted at most once, synchronously under the
-same remaining deadline, with no retry or background continuation. The event
-SHALL contain only reason, correlation, owner, sorted matched key versions (at
-most four), key-set generation and attempt count. Telemetry emission failure
-SHALL surface once to the owner health/audit channel and SHALL NOT convert a
-refusal to success or permit claim creation; the owning child SHALL preserve
-these bounds before adoption.
+`created|replayed|command_conflict|claim_corrupt|keyset_contention|audit_unavailable`
+as labels. This counter records only the final admission result; generation
+retries are represented only by the bounded numeric `attempt_count` in the
+event/audit and SHALL NOT replace the terminal outcome. The counter, one bounded
+structured event and, for corruption, one integrity alert SHALL each be
+attempted at most once, synchronously under the same remaining deadline, with
+no retry or background continuation. The event SHALL contain only reason,
+correlation, `request_message_id`, owner, sorted matched key versions (at most
+four), key-set generation and attempt count. Telemetry emission failure SHALL
+surface once to the owner health/audit channel and SHALL NOT convert a refusal
+to success or permit claim creation. The
+`platform-persistence-events-and-bootstrap-foundation` child SHALL own a
+bounded, operator-authorized health observation for this failure and SHALL
+freeze its reason/state/query contract before runtime adoption; until then no
+production ingress may wire this telemetry path.
 
 #### Scenario: An Observatory error is mapped
 - **WHEN** a legacy `ObservatoryError` contains reason, message, evidence refs and arbitrary extra fields
@@ -357,7 +389,11 @@ these bounds before adoption.
 
 #### Scenario: Idempotency errors are encoded
 - **WHEN** admission reports a command conflict, corrupt claim set, exhausted key-set contention or unavailable refusal audit
-- **THEN** the exact reason/category/observation/retry/link/recovery product above is emitted and every forbidden combination is rejected
+- **THEN** the exact reason/category/observation/retry/link/recovery product above is emitted, its request message link identifies the current command envelope, and every forbidden combination is rejected
+
+#### Scenario: Generation retries end in a stable result
+- **WHEN** one or two key-set generation changes precede a stable creation, replay or refusal
+- **THEN** the one admission outcome counter records only that final result while bounded attempt count preserves retry evidence
 
 #### Scenario: Claim corruption is observed
 - **WHEN** more than one candidate claim matches
