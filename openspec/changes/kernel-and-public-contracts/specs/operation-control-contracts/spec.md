@@ -105,8 +105,11 @@ current safe principal identity, immutable policy reference, `resolved` outcome
 and `occurred_at: UtcInstant`. For a new key, the Platform owner SHALL sample
 `occurred_at` exactly once after the operation/claim resolves successfully and
 immediately before constructing the audit fact to commit. Clock failure SHALL
-return `REPLAY_AUDIT_UNAVAILABLE`, commit no replay-audit fact and return no
-receipt. This value SHALL mean only the Platform owner's first replay-audit
+return `REPLAY_AUDIT_CLOCK_UNAVAILABLE`, commit no replay-audit fact and return
+no receipt. That exact error SHALL be the sole `ErrorEnvelope` v1 product for
+which `occurred_at` is absent; it SHALL NOT fabricate a wall time from the
+historical envelope, monotonic clock or a fallback source. The value on a
+committed audit SHALL mean only the Platform owner's first replay-audit
 observation time; it SHALL NOT be interpreted as historical event,
 provider/source, publication, received, available, PIT, deadline,
 transaction-completion or response time. A same-key, same-binding
@@ -114,15 +117,19 @@ retry/redelivery SHALL preserve the originally committed `occurred_at` and
 resolve that existing audit and the same receipt in the single transaction
 without another wall-clock sample or a second audit row.
 
-If that clock sample fails, the transaction cannot start or commit within the
-remaining deadline, or persistence fails, replay SHALL return
-`REPLAY_AUDIT_UNAVAILABLE` with no receipt or operation/process link. It SHALL
-NOT silently succeed, retry or continue in the background. A crash before
-commit SHALL leave no replay-audit fact. A crash after commit but before
-response SHALL recover through the same-key, same-binding path. The owner SHALL
-make at most one bounded failure signal to the same Platform operator health
-owner required for admission-audit failure; runtime adoption SHALL remain
-blocked until that bounded health query exists. Authorization denial SHALL
+Clock failure SHALL return `REPLAY_AUDIT_CLOCK_UNAVAILABLE`; a transaction
+that cannot start or commit within the remaining deadline or whose persistence
+fails SHALL return `REPLAY_AUDIT_UNAVAILABLE`. Both products SHALL have no
+receipt or operation/process link and SHALL NOT silently succeed, retry or
+continue in the background. A crash before commit SHALL leave no replay-audit
+fact. A crash after commit but before response SHALL recover through the
+same-key, same-binding path. The owner SHALL make at most one bounded failure
+signal to the same Platform operator health owner required for admission-audit
+failure. That signal SHALL have exact `failure_kind` of `clock_unavailable`,
+`transaction_unavailable` or `persistence_unavailable`, SHALL contain no
+producer wall-clock timestamp and SHALL NOT depend on audit `occurred_at`.
+Runtime adoption SHALL remain blocked until the bounded operator health query
+accepts and exposes this closed clockless signal. Authorization denial SHALL
 occur before the replay transaction and SHALL disclose no existence fact.
 Re-executing work requires a new
 replay-derived command under the ordinary child-message rule with current actor,
@@ -169,8 +176,12 @@ subject, policy and immutable input references.
 - **THEN** replay denies the request before a replay transaction starts or operation or claim existence is read or disclosed
 
 #### Scenario: Replay audit persistence is unavailable
-- **WHEN** the first-audit wall-clock sample fails, the single replay transaction cannot start or commit within the remaining deadline, or persistence fails
+- **WHEN** the single replay transaction cannot start or commit within the remaining deadline or persistence fails while trusted wall time is available
 - **THEN** replay returns `REPLAY_AUDIT_UNAVAILABLE` without a receipt, operation/process link, retry, background continuation or unaudited success
+
+#### Scenario: Replay audit clock is unavailable
+- **WHEN** the first-audit trusted wall-clock sample fails
+- **THEN** replay returns `REPLAY_AUDIT_CLOCK_UNAVAILABLE` with `occurred_at` absent, no receipt, operation/process link, replay-audit fact, fallback time, retry or background continuation, and emits at most one clockless `clock_unavailable` health signal
 
 #### Scenario: Replay response is lost after audit commit
 - **WHEN** the owner commits the resolved replay audit and crashes before the historical receipt response arrives
@@ -490,7 +501,11 @@ rejected.
 `ErrorEnvelope` SHALL contain exact schema name/version, stable reason code,
 closed category and observation state, retryability and optional bounded
 retry-after, `request_message_id`, correlation/optional causation and
-operation/process links, occurrence time, safe message and safe recovery hint.
+operation/process links, `occurred_at: UtcInstant | None`, safe message and safe
+recovery hint. `occurred_at` SHALL be present for every v1 product except
+`REPLAY_AUDIT_CLOCK_UNAVAILABLE`, where it SHALL be absent because the trusted
+wall clock itself failed. Historical envelope time, audit deadline, monotonic
+time and any fallback clock SHALL NOT fill that absence.
 For an error caused while handling a specific admitted or rejected envelope,
 `request_message_id` SHALL equal that envelope's message identity,
 `correlation_id` SHALL equal its correlation identity, and `causation_id` SHALL
@@ -504,10 +519,11 @@ Reason codes SHALL be 1-96 ASCII upper-case letters/digits plus `._-`;
 `retry_after_ms` SHALL be absent or an integer 0-86,400,000; safe message and
 recovery hint SHALL each be at most 1,024 UTF-8 bytes.
 
-In addition to required schema/version/reason/occurred-at/safe-message fields,
-replay and idempotency admission SHALL use these exact closed products for
-category, observation, retry fields, public links and safe recovery hint. Every
-unlisted field combination SHALL be rejected:
+In addition to required schema/version/reason/safe-message fields, replay and
+idempotency admission SHALL use these exact closed products for category,
+observation, retry fields, public links, occurrence time and safe recovery
+hint. `occurred_at` SHALL be required unless a product below explicitly requires
+it absent. Every unlisted field combination SHALL be rejected:
 
 - `REPLAY_OPERATION_NOT_FOUND`: category `invalid`, observation `observed`,
   `retryable=false`, no retry-after, required current replay
@@ -519,6 +535,12 @@ unlisted field combination SHALL be rejected:
   request/correlation and root-absent or child-present causation, no
   operation/process ID, and a safe hint to retry the original replay binding or
   use a new replay request identity.
+- `REPLAY_AUDIT_CLOCK_UNAVAILABLE`: category `unavailable`, observation
+  `unavailable`, `retryable=true`, required `retry_after_ms` in 1-1,000,
+  required current replay request/correlation and root-absent or child-present
+  causation, required absent `occurred_at`, no operation/process ID, and a safe
+  hint to inspect the Platform trusted wall-clock source and retry the same
+  replay request after recovery.
 - `REPLAY_AUDIT_UNAVAILABLE`: category `unavailable`, observation `unavailable`,
   `retryable=true`, required `retry_after_ms` in 1-1,000, required current
   replay request/correlation and root-absent or child-present causation, no

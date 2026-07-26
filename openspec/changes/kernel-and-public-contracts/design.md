@@ -436,23 +436,29 @@ admission binding digest, current safe principal ID, policy ref, `resolved`
 outcome and `occurred_at: UtcInstant`. For a new key, the Platform owner samples
 `occurred_at` exactly once after the operation/claim resolves successfully and
 immediately before constructing the fact to commit. A clock failure returns
-`REPLAY_AUDIT_UNAVAILABLE`, commits no replay-audit fact and returns no receipt.
-The value is the Platform owner's first replay-audit observation time, not
+`REPLAY_AUDIT_CLOCK_UNAVAILABLE`, commits no replay-audit fact and returns no
+receipt. That exact error is the sole `ErrorEnvelope` v1 product for which
+`occurred_at` is absent; it cannot fabricate a wall time from the historical
+envelope, monotonic clock or a fallback source. The value on a committed audit
+is the Platform owner's first replay-audit observation time, not
 historical event, provider/source, publication, received, available, PIT,
 deadline, transaction-completion or response time. A same-key, same-binding
 retry/redelivery preserves the originally committed `occurred_at` and resolves
 that existing fact and the same receipt in the one transaction without a
 second audit row or another wall-clock sample.
 
-If the clock sample fails, the transaction cannot start or commit within the
-shared deadline, or persistence fails, replay returns
-`REPLAY_AUDIT_UNAVAILABLE` with no receipt or operation/process link. It does
-not silently succeed, retry or continue in the background. Audit commit
-followed by response loss is recovered by the same-key/same-binding path; a
-crash before commit leaves no replay-audit fact.
-One bounded failure signal goes to the same future Platform operator health
-owner required for admission-audit failures, and runtime adoption remains
-blocked until that health query exists. To execute work again, replay derives a
+Clock failure returns `REPLAY_AUDIT_CLOCK_UNAVAILABLE`; a transaction that
+cannot start or commit within the shared deadline or whose persistence fails
+returns `REPLAY_AUDIT_UNAVAILABLE`. Both have no receipt or operation/process
+link and do not silently succeed, retry or continue in the background. Audit
+commit followed by response loss is recovered by the same-key/same-binding
+path; a crash before commit leaves no replay-audit fact. One bounded failure
+signal goes to the same future Platform operator health owner required for
+admission-audit failures. It has exact `failure_kind` of
+`clock_unavailable`, `transaction_unavailable` or `persistence_unavailable`,
+contains no producer wall-clock timestamp, and cannot rely on audit
+`occurred_at`. Runtime adoption remains blocked until that health query accepts
+and exposes this closed clockless signal. To execute work again, replay derives a
 new command under the ordinary child-message rule with the current actor,
 subject, policy and immutable input references.
 
@@ -754,6 +760,11 @@ safe_message
 recovery_hint
 ```
 
+`occurred_at` is `UtcInstant | None`. It is required for every v1 product
+except `REPLAY_AUDIT_CLOCK_UNAVAILABLE`, where it is forbidden because the
+trusted wall clock itself was unavailable. No historical, envelope, monotonic
+or fallback time may fill that absence.
+
 Reason codes are uppercase namespaced tokens and stable within a schema
 version. Categories are `invalid`, `denied`, `conflict`, `saturated`,
 `unavailable`, `blocked`, `quarantined`, `stale`, `timeout`, `cancelled`, and
@@ -770,7 +781,8 @@ behavior to remain unchanged while SDK and future interfaces share reason
 semantics.
 
 In addition to required `schema_name`, `schema_version`, `reason_code`,
-`occurred_at`, `safe_message` and the safe `recovery_hint` shown below,
+`safe_message` and the safe `recovery_hint` shown below, `occurred_at` is
+required except where the table explicitly requires it absent. Replay and
 replay and idempotency admission use these exact variable-field products. Every
 optional link or retry field not shown as present is absent:
 
@@ -778,6 +790,7 @@ optional link or retry field not shown as present is absent:
 |---|---|---|---|---|
 | `REPLAY_OPERATION_NOT_FOUND` | `invalid` / `observed` | `retryable=false`; no retry-after | current replay request + correlation + root-absent/child-present causation; no operation/process ID | verify the historical operation identity or submit a newly authorized replay-derived command |
 | `REPLAY_ADMISSION_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current replay request + correlation + root-absent/child-present causation; no operation/process ID | retry the original replay binding or use a new replay request identity |
+| `REPLAY_AUDIT_CLOCK_UNAVAILABLE`; `occurred_at` absent | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current replay request + correlation + root-absent/child-present causation; no operation/process ID | inspect the Platform trusted wall-clock source and retry the same replay request after recovery |
 | `REPLAY_AUDIT_UNAVAILABLE` | `unavailable` / `unavailable` | `retryable=true`; `retry_after_ms` required in 1-1,000 | current replay request + correlation + root-absent/child-present causation; no operation/process ID | inspect Platform replay-audit persistence and retry the same replay request after recovery |
 | `IDEMPOTENCY_COMMAND_CONFLICT` | `conflict` / `observed` | `retryable=false`; no retry-after | current request + correlation + root-absent/child-present causation; no operation/process ID | submit the original command or use a new idempotency identity |
 | `IDEMPOTENCY_CLAIM_CORRUPT` | `internal` / `observed` | `retryable=false`; no retry-after | current request + correlation + root-absent/child-present causation; no operation/process ID | audited operator inspection |
@@ -1564,6 +1577,14 @@ must still decide:
 
 - which current CLI/HTTP mutation is the first to route through durable command
   ingress;
+- the `platform-persistence-events-and-bootstrap-foundation` child must freeze
+  one common retention horizon for each replay-audit key, its audit fact and
+  the resolvable historical `OperationReceipt`; it must not expire one member
+  while direct replay can still address the key;
+- that same Platform persistence child must prove concurrent same-key insert
+  recovery under its real unique constraint: equal bindings resolve one audit
+  and receipt, conflicting bindings return `REPLAY_ADMISSION_CONFLICT`, and no
+  database exception or duplicate row crosses the port;
 - when the 300/3600/7200-second compatibility waits can become asynchronous
   receipt observation;
 - which Context first publishes a concrete immutable reference;
