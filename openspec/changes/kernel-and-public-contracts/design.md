@@ -469,7 +469,13 @@ query. A changed generation ends and rolls back that attempt; re-derivation may
 occur only in the next attempt. Claim attempts, transaction/CAS acquisition,
 any contention backoff, one optional refusal-audit transaction and telemetry
 consume the same `CommandEnvelope` monotonic remaining deadline; no sub-step
-restarts it.
+restarts it. Across three attempts, admission derives at most twelve
+idempotency-candidate HMACs. A final stable zero-match creation or one-match
+replay may additionally derive exactly one command-fingerprint HMAC with,
+respectively, the unchanged active key version or the matched claim's recorded
+key version; total HMAC derivations are therefore at most thirteen.
+Multi-match corruption and exhausted-contention paths do not spend that
+additional command-fingerprint derivation.
 
 On every admission, one owner-local transaction reads the generation, derives
 candidate idempotency fingerprints for the active and all retained versions and
@@ -927,6 +933,16 @@ mixed result remains `mixed`; it is never flattened to the aggregate
 precedence outcome. If the target schema cannot represent every count and
 truncation invariant, the mapper refuses the canonical projection and retains
 only the unchanged legacy result.
+The canonical observation deliberately has no event time field. Current
+`event_log.created_at` writes naive local text, live `Event.created_at` uses an
+independent UTC `now`, and replay may force-label naive text as UTC or replace a
+missing/malformed value with another `now`. The mapper therefore omits every
+legacy `created_at` value rather than constructing `UtcInstant`, preserving a
+raw token, or treating it as provider publication, observed, received,
+available or envelope creation time. The unchanged legacy object/row remains
+available to its existing owner. Tests bind one event identity across live and
+replay shapes and prove that UTC-looking, local, malformed, missing, DST-fold
+and DST-gap values all produce the same no-time canonical observation.
 Because current EventBus materializes one result per handler and has no
 registration cardinality contract, the mapper accepts at most 1,024 source
 handler results. At 1,025 it refuses canonical projection before allocating a
@@ -1028,12 +1044,14 @@ to directory migration. Its target-graph fixture enforces:
    legacy owner; and
 6. no compatibility package, `__init__` or alias re-exports an aggregate mapper
    facade; and
-7. every legacy `trade_py`/`trade_web` module outside the four exact
-   `trade_py.compat.*_contracts` allowlist is forbidden from importing
-   `trade.platform.contracts` or `trade.processes.contracts` until the
-   hardening/adoption child deliberately revises the baseline. Negative fixtures
-   cover EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner` and
-   `WebResourceContainer`.
+7. only the four exact `trade_py.compat.*_contracts` leaf adapters may import
+   target contracts in legacy source; and
+8. no non-test `trade_py`/`trade_web` module may import either target contracts
+   or any of those four adapters until the hardening/adoption child deliberately
+   revises the baseline. Direct, relative, aliased, literal dynamic-import and
+   package re-export fixtures cover EventBus, CLI, FastAPI lifespan,
+   `RuntimeCommandRunner` and `WebResourceContainer`; only focused contract
+   tests are positive consumers of the leaf adapters.
 
 The guard reports the importing file, imported symbol and violated edge. Its
 fixtures include a direct import, relative import, alias/re-export and
@@ -1105,35 +1123,41 @@ remain usable.
 
 ### Performance and capacity
 
-DTO construction and canonical serialization are linear in input bounded before
-parse and during an iterative traversal. Wire bytes, nesting, strings,
+DTO construction, lexical scanning and iterative post-parse traversal are
+linear in bounded input. Canonical object encoding additionally sorts decoded
+keys and is `O(B + sum(k_i log k_i))`, where `B` is bounded bytes and every
+`k_i` is capped at 100 with 1,024 members across the input. Wire bytes, nesting, strings,
 per-container items, aggregate members, nodes, scopes, delegation, recovery
 descriptors and process history have fixed limits. No queue, worker, polling
 loop, database call, network call or artifact read exists in this child.
 Legacy EventBus canonical projection has a 1,024-source-result admission bound;
 larger materialized legacy results remain available only in their existing form.
-Admission test doubles perform at most three attempts, twelve HMAC derivations,
-three candidate queries, three claim transaction/CAS acquisitions and one
-refusal-audit transaction for one command. They attempt one counter, one event
-and at most one alert per terminal outcome; deadline exhaustion can reduce
-these counts but never increase them.
+Admission test doubles perform at most three attempts, twelve
+idempotency-candidate HMAC derivations plus one command-fingerprint HMAC on a
+final stable zero-match creation or one-match replay, three candidate queries,
+three claim transaction/CAS acquisitions and one refusal-audit transaction for
+one command. Total HMAC derivations are at most thirteen. They attempt one
+counter, one event and at most one alert per terminal outcome; deadline
+exhaustion can reduce these counts but never increase them.
 Ordinary control tests use a fake monotonic clock and no real sleeps at exactly
 1 and 10 owners in each closed residual category. One minimal real subprocess
 fixture uses one child, one shared 2-second deadline, at most 250 ms elapsed
 tolerance, no retry, and a 5-second whole-fixture wall-clock ceiling. Packaging
 builds one wheel and installs it offline with `--no-deps`. Its normalized member
 inventory must equal the union of discovered source `.py` packages plus the
-single `trade_py-*.dist-info` metadata/entry-point family: no repository data,
-test, Web frontend, engine, generated, vendor, cache or undeclared package-data
-member is accepted. Every packaged `.py` member must equal its source bytes.
-Let `S` be the sum of those source bytes. The dist-info family has at most eight
-regular members, at most 65,536 bytes each and at most 262,144 uncompressed
-bytes in aggregate. Total uncompressed member bytes must be at most
-`S + 262,144`; the wheel file must be at most `S + 524,288` bytes. The proof
-records member count, compressed and uncompressed bytes and refuses any member
-or byte budget outside these formulas; these are deterministic source-relative
-budgets rather than wall-clock thresholds. No claim about production
-throughput is made.
+single `trade_py-*.dist-info` family containing exactly the normalized
+basenames `METADATA`, `WHEEL`, `entry_points.txt`, `top_level.txt` and `RECORD`:
+no license subdirectory or additional metadata member is admitted without a
+new reviewed inventory. No repository data, test, Web frontend, engine,
+generated, vendor, cache or undeclared package-data member is accepted. Every
+packaged `.py` member must equal its source bytes. Let `S` be the sum of those
+source bytes. Each of the five dist-info members is capped at 65,536 bytes and
+their aggregate at 262,144 uncompressed bytes. Total uncompressed member bytes
+must be at most `S + 262,144`; the wheel file must be at most `S + 524,288`
+bytes. The proof records member count, compressed and uncompressed bytes and
+refuses any member or byte budget outside these formulas; these are
+deterministic source-relative budgets rather than wall-clock thresholds. No
+claim about production throughput is made.
 
 ### Persistent-write safety
 
@@ -1186,9 +1210,10 @@ callers and an executor whose final join would block. Fake-clock tests own most
 combinations. A rotation-storm fixture proves success within one to three
 attempts, deterministic termination at attempt/deadline exhaustion, the exact
 priority between provisional refusal and audit-unavailable, the
-12-HMAC/3-query/3-claim-transaction/1-audit-transaction maxima, exact four-error
-products, forbidden field combinations, the 2,048-byte audit allowlist, closed
-metric labels, one-shot redacted event/counter/alert behavior and no background
+12-candidate-HMAC/1-command-HMAC/13-total-HMAC/3-query/
+3-claim-transaction/1-audit-transaction maxima, exact four-error products,
+forbidden field combinations, the 2,048-byte audit allowlist, closed metric
+labels, one-shot redacted event/counter/alert behavior and no background
 continuation. The minimal real subprocess
 fixture proves process-tree reap under a fixed wall-clock ceiling. Packaging
 tests cover source, editable and one offline/no-deps clean-wheel environment
@@ -1240,9 +1265,10 @@ additive files/config. No data restore is needed.
   workflow/ProcessView and links by opaque ID. Require a governed parent-table
   clarification before any repository implementation.
 - **A legacy runtime imports a new control DTO and appears migrated before
-  shutdown is bounded** -> Architecture guard permits target imports only from
-  the four pure compatibility modules until the hardening child changes the
-  allowlist with strict approval.
+  shutdown is bounded** -> The four compatibility modules are test-only leaf
+  adapters. Architecture guard rejects non-test runtime imports of both target
+  contracts and those adapters until the hardening child changes the allowlist
+  with strict approval.
 - **Actor provenance is treated as authentication by name only** -> Wire decode
   always downgrades assurance; only trusted adapter evidence can establish it;
   mutation rejects unknown actors.

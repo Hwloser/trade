@@ -63,7 +63,10 @@ reported as successful cancellation.
   CLI, HTTP route, scheduler, event handler, or runtime owner.
 - Preserve mixed EventBus handler admission facts and map current `/api/run`
   acceptance only as a legacy observation; no mapper fabricates trusted actor,
-  fingerprints or a formal operation receipt from `run_id`.
+  fingerprints or a formal operation receipt from `run_id`. The EventBus
+  observation omits legacy `created_at`: current persistence writes naive local
+  time, live objects use an independent UTC clock, and replay may relabel or
+  synthesize an instant, so none is safe canonical temporal evidence.
 - Preserve legacy `job_runs` naive time strings only as bounded unproven
   observations. No mapper creates `UtcInstant` or calls a row current without
   separately supplied row-bound owner-generation/liveness evidence.
@@ -80,11 +83,14 @@ reported as successful cancellation.
   size/depth-budget, legacy-snapshot, and bounded-control fixtures.
 - Extend the existing architecture guard for the six-module Kernel,
   Platform-not-to-Processes, target-not-to-legacy, owner-specific compatibility
-  imports and no aggregate re-export. Until the shutdown/recovery child is
-  approved, the guard also rejects direct imports of new control/operation
-  contracts from EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner`,
-  `WebResourceContainer` and every other legacy runtime module; only the four
-  pure compatibility modules are allowed to import those target contracts.
+  imports and no aggregate re-export. The four compatibility modules are
+  test-only leaf adapters in this child: until the shutdown/recovery child is
+  approved, every non-test `trade_py`/`trade_web` module is forbidden both from
+  importing new control/operation contracts and from importing a compatibility
+  mapper that returns them. Direct, relative, aliased, dynamic-literal and
+  package re-export paths from EventBus, CLI, FastAPI lifespan,
+  `RuntimeCommandRunner`, `WebResourceContainer` and every other legacy runtime
+  module are rejected.
 - Apply the `public_contract` and `runtime_concurrency` design-quality profiles,
   six-role digest-bound review, and current-date strict approval before code.
 
@@ -118,9 +124,11 @@ The later implementation is limited to the six approved `src/trade/kernel`
 modules, `src/trade/platform/contracts`, `src/trade/processes/contracts`, and narrow
 owner-specific compatibility/contract-test paths, plus the minimum explicit
 additive package discovery needed to import those modules. The package proof
-builds one wheel, verifies an exact source-derived member/byte inventory and
-installs that exact artifact offline/no-deps; failure promotes the later
-package-layout ADR rather than adding a shim. It does not create Platform
+builds one wheel, verifies an exact source-derived Python member/byte inventory
+plus exactly `METADATA`, `WHEEL`, `entry_points.txt`, `top_level.txt` and
+`RECORD` in its single dist-info family, and installs that exact artifact
+offline/no-deps; failure promotes the later package-layout ADR rather than
+adding a shim. It does not create Platform
 implementations, Process Managers, Context repositories, business DTOs,
 database tables, outbox delivery, provider access, Web routing, native bindings,
 or a global `common`, `shared`, `utils`, `services`, or DTO facade.

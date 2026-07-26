@@ -59,6 +59,13 @@ re-derivation SHALL occur only in the next attempt. Claim attempts,
 transaction/CAS acquisition, any contention backoff, one optional refusal-audit
 transaction and telemetry SHALL consume one `CommandEnvelope` monotonic
 remaining deadline.
+Across three attempts, admission SHALL derive at most twelve idempotency-
+candidate HMACs. A final stable zero-match creation or one-match replay MAY
+derive exactly one additional command-fingerprint HMAC using, respectively,
+the unchanged active key version or that claim's recorded key version and the
+distinct command domain. Total HMAC derivations SHALL therefore be at most
+thirteen. Multi-match corruption and exhausted contention SHALL NOT perform
+that additional command-fingerprint derivation.
 
 In one owner-local admission transaction, ingress SHALL read generation, derive
 and query candidate idempotency fingerprints for every active or retained key
@@ -111,7 +118,15 @@ idempotency keys or commands.
 #### Scenario: Rotation contention exhausts admission
 - **WHEN** key-set generation changes through the third admission attempt and the contention refusal audit commits within the remaining shared deadline
 - **THEN** ingress returns `IDEMPOTENCY_KEYSET_CONTENTION` without a claim, operation, receipt or background continuation
-- **AND THEN** one admission has performed no more than twelve HMAC derivations, three candidate queries, three claim transaction/CAS acquisitions and one refusal-audit transaction
+- **AND THEN** one admission has performed no more than twelve idempotency-candidate HMAC derivations, zero command-fingerprint HMAC derivations, three candidate queries, three claim transaction/CAS acquisitions and one refusal-audit transaction
+
+#### Scenario: A stable replay follows generation retries
+- **WHEN** two attempts end on generation changes and the third finds exactly one command-equivalent claim
+- **THEN** admission performs at most twelve idempotency-candidate HMAC derivations plus one command-fingerprint HMAC, thirteen total, before returning the original receipt
+
+#### Scenario: A stable creation follows generation retries
+- **WHEN** two attempts end on generation changes and the third has zero matches under an unchanged active generation
+- **THEN** admission performs at most twelve idempotency-candidate HMAC derivations plus one command-fingerprint HMAC, thirteen total, before atomically creating the claim, operation and initial receipt
 
 #### Scenario: Deadline expires before contention audit
 - **WHEN** claim contention leaves no remaining time to start and commit its refusal audit

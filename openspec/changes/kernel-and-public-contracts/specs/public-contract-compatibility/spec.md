@@ -83,18 +83,20 @@ the later canonical package-layout child.
 
 The normalized wheel member inventory SHALL equal the source-derived set of
 discovered `trade_py`, `scripts` and `src/trade` Python package members plus the
-single expected `trade_py-*.dist-info` metadata/entry-point family. The proof
-SHALL record member count and compressed/uncompressed bytes and SHALL reject
-every test, repository data, frontend, engine, generated, vendor, cache,
-undeclared package-data or unexpected top-level package member. The exact
-source-derived allowlist and byte totals are the deterministic artifact budget.
-Every packaged Python member SHALL byte-equal its source. If `S` is the sum of
-source Python member bytes, the one dist-info family SHALL contain at most eight
-regular members, each at most 65,536 bytes and at most 262,144 uncompressed
-bytes in aggregate; total uncompressed wheel members SHALL be at most
-`S + 262,144`, and the wheel file SHALL be at most `S + 524,288` bytes. A broad
-wildcard, an absolute budget unrelated to source, or a wall-clock-only threshold
-SHALL NOT substitute for these checks.
+single expected `trade_py-*.dist-info` family. That family SHALL contain exactly
+the normalized basenames `METADATA`, `WHEEL`, `entry_points.txt`,
+`top_level.txt` and `RECORD`; no license subdirectory or additional metadata
+member is admitted by version 1. The proof SHALL record member count and
+compressed/uncompressed bytes and SHALL reject every test, repository data,
+frontend, engine, generated, vendor, cache, undeclared package-data or
+unexpected top-level package member. The exact source-derived allowlist and
+byte totals are the deterministic artifact budget. Every packaged Python member
+SHALL byte-equal its source. If `S` is the sum of source Python member bytes,
+each of the five dist-info members SHALL be at most 65,536 bytes and the family
+at most 262,144 uncompressed bytes in aggregate; total uncompressed wheel
+members SHALL be at most `S + 262,144`, and the wheel file SHALL be at most
+`S + 524,288` bytes. A broad wildcard, an absolute budget unrelated to source,
+or a wall-clock-only threshold SHALL NOT substitute for these checks.
 
 #### Scenario: Dual-root packaging cannot be proven
 - **WHEN** the current build backend cannot produce both installed packages without broader migration or import ambiguity
@@ -135,6 +137,13 @@ bounded summary with returned/omitted metadata. A mixed handler set SHALL remain
 explicitly mixed and SHALL NOT be flattened to the aggregate precedence value.
 If the target schema cannot preserve these facts, the canonical mapping SHALL
 be refused while the unchanged legacy result remains available.
+The canonical EventBus observation SHALL omit legacy `created_at` entirely.
+Current persistence emits naive local text, the live event independently uses a
+UTC clock, and replay may relabel naive text as UTC or substitute the replay
+clock for malformed/missing input. The mapper SHALL NOT preserve a raw time
+token, construct `UtcInstant`, use a fallback `now`, or interpret any legacy
+event time as provider publication, observed, received, available or envelope
+creation time. The unchanged legacy value remains available to its owner.
 Because the current legacy result materializes one value per handler and has no
 registration cardinality contract, canonical mapping SHALL accept at most 1,024
 source handler results. At 1,025 or more it SHALL refuse before allocating a
@@ -180,6 +189,10 @@ mapping is admitted.
 #### Scenario: Event handlers have mixed admission outcomes
 - **WHEN** one durable event has accepted, saturated and submission-failed handler results
 - **THEN** the canonical observation retains each count and bounded summary or refuses mapping; it does not report all handlers as the aggregate precedence outcome
+
+#### Scenario: One event is observed live and replayed
+- **WHEN** the same legacy event identity carries an independent live UTC value, naive local database text, force-labelled replay time, malformed or missing time, or a DST fold/gap value
+- **THEN** every canonical observation omits event time and no fallback clock or temporal semantic is fabricated
 
 #### Scenario: Event handler cardinality is unbounded
 - **WHEN** a legacy publish result contains 1,025 or a 10x-over-limit number of handler results
@@ -263,13 +276,22 @@ signal-to-process-tree reap.
 
 Until that adoption gate passes, the architecture guard SHALL forbid imports
 of `trade.platform.contracts` or `trade.processes.contracts` from every legacy
-`trade_py`/`trade_web` runtime module except the exact four pure compatibility
-modules `bus_contracts`, `job_run_contracts`, `observatory_contracts` and
-`runtime_contracts`. Direct, relative, aliased and package re-export imports
-from EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner` and
-`WebResourceContainer` SHALL fail. The hardening/adoption child MAY revise this
-allowlist only after its own strict approval and fixtures pass.
+`trade_py`/`trade_web` runtime module. Within legacy source, only the exact four
+compatibility modules `bus_contracts`, `job_run_contracts`,
+`observatory_contracts` and `runtime_contracts` MAY have an outbound dependency
+on those target contracts. Those four modules SHALL be leaf adapters with no
+inbound imports from non-test `trade_py` or `trade_web` production modules. The guard
+SHALL reject direct, relative, aliased, literal dynamic-import and package
+re-export paths from EventBus, CLI, FastAPI lifespan, `RuntimeCommandRunner`,
+`WebResourceContainer` and every other non-test legacy module to either target
+contracts or a compatibility adapter. Only focused contract tests are admitted
+consumers before hardening. The hardening/adoption child MAY revise these
+allowlists only after its own strict approval and fixtures pass.
 
 #### Scenario: Contract DTOs exist before runtime hardening
 - **WHEN** this child has shipped but the named runtime hardening child has not passed its gates
 - **THEN** current runtime code remains on its compatibility path and architecture guards reject premature adoption
+
+#### Scenario: A runtime imports a compatibility adapter indirectly
+- **WHEN** EventBus, CLI, FastAPI lifespan, RuntimeCommandRunner or WebResourceContainer imports or re-exports one of the four leaf adapters instead of importing target contracts directly
+- **THEN** the architecture guard rejects that inbound production edge before the runtime-hardening gate passes
