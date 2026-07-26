@@ -370,6 +370,32 @@
   [validates:interfaces.compatibility] [validates:datasets.products]
   [validates:studies.reproducibility] [validation:test]
 
+- [ ] 4.5 Prepare `python-package-and-web-layout` as an independent child [validates:architecture.boundaries] [validates:dependency.guardrails] [validates:interfaces.compatibility] [validation:test]
+  only after owner boundaries and interface adapters are selected. Objective:
+  design the staged package/layout transition without treating directory
+  movement as ownership migration. Inputs: package metadata, root `trade`
+  facade, current `trade_py` and `trade_web` imports/builds, native-binding
+  decision, file ownership map, notebook/script consumers and compatibility
+  baselines. Outputs: approved distribution/import/native ADR, dual package
+  discovery and forwarding plan, route/build/asset move plan, and per-path
+  disposition for `trade_py/`, `trade_web/backend/`,
+  `trade_web/frontend/`, root `research/`, root `scripts/`,
+  `_bmad-output/` and the gradual test layout. Affected contracts: Python
+  distribution/import names, console/root entrypoints, Web URLs/assets,
+  `_trade_native` location, notebook examples, tool commands and component test
+  ownership. Validation: source-tree, editable-install and wheel import smoke;
+  root CLI/console parity; Web build/type/route/asset goldens; native import
+  isolation; notebook/SDK execution; no duplicate module authority; and
+  compatibility-window checks. Rollback: retain old package discovery,
+  forwarding imports, frontend/backend roots and entrypoint shims; do not
+  delete scripts, notebooks, generated evidence or compatibility files until
+  their individual inventory and retention criteria pass. Completion evidence:
+  every moved path has one semantic owner or explicit tool/example/docs
+  disposition, all current consumers resolve through one selected authority,
+  and the child can be reverted without reverting earlier Context migrations.
+  [validates:architecture.boundaries] [validates:dependency.guardrails]
+  [validates:interfaces.compatibility] [validation:test]
+
 ## 5. Final Design Approval and Handoff
 
 - [ ] 5.1 Reconcile the approved architecture with all compatibility and [validates:interfaces.compatibility] [validates:dependency.guardrails] [validates:platform.foundation] [validation:test]

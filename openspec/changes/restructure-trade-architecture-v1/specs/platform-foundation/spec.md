@@ -146,6 +146,41 @@ silently dropping work or changing query semantics.
   recovery behavior, and blocks selection even if every isolated child result
   passed when the combined allocation or fairness contract fails
 
+### Requirement: Platform capabilities SHALL remain technical and separately owned
+
+Platform SHALL expose six technical capability areas with no business
+aggregate semantics:
+
+- `execution` owns command execution, execution ownership, bounded
+  concurrency, timeout, cancellation, retry, child-process control, shutdown
+  participation and execution receipts;
+- `events` owns envelopes, ingress/outbox/inbox admission, dispatch, replay,
+  idempotency, ordering, delivery leases, acknowledgement and dead-letter
+  state;
+- `scheduling` owns schedules, fire leases, next/missed fire, catch-up policy
+  and command-envelope emission;
+- `persistence` owns connections, read-only sessions, owner-local transaction
+  primitives, locks and migration-runner mechanics;
+- `settings` owns versioned technical configuration and secret-safe access,
+  but not SourceManifest or business policy; and
+- `backup` owns consistency-cut manifests, verified staged restore,
+  activation/recovery state and receipts.
+
+Business SQL, repositories, migrations, lifecycle transitions and provider
+policy SHALL remain in their owning Context. Platform public APIs and stored
+records SHALL NOT contain BTC, Kline, Dataset, Study, Recommendation,
+Portfolio or other business vocabulary. Generic capability implementations
+MAY be selected by Bootstrap behind Context-owned ports; this SHALL NOT give
+Platform ownership of the consuming aggregate.
+
+#### Scenario: A scheduler is configured to refresh BTC data
+
+- **WHEN** a schedule reaches its next fire for a business refresh
+- **THEN** Platform Scheduling records the generic fire/lease state and emits
+  a command envelope, while the Process contract carries the refresh meaning
+  and no Platform module calls a provider, queries a business table or embeds a
+  BTC-specific transition
+
 ### Requirement: Platform composition SHALL have one explicit Bootstrap owner
 
 `bootstrap` SHALL be the only production composition root for CLI, Web,

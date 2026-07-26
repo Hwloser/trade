@@ -8,6 +8,14 @@ Process Manager record SHALL include `process_id`, `process_type`,
 `correlation_id`, `causation_id`, `idempotency_key`, `state`, `current_step`,
 `retry_count`, `deadline`, `last_error` and `compensation_state`.
 
+The initial process catalog SHALL contain `refresh_dataset`,
+`close_evidence_gap`, `propagate_revision`, `run_registered_study`,
+`publish_dataset`, `rebuild_projection` and `generate_daily_workspace`.
+Rights-aware sources SHALL add `propagate_rights_restriction` before such a
+source can publish downstream products. Each process type SHALL have its own
+state/step policy and handler module; the catalog SHALL NOT become a catch-all
+workflow service.
+
 #### Scenario: A duplicate command is delivered
 
 - **WHEN** a scheduler, event replay or interface delivers a command with an
@@ -21,6 +29,16 @@ Process Manager record SHALL include `process_id`, `process_type`,
   stops before the process row advances to its next step
 - **THEN** recovery replays the durable event, resumes from the idempotent
   current step and does not infer completion from in-memory work
+
+#### Scenario: A daily workspace joins partially available inputs
+
+- **WHEN** `generate_daily_workspace` reaches its deadline with valid Dataset
+  and Study refs but an optional Decision Support or Platform status input is
+  unavailable
+- **THEN** its declared step policy either waits or emits an explicit
+  partial/degraded workspace projection with the exact missing input state,
+  and does not substitute current tables, moving latest values or a successful
+  empty result
 
 ### Requirement: Commands and events SHALL have durable handoff receipts
 
@@ -105,6 +123,15 @@ the workflow.
   records release generation, audit evidence and DatasetReleased outbox event;
   a Process may request that command after a cross-context trigger but may not
   own or directly mutate the release pointer
+
+#### Scenario: A projection rebuild joins facts from multiple owners
+
+- **WHEN** `rebuild_projection` is triggered by Dataset, Study or Decision
+  events
+- **THEN** the Process pins the triggering immutable refs and target projection
+  generation, invokes bounded owner queries or projection commands and records
+  per-owner outcomes without reading an owner table or making the projection a
+  second fact authority
 
 #### Scenario: A process deadline expires
 

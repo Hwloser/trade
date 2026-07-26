@@ -173,7 +173,7 @@ spec_requirements = [
   "repository-architecture:Business contexts SHALL own cohesive facts and state machines",
   "repository-architecture:Kernel SHALL remain minimal and framework-independent",
 ]
-validation_tasks = ["1.2", "1.3", "2.1"]
+validation_tasks = ["1.2", "1.3", "2.1", "4.5"]
 
 [[obligations]]
 id = "capture.receipts"
@@ -251,6 +251,7 @@ spec_requirements = [
   "platform-foundation:Artifact commit visibility SHALL be crash-recoverable",
   "platform-foundation:Migration startup SHALL be coordinated and mixed-version safe",
   "platform-foundation:Capacity evidence SHALL be comparable across child changes",
+  "platform-foundation:Platform capabilities SHALL remain technical and separately owned",
   "platform-foundation:Platform composition SHALL have one explicit Bootstrap owner",
   "platform-foundation:Runtime handler selection SHALL be exclusive and reversible",
   "platform-foundation:Bootstrap SHALL own one bounded shutdown lifecycle",
@@ -417,7 +418,7 @@ spec_requirements = [
   "interface-compatibility:SDK, notebooks and imports SHALL use shared contracts",
   "interface-compatibility:BTC observation and analysis SHALL use one evidence identity",
 ]
-validation_tasks = ["2.2", "2.5", "3.4", "4.2", "4.3", "4.4", "5.1"]
+validation_tasks = ["2.2", "2.5", "3.4", "4.2", "4.3", "4.4", "4.5", "5.1"]
 
 [[obligations]]
 id = "dependency.guardrails"
@@ -441,12 +442,13 @@ failure_states = [
 spec_requirements = [
   "dependency-guardrails:Context imports SHALL follow the declared acyclic graph",
   "dependency-guardrails:Contracts and domain code SHALL not leak implementation types",
+  "dependency-guardrails:Each Context cell SHALL preserve its internal dependency direction",
   "dependency-guardrails:Database access SHALL have one logical context owner",
   "dependency-guardrails:Platform SHALL remain free of business semantics",
   "dependency-guardrails:Native capabilities SHALL remain context-port adapters",
   "dependency-guardrails:Native binding linkage SHALL exclude persistence and lifecycle targets",
 ]
-validation_tasks = ["2.1", "5.1"]
+validation_tasks = ["2.1", "4.5", "5.1"]
 
 [[obligations]]
 id = "migration.governance"

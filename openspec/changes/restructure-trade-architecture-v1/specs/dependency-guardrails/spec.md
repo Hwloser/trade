@@ -52,6 +52,30 @@ import concrete adapters.
   contains no forbidden implementation type and confirm that it can be consumed
   without importing the producer's domain or adapters
 
+### Requirement: Each Context cell SHALL preserve its internal dependency direction
+
+Within each business Context, `contracts` and `domain` SHALL depend only on
+Kernel. `ports` MAY depend on that Context's domain and contracts.
+`use_cases` MAY depend on its own domain, ports and contracts plus declared
+upstream Context contracts. `adapters` MAY depend on its own ports and domain
+plus external libraries. Interfaces SHALL reach a Context only through its
+contracts or explicit use-case/query handles, and Bootstrap alone SHALL bind
+concrete adapters.
+
+Domain SHALL NOT import ports, adapters or use cases. Use cases SHALL NOT
+import concrete adapters. Contracts SHALL NOT expose internal aggregate
+implementations or framework types. A child SHALL use one behavior-specific
+use-case module rather than adding a catch-all `service.py`, `manager.py`,
+`facade.py`, `utils.py` or `helpers.py`.
+
+#### Scenario: A use case needs a SQLite repository
+
+- **WHEN** a Context use case needs to load or commit its aggregate through
+  SQLite
+- **THEN** the use case depends on its owner-local repository port, the SQLite
+  adapter implements that port, Bootstrap injects the adapter, and architecture
+  tests reject a direct adapter import or concrete connection in the use case
+
 ### Requirement: Database access SHALL have one logical context owner
 
 Each business table and artifact family SHALL have one context owner. Other

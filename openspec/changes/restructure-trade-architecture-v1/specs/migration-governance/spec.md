@@ -5,14 +5,20 @@
 Implementation SHALL proceed through independently reviewable child OpenSpec
 changes: guardrails/baselines, Kernel/public contracts, Platform
 persistence/events/Bootstrap foundation, formal PIT/revision semantics, Capture,
-Datasets, Studies, Processes, CLI/HTTP/SDK compatibility, package/Web layout,
-then legacy cleanup. Every child SHALL use a dedicated worktree, have focused
-tests, state affected public contracts, record data safety and define a rollback
-path. No Context extraction that emits a context outbox or accepts
-cross-context commands SHALL precede the Platform foundation; the Platform
-foundation SHALL not require not-yet-extracted Context repositories; and no
-formal DatasetSnapshot/Study migration SHALL precede the formal PIT/revision
-gate.
+Datasets, Studies, Decision Support, Processes, operational
+SLI/SLO/alert/runbook evidence, CLI/HTTP/SDK compatibility, BTC
+observation/analysis UI, package/Web layout and finally legacy cleanup.
+Guardrail baseline reconciliation
+MAY refine the initial frozen interface generation without delegating handlers.
+Every child SHALL use a dedicated worktree, have focused tests, state affected
+public contracts, record data safety and define a rollback path. No Context
+extraction that emits a context outbox or accepts cross-context commands SHALL
+precede the Platform foundation; the Platform foundation SHALL not require
+not-yet-extracted Context repositories; no formal DatasetSnapshot/Study
+migration SHALL precede the formal PIT/revision gate; Processes and Interfaces
+SHALL NOT expose Decision Support state before its owner contracts exist; and
+the BTC workspace and package layout SHALL NOT be prerequisites for the
+business ownership boundaries they consume.
 
 #### Scenario: A child change needs a new context-owned table
 
