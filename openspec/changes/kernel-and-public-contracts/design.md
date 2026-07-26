@@ -394,6 +394,28 @@ replay-initiator plus owner/Process policy; expired/revoked historical
 provenance grants nothing. A derived mutating command establishes a current
 idempotency subject rather than reusing the historical subject.
 
+`ReplayAdmissionV1` binds one `ReplayContextV1`, the historical envelope
+message/correlation/causation identities, its canonical envelope
+`ContentDigest`, required historical `operation_id` and the current
+`IdempotencySubjectV1`. `ReplayContextV1` is the single source of the current
+replay initiator and immutable policy reference; the admission record does not
+duplicate either value. The outer historical `message_id` must equal the
+context's historical message identity, and the current subject must be derived
+from that context's verified replay initiator under the ordinary subject rules.
+The adapter verifies those bindings, the digest and complete historical identity
+tuple and authorizes the current actor, subject and policy before any operation
+lookup or existence disclosure.
+Direct redispatch is resolve-only: it may resolve and return an existing
+command-equivalent `OperationReceipt`, while recording an exact, at-most
+2,048-byte Platform replay-audit fact containing schema/version, current replay
+request, historical message/operation/envelope digest, current safe principal
+ID, policy ref, `resolved` outcome and occurrence time. It never rewrites that
+receipt's historical actor or causal identity. A missing operation returns
+`REPLAY_OPERATION_NOT_FOUND` and creates no claim or operation, preventing
+expired historical authority from becoming a new admission. To execute work
+again, replay derives a new command under the ordinary child-message rule with
+the current actor, subject, policy and immutable input references.
+
 Alternative: accept caller-provided actor dictionaries. It enables authority
 spoofing. Alternative: put authentication framework objects in the contract.
 It couples every Context to HTTP/auth implementation. Explicit provenance keeps
@@ -420,8 +442,8 @@ Envelope causality is closed rather than adapter-defined:
 Retry, redelivery and replay attempt metadata stays outside canonical envelope
 bytes. Caller payload values never establish trusted causal identity. An
 existing receipt returned to an idempotent duplicate keeps the original
-admitted request message/correlation/causation identities; it does not rewrite
-history to the duplicate request.
+admitted request message, correlation identity and optional direct-causation
+identity; it does not rewrite history to the duplicate request.
 
 Owner codecs are registered through immutable `OwnerCodecDescriptor` values.
 A descriptor is owned by `trade.platform.contracts.messages` and binds owner
@@ -456,7 +478,7 @@ command_fingerprint
 actor
 request_message_id
 correlation_id
-causation_id
+causation_id?
 idempotency_scope
 idempotency_fingerprint
 state
@@ -543,13 +565,19 @@ additional command-fingerprint derivation.
 There are two owner-local idempotency namespaces, not one shared claim. Platform
 owns command-admission claims and every `OperationReceipt`; its unique identity
 is the canonical idempotency subject, command scope and keyed raw-key
-fingerprint. Processes owns `ProcessStartKeyV1`, composed from process type,
-triggering operation ID and immutable workflow key, for durable handoff,
-process-start and inbox deduplication. Processes never receives the raw
-interface key, Platform HMAC or secret. Platform writes its repository/outbox
-transaction; Processes writes ProcessRepository/inbox/process view in a later
-transaction. No cross-owner transaction or write is allowed. The parent
-ownership matrix must split these rows before either repository child begins.
+fingerprint. Processes owns an internal `ProcessStartKeyV1` with exact fields
+`schema_version=1`, process type as a 1-96 character ASCII lower-case token
+using letters/digits plus `._:-`, triggering Platform `operation_id` as an
+`OpaqueId`, and an owner-defined SHA-256 immutable workflow-key
+`ContentDigest`.
+Canonical bytes use the common exact JSON v1 rules. The exact tuple is the
+ProcessRepository/inbox unique key; it has no secret, HMAC, public fingerprint
+domain or field in `ProcessView`. Processes never receives the raw interface
+key, Platform HMAC or secret. Platform writes its repository/outbox
+transaction; Processes writes the start-key claim, inbox acceptance and initial
+process view atomically in a later ProcessRepository transaction. No
+cross-owner transaction or write is allowed. The parent ownership matrix must
+split these rows before either repository child begins.
 
 On every admission, one owner-local transaction reads the generation, derives
 candidate idempotency fingerprints for the active and all retained versions and
@@ -594,6 +622,13 @@ not fabricate a new operation ID.
 `ProcessView` contains the parent-required process identity fields plus:
 
 ```text
+schema_version
+process_id
+process_type
+triggering_operation_id
+correlation_id
+causation_id?
+state
 observation_state
 reason_code
 retry_limit
@@ -604,8 +639,14 @@ compensation_state
 dead_letter_state
 bounded_history
 permitted_recovery_actions
+created_at
 updated_at
 ```
+
+It intentionally exposes no idempotency fingerprint or workflow key. Duplicate
+handoff resolution is owner-internal; callers observe the stable `process_id`
+and `triggering_operation_id` without receiving Platform or Processes claim
+material.
 
 `reason_code` is required for `blocked`, `retry_scheduled`, `failed`,
 `cancelled` and `deadline_exceeded`; optional for `compensation_pending`; and
@@ -823,7 +864,8 @@ the boundary does not convert a non-zero offset into UTC implicitly.
 There are three separate deadlines:
 
 1. `owner_deadline`: durable policy deadline for operation/process work.
-2. `control_deadline`: finite deadline to accept and apply cancel/shutdown.
+2. `control_deadline`: finite deadline to resolve and durably commit the
+   cancel/shutdown admission result.
 3. `observation_deadline`: caller's finite wait for a newer view.
 
 An observation timeout changes no owner state. It returns
@@ -858,11 +900,19 @@ target_terminal_receipt_id?
 safe_error?
 ```
 
-It copies the admitted envelope causal identities and preserves them across
-retry/redelivery/replay. A newly submitted duplicate has a new envelope identity
-but may return the original immutable receipt only after resolving the same
-durable control claim; it never rewrites attribution. `finished_at` is required
-and ordered after request time. The exact state product is:
+Control admission is itself an already admitted Platform command, so its durable
+claim identity is the control command's existing `operation_id` plus
+`control_kind` and exactly one target identity. Every returned
+`ControlReceipt` is atomically persisted with that exact claim. For `accepted`,
+the same transaction also persists durable intent and dispatch/outbox; every
+other disposition persists neither. A receipt persistence failure returns a
+`CONTROL_RECEIPT_UNAVAILABLE` `ErrorEnvelope` and no `ControlReceipt`, intent or
+outbox. The receipt copies the admitted envelope causal
+identities and preserves them across retry/redelivery/replay. A newly submitted
+duplicate has a new envelope identity but may return the original immutable
+receipt only after resolving that same exact claim; it never rewrites
+attribution. `finished_at` is required and ordered after request time. The exact
+state product is:
 
 | Disposition | Reason | Error/link invariant |
 |---|---|---|
@@ -870,10 +920,18 @@ and ordered after request time. The exact state product is:
 | `already_terminal` | `CONTROL_ALREADY_TERMINAL` | immutable target terminal receipt required; no error |
 | `denied` | `CONTROL_DENIED` | observed/denied non-retryable error; no terminal link or intent write |
 | `not_found` | `CONTROL_TARGET_NOT_FOUND` | observed/invalid non-retryable error; no terminal link or intent write |
-| `unavailable` | `CONTROL_UNAVAILABLE` | unavailable/unavailable retryable error with bounded retry-after; no terminal link |
-| `deadline_exceeded` | `CONTROL_DEADLINE_EXCEEDED` | not-observed/timeout retryable error; no terminal link |
+| `unavailable` | `CONTROL_UNAVAILABLE` | durable no-intent outcome because the target/control dependency is unavailable; unavailable/unavailable retryable error with bounded retry-after; no terminal link |
+| `deadline_exceeded` | `CONTROL_DEADLINE_EXCEEDED` | durable no-intent outcome committed from reserved finalization budget before the control deadline; not-observed/timeout retryable error; no terminal link |
 
-Every other reason/error/link combination is invalid. Replay-derived controls
+Every other reason/error/link combination is invalid. Once the atomic intent
+transaction commits, the admission result is `accepted` even if signal
+delivery or target application has not finished. Application progress and
+timeout are observed through a finite operation/process query; they cannot
+retroactively replace `accepted` with an ambiguous retryable control result.
+A crash before receipt commit leaves no control claim/receipt/intent/outbox; a
+crash after commit recovers the same disposition, and only an accepted receipt
+recovers intent/outbox. Each control deadline reserves finite receipt-finalize
+budget and starts no target step that would consume it. Replay-derived controls
 use current verified replay authority; historical actors remain attribution in
 `ReplayContextV1`.
 
@@ -887,7 +945,7 @@ fence_generation
 control_id
 request_message_id
 correlation_id
-causation_id
+causation_id?
 operation_id?
 process_id: OpaqueId | None
 initiator
@@ -908,7 +966,9 @@ safe_error?
 It contains no credential or raw claim. `control_id` must resolve for the full
 receipt retention period to the immutable actor-bearing `ControlReceipt` with
 the same request message, initiator, correlation and causation; a mismatch is
-corruption. The direct initiator copy keeps shutdown audit attribution available
+corruption. Causation is absent in both records for a root control and equals
+the direct parent in both records for a child control. The direct initiator copy
+keeps shutdown audit attribution available
 without a second read, while the linked control receipt proves the admission lifecycle.
 The optional Platform `process_id` remains a non-semantic `OpaqueId` and does
 not import Processes contracts.

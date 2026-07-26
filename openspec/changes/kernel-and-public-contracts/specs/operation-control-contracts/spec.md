@@ -57,6 +57,36 @@ not erase attribution and does not grant current authority. Replay never changes
 the historical idempotency subject; a newly derived mutating command establishes
 its own current idempotency subject.
 
+A direct command redispatch SHALL use an exact `ReplayAdmissionV1` containing
+`schema_version=1`, `ReplayContextV1`, historical message/correlation/optional
+causation identities, the canonical historical-envelope `ContentDigest`,
+required historical operation identity and current `IdempotencySubjectV1`.
+`ReplayContextV1` SHALL be the single source of the current replay initiator and
+immutable replay policy reference; `ReplayAdmissionV1` SHALL NOT duplicate
+either value. The outer historical message identity SHALL equal the context's
+historical message identity, and the current subject SHALL be derived from that
+context's verified replay initiator under the ordinary subject rules. Before
+reading or disclosing an operation or claim, the adapter SHALL verify those
+bindings, the digest and complete historical identity tuple and authorize the
+current initiator, subject and policy. Direct redispatch is resolve-only: it MAY
+return an existing
+command-equivalent `OperationReceipt` and SHALL record separate bounded Platform
+replay-audit evidence for the current initiator and policy, but it SHALL NOT
+rewrite the receipt's historical actor or causal identities. If the historical
+operation or claim is absent, it SHALL return an observed, non-retryable
+`REPLAY_OPERATION_NOT_FOUND` safe error linked to the current replay request and
+SHALL create no claim, operation or receipt. Re-executing work requires a new
+replay-derived command under the ordinary child-message rule with current actor,
+subject, policy and immutable input references.
+
+The replay-audit fact SHALL be at most 2,048 canonical bytes and contain only
+schema/version, current replay request identity, historical message and
+operation identities, historical-envelope digest, current safe principal
+identity, immutable policy reference, `resolved` outcome and occurrence time.
+Authorization denial SHALL occur before operation lookup and SHALL disclose no
+existence fact. A missing operation emits the safe error and no `resolved`
+replay-audit outcome.
+
 #### Scenario: A payload claims an administrator actor
 - **WHEN** a command body contains actor, user, principal or authority fields that are not established by the adapter
 - **THEN** those fields confer no authority and the mutation is denied or attributed to the separately established actor
@@ -84,6 +114,18 @@ its own current idempotency subject.
 #### Scenario: Expired or revoked historical provenance is replayed
 - **WHEN** a durable command or event is replayed after its historical actor provenance expires or is revoked
 - **THEN** the historical actor remains immutable attribution, while replay execution requires a separately verified replay initiator and current owner/Process authorization
+
+#### Scenario: Direct replay resolves an existing operation
+- **WHEN** an authorized ReplayAdmission matches an immutable historical command and an existing command-equivalent operation
+- **THEN** the original receipt is returned unchanged and separate replay-audit evidence attributes the current replay initiator and policy
+
+#### Scenario: Direct replay has no existing operation
+- **WHEN** an authorized ReplayAdmission has a valid historical envelope but no historical operation or claim
+- **THEN** replay returns `REPLAY_OPERATION_NOT_FOUND` and creates no claim, operation or receipt
+
+#### Scenario: Replay authorization is denied
+- **WHEN** the current replay initiator, subject or policy is not authorized
+- **THEN** replay denies the request before operation or claim existence is read or disclosed
 
 #### Scenario: A future interface protocol establishes an actor
 - **WHEN** GraphQL, TUI, MCP or a remote worker submits through an existing verified transport
@@ -163,13 +205,20 @@ with the current key. An unkeyed digest SHALL NOT be published for low-entropy
 idempotency keys or commands. The Platform command-admission claim SHALL be
 uniquely scoped by the canonical `IdempotencySubjectV1`, command idempotency
 scope and keyed raw-key fingerprint. It is distinct from a Processes-owned
-workflow/process-start claim. Processes SHALL use an owner-local
-`ProcessStartKeyV1` composed from process type, triggering operation identity
-and the process owner's immutable workflow key. It SHALL NOT store or reuse the
-raw interface idempotency key, Platform HMAC fingerprint or secret, and it
-deduplicates durable handoff/process creation only. Platform owns command
-claims/OperationReceipt in a Platform repository transaction; Processes owns
-process-start/inbox claims/ProcessView in a ProcessRepository transaction. No
+workflow/process-start claim. Processes SHALL use an internal owner-local
+`ProcessStartKeyV1` with exact fields `schema_version=1`, bounded process type,
+triggering Platform operation identity and an owner-defined immutable
+workflow-key `ContentDigest`. Process type SHALL be a 1-96 character ASCII
+lower-case token using letters/digits plus `._:-`; operation identity SHALL be
+an `OpaqueId`; and workflow-key digest SHALL be SHA-256. Its canonical bytes
+SHALL use exact JSON v1 and
+the complete tuple SHALL be the ProcessRepository/inbox unique key. It SHALL
+have no HMAC, secret, public fingerprint domain or `ProcessView` field.
+Processes SHALL NOT store or reuse the raw interface idempotency key, Platform
+HMAC fingerprint or secret, and it deduplicates durable handoff/process creation
+only. Platform owns command claims/OperationReceipt in a Platform repository
+transaction; Processes owns the process-start claim, inbox acceptance and
+initial ProcessView atomically in a later ProcessRepository transaction. No
 shared transaction or cross-owner write is permitted.
 
 #### Scenario: A command is retried after transport timeout
@@ -233,22 +282,25 @@ shared transaction or cross-owner write is permitted.
 
 An `OperationReceipt` SHALL contain version, operation identity and kind,
 command fingerprint, trusted actor, admitted request message identity,
-correlation/causation identities, scoped idempotency fingerprint, closed
-operation state, safe reason, timestamps and optional process linkage. These
-message/correlation/causation values SHALL be copied from the envelope that
-created the operation. A receipt SHALL exist only after durable admission
-identity is created. Only a command-equivalent duplicate admission SHALL return
-the existing receipt, preserving the original admitted request and causal
+correlation identity, optional direct-causation identity, scoped idempotency
+fingerprint, closed operation state, safe reason, timestamps and optional
+process linkage. These message, correlation and optional causation values SHALL
+be copied from the envelope that created the operation; causation SHALL be
+absent for a root envelope and SHALL equal the direct parent for a child
+envelope. A receipt SHALL exist only after durable admission identity is
+created. Only a command-equivalent duplicate admission SHALL return the
+existing receipt, preserving the original admitted request and causal
 identities rather than replacing them with the duplicate request's identities;
 an idempotency identity reused for another command SHALL return the conflict
 error below without that receipt. Raw payloads and raw idempotency keys SHALL
 NOT be exposed.
 Platform command ingress SHALL be the sole future authority and writer for
-idempotency claims, operation identity and every initial, intermediate and
-terminal `OperationReceipt`. Processes SHALL own Process Manager workflow state
-and `ProcessView` only; it SHALL NOT create, rewrite or become a second source
-of truth for an OperationReceipt. Platform and Processes SHALL link by opaque
-identity plus durable command/event handoff, not a shared transaction.
+command-admission idempotency claims, operation identity and every initial,
+intermediate and terminal `OperationReceipt`. Processes SHALL own its separate
+`ProcessStartKeyV1`/inbox claims, Process Manager workflow state and
+`ProcessView`; it SHALL NOT create, rewrite or become a second source of truth
+for an OperationReceipt. Platform and Processes SHALL link by opaque identity
+plus durable command/event handoff, not a shared transaction.
 The Platform-owned optional process link SHALL be `OpaqueId | None`; Platform
 SHALL NOT import the Processes-owned `ProcessId`.
 
@@ -301,11 +353,13 @@ process to owner `deadline_exceeded`.
 
 ### Requirement: Process views SHALL be bounded read-only recovery projections
 
-A `ProcessView` SHALL expose process identity/type, correlation/causation,
-idempotency fingerprint, closed process and observation states, current step,
-top-level reason code, retry/limit/next-attempt, deadline, last safe error, compensation and
+A `ProcessView` SHALL expose schema version, process identity/type, triggering
+Platform operation identity, correlation/optional causation, closed process and
+observation states, current step, top-level reason code,
+retry/limit/next-attempt, deadline, last safe error, compensation and
 dead-letter states, no more than 50 ordered transitions, permitted recovery
-actions and timestamps. It SHALL NOT expose raw command/event payload, SQL,
+actions and timestamps. It SHALL NOT expose either owner's idempotency
+fingerprint, `ProcessStartKeyV1`, workflow key, raw command/event payload, SQL,
 credentials, business-table rows, artifact bytes or traceback. Querying the
 view SHALL NOT execute a recovery action.
 
@@ -494,10 +548,19 @@ correlation/optional causation, trusted initiator, exactly one operation or
 opaque process target, requested/finished times, finite control deadline, closed
 disposition, stable reason code, optional `target_terminal_receipt_id`, and
 optional safe `ErrorEnvelope`. The request/correlation/causation identities
-SHALL copy the admitted control envelope. A retried/redelivered/replayed logical
-envelope preserves its receipt; a newly submitted duplicate has a new request
-identity but returns the original control receipt only when it resolves the same
-durable control claim, without rewriting original attribution.
+SHALL copy the admitted control envelope. A control is an ordinary admitted
+Platform command, and its exact durable control-claim identity SHALL be that
+command's operation identity plus control kind and exactly one target identity.
+Every returned disposition SHALL be atomically persisted with that exact
+control claim. For `accepted`, the same owner-local transaction SHALL also
+create durable intent and dispatch/outbox; every other disposition SHALL create
+neither. If the claim and immutable receipt cannot commit, the API SHALL return
+a retryable `CONTROL_RECEIPT_UNAVAILABLE` `ErrorEnvelope` and no
+`ControlReceipt`, intent or outbox. A
+retried/redelivered/replayed logical envelope preserves its receipt; a newly
+submitted duplicate has a new request identity but returns the original control
+receipt only when ordinary command idempotency resolves the same operation and
+exact control claim, without rewriting original attribution.
 
 The v1 disposition product SHALL be exact:
 
@@ -513,25 +576,48 @@ The v1 disposition product SHALL be exact:
   written.
 - `unavailable`: reason `CONTROL_UNAVAILABLE`; required unavailable/unavailable
   retryable safe error and bounded retry-after; terminal receipt link forbidden;
-  no terminal target claim is made.
+  the durable outcome proves no intent or outbox was committed and no terminal
+  target claim is made.
 - `deadline_exceeded`: reason `CONTROL_DEADLINE_EXCEEDED`; required
   not-observed/timeout retryable safe error; terminal receipt link forbidden;
-  the last target link is retained and no terminal target claim is made.
+  a reserved finalization budget commits the durable no-intent outcome before
+  the control deadline; the last target link is retained and no terminal target
+  claim is made.
 
 Every disposition requires `finished_at` no earlier than `requested_at`; every
 unlisted reason/error/link combination is rejected. `accepted` SHALL mean only
 that cancellation intent was durably admitted. An operation or process SHALL
 enter `cancelled` only after the owner records terminal cancellation evidence.
 Signal delivery, caller disconnect or observation timeout alone SHALL NOT prove
-cancellation.
+cancellation. Once intent commits, the API SHALL return or recover `accepted`
+even if delivery or application later reaches a deadline; finite observation
+reports that later state and SHALL NOT replace the accepted receipt with
+`unavailable` or `deadline_exceeded`. A crash before the atomic intent
+transaction commits leaves no control claim, receipt, intent or outbox; a crash
+after any receipt transaction commits recovers the same disposition, and only
+an accepted disposition recovers intent and dispatch. Every control deadline
+SHALL reserve finite receipt-finalization budget and SHALL NOT begin a target
+step that consumes that reserve.
 
 #### Scenario: A cancel request is accepted while work is still running
 - **WHEN** the owner durably records cancellation intent before work exits
 - **THEN** the control receipt is accepted while the operation remains running or waiting until a terminal owner receipt is observed
 
 #### Scenario: Cancellation control times out
-- **WHEN** intent cannot be admitted or applied before the finite control deadline
-- **THEN** the response reports deadline-exceeded or unavailable with the last operation/process link and does not claim the work was cancelled
+- **WHEN** the owner cannot resolve a durable control disposition before the control deadline but reserved receipt-finalization budget remains
+- **THEN** one durable deadline-exceeded or unavailable receipt commits with no intent/outbox and does not claim the work was cancelled
+
+#### Scenario: Control application outlives admission
+- **WHEN** intent and the accepted receipt commit but delivery or target application does not finish within a caller observation deadline
+- **THEN** duplicate control admission returns the same accepted receipt and finite observation reports the non-terminal or timeout state separately
+
+#### Scenario: Control admission crashes at the intent boundary
+- **WHEN** the owner crashes immediately before or after the atomic control-receipt transaction commits
+- **THEN** recovery observes respectively no claim/receipt/intent/outbox or the same durable disposition, with intent/outbox present exactly for accepted
+
+#### Scenario: Control receipt persistence fails
+- **WHEN** the owner cannot commit the control claim and immutable receipt within the reserved deadline budget
+- **THEN** it returns `CONTROL_RECEIPT_UNAVAILABLE` as an ErrorEnvelope with no ControlReceipt, intent or outbox
 
 #### Scenario: Multiple child controls share one parent
 - **WHEN** two control commands inherit one correlation and causation but have different request message identities
@@ -545,7 +631,7 @@ cancellation.
 
 A shutdown API SHALL close admission and return a `ShutdownReceipt` containing
 owner namespace/instance identity, fence generation, control/correlation/
-causation identities, the exact original `request_message_id`, trusted
+optional causation identity, the exact original `request_message_id`, trusted
 initiator, optional operation/process links, request/deadline/finished time,
 closed shutdown state/current stage/reason, graceful/forced termination counts,
 bounded residual owners, owner-scoped recovery descriptors and a safe error.
@@ -558,6 +644,8 @@ The trusted initiator SHALL be the bounded credential-free `ActorContext` that
 requested shutdown. `control_id` SHALL resolve for the receipt retention period
 to an immutable actor-bearing `ControlReceipt` with the same request message,
 initiator, correlation and causation. A mismatch SHALL be corruption. The
+causation field SHALL be absent in both records for a root control and equal the
+direct parent in both records for a child control. The
 optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require
 a Platform import of Processes contracts.
 

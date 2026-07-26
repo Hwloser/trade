@@ -49,10 +49,11 @@ reported as successful cancellation.
   owner/schema/purpose shape but grant no authority or external-content rights;
   cross-Context provider/news/L2/stream content must first become a
   Capture-owned immutable artifact reference.
-- Make Platform command ingress the sole future owner of idempotency claims,
-  operation identity and the complete `OperationReceipt` lifecycle. Processes
-  owns only Process Manager workflow state and `ProcessView`; linkage uses an
-  opaque ID and never a shared transaction or dual-writer receipt.
+- Make Platform command ingress the sole future owner of command-admission
+  idempotency claims, operation identity and the complete `OperationReceipt`
+  lifecycle. Processes separately owns `ProcessStartKeyV1`/inbox claims,
+  Process Manager workflow state and `ProcessView`; linkage uses an opaque ID
+  and never a shared transaction, secret or dual-writer receipt.
 - Define an explicit legacy compatibility mapping inventory for current
   EventBus admission, `job_runs`, Web `/api/run`, Observatory error/artifact,
   CLI wait, and runtime shutdown surfaces. Data Operations remains an explicitly
