@@ -260,7 +260,9 @@ def _create_venv(uv: str, python: Path, destination: Path) -> Path:
 def test_dual_root_source_editable_and_wheel_contract(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     assert uv is not None, "uv is required for the packaging contract"
-    locked_python = Path(sys.executable).resolve()
+    # Preserve the project-environment identity. Resolving the venv interpreter
+    # symlink would point UV_PROJECT_ENVIRONMENT at uv's global Python install.
+    locked_python = Path(sys.executable)
     members = _source_members(REPO_ROOT)
     assert "trade_py/__init__.py" in members
     assert "scripts/__init__.py" in members
