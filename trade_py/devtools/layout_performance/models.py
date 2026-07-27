@@ -69,7 +69,9 @@ class WebBuildEvidence:
     no_change_ms: float | None
     cold_build_ms: float | None
     incremental_build_ms: float | None
-    output_digest: str | None
+    cold_output_digest: str | None
+    no_change_output_digest: str | None
+    incremental_output_digest: str | None
     cleanup_complete: bool
     unavailable_reason: str | None
 

@@ -109,6 +109,9 @@ def _run_probe_worker(
             cwd=repo_root,
             timeout_seconds=PROBE_TIMEOUT_SECONDS,
             output_limit_bytes=128 * 1024,
+            rss_limit_bytes=256 * 1024 * 1024,
+            temp_limit_bytes=16 * 1024 * 1024,
+            temp_root=data_root,
             env={
                 **os.environ,
                 "PYTHONDONTWRITEBYTECODE": "1",
@@ -124,6 +127,13 @@ def _run_probe_worker(
     payload = json.loads(outcome.stdout)
     if not isinstance(payload, dict):
         raise TypeError(f"probe {name} evidence must be an object")
+    measured_rss = payload.get("peak_rss_bytes")
+    if not isinstance(measured_rss, int) or isinstance(measured_rss, bool):
+        raise TypeError(f"probe {name} RSS evidence must be an integer")
+    payload["peak_rss_bytes"] = max(
+        measured_rss,
+        outcome.peak_process_tree_rss_bytes,
+    )
     if samples == 1 and warmups == 0:
         payload["durations_ms"] = [outcome.duration_ms]
     return payload

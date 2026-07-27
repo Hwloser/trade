@@ -68,13 +68,19 @@ def compare_performance(
             not web.cache_key
             or not web.incremental_cache_key
             or not web.dependency_digest
-            or not web.output_digest
+            or not web.cold_output_digest
+            or not web.no_change_output_digest
+            or not web.incremental_output_digest
         ):
             violations.append("layout.performance.web.identity")
         if not web.no_change_cache_hit:
             violations.append("layout.performance.web.no_change_cache")
         if not web.cache_invalidated or web.incremental_cache_key == web.cache_key:
             violations.append("layout.performance.web.incremental_cache")
+        if web.cold_output_digest != web.no_change_output_digest:
+            violations.append("layout.performance.web.no_change_output")
+        if web.incremental_output_digest == web.cold_output_digest:
+            violations.append("layout.performance.web.stale_output")
         if web.dependency_digest != baseline.web.dependency_digest:
             violations.append("layout.performance.web.dependency_mismatch")
         if not web.cleanup_complete:

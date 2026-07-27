@@ -84,7 +84,9 @@ def _evidence(*, web_available: bool = True) -> PerformanceEvidence:
         no_change_ms=10.0 if web_available else None,
         cold_build_ms=1000.0 if web_available else None,
         incremental_build_ms=500.0 if web_available else None,
-        output_digest=DIGEST_C if web_available else None,
+        cold_output_digest=DIGEST_C if web_available else None,
+        no_change_output_digest=DIGEST_C if web_available else None,
+        incremental_output_digest=DIGEST_B if web_available else None,
         cleanup_complete=True,
         unavailable_reason=None if web_available else "node_modules_not_selected",
     )
@@ -377,11 +379,13 @@ def test_web_evidence_uses_temporary_root_and_invalidates_source_key(
     app = frontend / "src" / "App.tsx"
     app.parent.mkdir(parents=True)
     app.write_text("export const value = 1;\n", encoding="utf-8")
+    (frontend / "index.html").write_text("<main>Trade</main>\n", encoding="utf-8")
     (frontend / "package.json").write_text('{"scripts":{"build":"fake"}}\n', encoding="utf-8")
     node_modules = tmp_path / "node_modules"
     (node_modules / ".bin").mkdir(parents=True)
     (node_modules / ".bin" / "tsc").write_text("", encoding="utf-8")
     (node_modules / ".bin" / "vite").write_text("", encoding="utf-8")
+    (node_modules / ".bin" / "vite").chmod(0o755)
     (node_modules / ".package-lock.json").write_text('{"lockfileVersion":3}\n')
     source_before = app.read_bytes()
     build_roots: list[Path] = []
@@ -393,12 +397,20 @@ def test_web_evidence_uses_temporary_root_and_invalidates_source_key(
         **_kwargs: Any,
     ) -> ProcessOutcome:
         if argv[:2] == ("git", "ls-files"):
-            stdout = b"trade_web/frontend/package.json\0trade_web/frontend/src/App.tsx\0"
+            stdout = (
+                b"trade_web/frontend/index.html\0"
+                b"trade_web/frontend/package.json\0"
+                b"trade_web/frontend/src/App.tsx\0"
+            )
+        elif "--version" in argv:
+            stdout = b"test-version\n"
         else:
             build_roots.append(cwd)
             output = cwd / "dist" / "asset.js"
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes((cwd / "src" / "App.tsx").read_bytes())
+            output.write_bytes(
+                (cwd / "index.html").read_bytes() + (cwd / "src" / "App.tsx").read_bytes()
+            )
             stdout = b""
         return ProcessOutcome(
             stdout=stdout,
@@ -426,11 +438,109 @@ def test_web_evidence_uses_temporary_root_and_invalidates_source_key(
     assert evidence.no_change_cache_hit
     assert evidence.cache_invalidated
     assert evidence.cache_key != evidence.incremental_cache_key
+    assert evidence.cold_output_digest == evidence.no_change_output_digest
+    assert evidence.incremental_output_digest != evidence.cold_output_digest
     assert evidence.cleanup_complete
-    assert len(build_roots) == 2
+    assert len(build_roots) == 3
     assert all(root != frontend for root in build_roots)
     assert app.read_bytes() == source_before
     assert not tuple(tmp_path.glob("trade-layout-web-*"))
+
+
+def test_web_evidence_rejects_stale_incremental_output(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    frontend = repo / "trade_web" / "frontend"
+    app = frontend / "src" / "App.tsx"
+    app.parent.mkdir(parents=True)
+    app.write_text("export const value = 1;\n", encoding="utf-8")
+    (frontend / "index.html").write_text("<main>Trade</main>\n", encoding="utf-8")
+    (frontend / "package.json").write_text('{"scripts":{"build":"fake"}}\n', encoding="utf-8")
+    node_modules = tmp_path / "node_modules"
+    (node_modules / ".bin").mkdir(parents=True)
+    (node_modules / ".bin" / "tsc").write_text("", encoding="utf-8")
+    (node_modules / ".bin" / "vite").write_text("", encoding="utf-8")
+    (node_modules / ".bin" / "vite").chmod(0o755)
+    (node_modules / ".package-lock.json").write_text('{"lockfileVersion":3}\n')
+
+    def stale_runner(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        **_kwargs: Any,
+    ) -> ProcessOutcome:
+        if argv[:2] == ("git", "ls-files"):
+            stdout = (
+                b"trade_web/frontend/index.html\0"
+                b"trade_web/frontend/package.json\0"
+                b"trade_web/frontend/src/App.tsx\0"
+            )
+        elif "--version" in argv:
+            stdout = b"test-version\n"
+        else:
+            output = cwd / "dist" / "asset.js"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("stale", encoding="utf-8")
+            stdout = b""
+        return ProcessOutcome(
+            stdout=stdout,
+            stderr=b"",
+            returncode=0,
+            duration_ms=25.0,
+            timed_out=False,
+            cleanup_survivors=0,
+        )
+
+    with pytest.raises(RuntimeError, match="did not change"):
+        capture_web_build_evidence(
+            repo,
+            node_modules=node_modules,
+            capacity=ValidationCapacity(
+                available_cpu_count=4,
+                available_memory_bytes=8 * GIB,
+            ),
+            temp_parent=tmp_path,
+            process_runner=stale_runner,
+        )
+
+
+def test_process_enforces_measured_temp_usage(tmp_path: Path) -> None:
+    temp_root = tmp_path / "owned-output"
+    temp_root.mkdir()
+
+    with pytest.raises(PerformanceProcessError) as raised:
+        run_process(
+            (
+                sys.executable,
+                "-c",
+                (
+                    "import pathlib,time;"
+                    f"pathlib.Path({str(temp_root / 'large.bin')!r}).write_bytes(b'x'*4096);"
+                    "time.sleep(.2)"
+                ),
+            ),
+            cwd=tmp_path,
+            timeout_seconds=2,
+            temp_limit_bytes=1024,
+            temp_root=temp_root,
+        )
+
+    assert raised.value.code == "layout.performance.capacity_temp"
+
+
+def test_root_help_module_census_comes_from_measured_cli_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trade_py.devtools.layout_performance import worker
+    from trade_py.devtools.layout_performance.worker import run_probe
+
+    monkeypatch.setattr(worker, "_module_identity", lambda: (1, DIGEST_A))
+    payload = run_probe("root_help", samples=1, warmups=0)
+
+    assert isinstance(payload["module_count"], int)
+    assert payload["module_count"] > 100
+    assert isinstance(payload["module_digest"], str)
+    assert payload["module_digest"].startswith("sha256:")
+    assert payload["module_digest"] != DIGEST_A
 
 
 def test_web_evidence_reports_unavailable_prerequisite_without_running(

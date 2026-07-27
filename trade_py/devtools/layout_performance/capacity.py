@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -118,8 +119,8 @@ def prove_capacity_policy(capacity: ValidationCapacity | None = None) -> Capacit
             capacity.admit("ordinary", timeout_seconds=0.01).__enter__()
         except CapacityRefused:
             queue_refused = True
-    rss_refused = _is_refused(lambda: capacity.require_rss(capacity.rss_limit_bytes + 1))
-    temp_refused = _is_refused(lambda: capacity.require_temp(capacity.temp_limit_bytes + 1))
+    rss_refused = _measured_rss_refusal()
+    temp_refused = _measured_temp_refusal()
     cleanup = run_process(
         (
             sys.executable,
@@ -182,11 +183,40 @@ def _measure_concurrency(
     return maximum
 
 
-def _is_refused(action: Callable[[], object]) -> bool:
+def _measured_rss_refusal() -> bool:
     try:
-        action()
-    except CapacityRefused:
-        return True
+        run_process(
+            (sys.executable, "-c", "import time;time.sleep(.2)"),
+            cwd=Path.cwd(),
+            timeout_seconds=2,
+            rss_limit_bytes=1024 * 1024,
+        )
+    except Exception as exc:
+        return getattr(exc, "code", None) == "layout.performance.capacity_rss"
+    return False
+
+
+def _measured_temp_refusal() -> bool:
+    with tempfile.TemporaryDirectory(prefix="trade-layout-capacity-temp-") as temporary:
+        root = Path(temporary)
+        try:
+            run_process(
+                (
+                    sys.executable,
+                    "-c",
+                    (
+                        "import pathlib,time;"
+                        f"pathlib.Path({str(root / 'overflow.bin')!r}).write_bytes(b'x'*4096);"
+                        "time.sleep(.2)"
+                    ),
+                ),
+                cwd=root,
+                timeout_seconds=2,
+                temp_limit_bytes=1024,
+                temp_root=root,
+            )
+        except Exception as exc:
+            return getattr(exc, "code", None) == "layout.performance.capacity_temp"
     return False
 
 
@@ -218,7 +248,7 @@ def _cgroup_memory_limit() -> int | None:
             parsed = int(value)
         except ValueError:
             continue
-        if parsed >= GIB:
+        if parsed > 0:
             return parsed
     return None
 

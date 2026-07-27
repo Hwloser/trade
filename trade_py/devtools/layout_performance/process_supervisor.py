@@ -172,7 +172,7 @@ def _supervise(config: dict[str, Any]) -> dict[str, Any]:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        start_new_session=True,
+        start_new_session=False,
     )
     if process.stdout is None or process.stderr is None:
         raise RuntimeError("target_pipe_unavailable")
@@ -261,6 +261,10 @@ def _supervise(config: dict[str, Any]) -> dict[str, Any]:
         peak_rss_bytes = max(peak_rss_bytes, _process_tree_rss_bytes())
         if temp_root is not None:
             peak_temp_bytes = max(peak_temp_bytes, _tree_size(temp_root))
+        if failure_code is None and rss_limit_bytes and peak_rss_bytes > rss_limit_bytes:
+            failure_code = "layout.performance.capacity_rss"
+        if failure_code is None and temp_limit_bytes and peak_temp_bytes > temp_limit_bytes:
+            failure_code = "layout.performance.capacity_temp"
         if survivors:
             failure_code = "layout.performance.process_cleanup"
         return {

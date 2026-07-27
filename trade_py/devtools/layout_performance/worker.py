@@ -9,12 +9,14 @@ import os
 import resource
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
 
 Probe = Callable[[], object]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+_LAST_COMMAND_MODULE_IDENTITY: tuple[int, str] | None = None
 
 
 def _root_help() -> int:
@@ -113,6 +115,8 @@ def _linux_peak_rss() -> int | None:
 
 
 def run_probe(name: str, samples: int, warmups: int) -> dict[str, object]:
+    global _LAST_COMMAND_MODULE_IDENTITY
+    _LAST_COMMAND_MODULE_IDENTITY = None
     probe = _PROBES[name]
     sys.stdout.flush()
     sys.stderr.flush()
@@ -137,7 +141,7 @@ def run_probe(name: str, samples: int, warmups: int) -> dict[str, object]:
         os.close(old_stdout)
         os.close(old_stderr)
         os.close(devnull)
-    module_count, module_digest = _module_identity()
+    module_count, module_digest = _LAST_COMMAND_MODULE_IDENTITY or _module_identity()
     return {
         "durations_ms": durations,
         "peak_rss_bytes": _rss_bytes(),
@@ -166,27 +170,74 @@ def run_index(repo_root: Path, roots: tuple[str, ...]) -> dict[str, object]:
 
 
 def _command_probe(argv: tuple[str, ...], cwd: Path) -> int:
-    process = subprocess.run(
-        argv,
-        cwd=cwd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=30,
-        env={
-            **os.environ,
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "PIP_NO_INDEX": "1",
-            "UV_FROZEN": "1",
-            "UV_NO_SYNC": "1",
-            "UV_OFFLINE": "1",
-        },
-    )
+    global _LAST_COMMAND_MODULE_IDENTITY
+    with tempfile.TemporaryDirectory(prefix="trade-layout-module-report-") as temporary:
+        probe_root = Path(temporary)
+        report_path = probe_root / "modules.json"
+        (probe_root / "sitecustomize.py").write_text(
+            _module_report_sitecustomize(),
+            encoding="utf-8",
+        )
+        process = subprocess.run(
+            argv,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+            env={
+                **os.environ,
+                "PIP_NO_INDEX": "1",
+                "PYTHONPATH": str(probe_root),
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "TRADE_LAYOUT_MODULE_REPORT": str(report_path),
+                "UV_FROZEN": "1",
+                "UV_NO_SYNC": "1",
+                "UV_OFFLINE": "1",
+            },
+        )
+        if process.returncode == 0:
+            _LAST_COMMAND_MODULE_IDENTITY = _read_module_report(report_path)
     if process.returncode != 0:
-        detail = process.stderr.decode("utf-8", "replace")[-1024:]
-        raise RuntimeError(f"probe command exited {process.returncode}: {detail}")
+        raise RuntimeError(f"probe command exited {process.returncode}")
     return process.returncode
+
+
+def _module_report_sitecustomize() -> str:
+    return (
+        "import atexit,hashlib,json,os,sys\n"
+        "def _trade_layout_module_report():\n"
+        "    target=os.environ.get('TRADE_LAYOUT_MODULE_REPORT')\n"
+        "    if not target:return\n"
+        "    names=tuple(sorted(sys.modules))\n"
+        "    digest=hashlib.sha256('\\n'.join(names).encode('utf-8')).hexdigest()\n"
+        "    with open(target,'w',encoding='utf-8') as stream:\n"
+        "        json.dump({'module_count':len(names),"
+        "'module_digest':'sha256:'+digest},stream,sort_keys=True,separators=(',',':'))\n"
+        "atexit.register(_trade_layout_module_report)\n"
+    )
+
+
+def _read_module_report(path: Path) -> tuple[int, str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("measured CLI did not produce a module report") from exc
+    if not isinstance(payload, dict) or set(payload) != {"module_count", "module_digest"}:
+        raise RuntimeError("measured CLI module report fields differ")
+    count = payload.get("module_count")
+    digest = payload.get("module_digest")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise RuntimeError("measured CLI module count is invalid")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in digest[7:])
+    ):
+        raise RuntimeError("measured CLI module digest is invalid")
+    return count, digest
 
 
 def main(argv: list[str] | None = None) -> int:
