@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -135,8 +136,8 @@ def _render_text(payload: dict[str, Any]) -> str:
     if isinstance(error, dict):
         lines.append(f"Error: {error['code']}: {error['message']}")
         if error["record"] is not None:
-            lines.append(f"Record: {_terminal_safe(str(error['record']))}")
-        return "\n".join(lines) + "\n"
+            lines.append(f"Record: {error['record']}")
+        return _terminal_safe_output("\n".join(lines) + "\n")
 
     summary = payload["summary"]
     selector = payload["selector"]
@@ -203,27 +204,52 @@ def _render_text(payload: dict[str, Any]) -> str:
             ),
             ("States: " + " ".join(f"{name}={value}" for name, value in states.items())),
             (
-                f"Operation: phase={operation['activation_phase']} "
+                f"Operation: id={operation['operation_id']} "
+                f"attempt={operation['attempt_id']} "
+                f"phase={operation['activation_phase']} "
                 f"action={operation['operator_action']} "
                 f"tool_exit={operation['tool_exit_code']}"
             ),
             (
+                f"Outcome: failure={states['failure_class']} "
+                f"detail={operation['failure_detail']} "
+                f"degraded={','.join(operation['degraded_components']) or 'none'} "
+                f"stopped_early={operation['stopped_early']} "
+                f"reason={operation['stop_reason']}"
+            ),
+            (
                 f"Process: unit={process['deployment_unit']} "
                 f"live={process['matching_live_instances']} "
+                f"zero_descendants={process['zero_live_descendants']} "
                 f"generation={process['generation']} "
                 f"revision={process['revision']} fence={process['fence']}"
+            ),
+            (
+                "Receipts: "
+                + (
+                    ", ".join(
+                        (
+                            f"{receipt['receipt_type']}@{receipt['observed_at']}"
+                            f"->{receipt['supersedes_receipt_id']}"
+                        )
+                        for receipt in process["receipts"]
+                    )
+                    or "none"
+                )
             ),
             (
                 f"Shutdown: stage={shutdown['stage']} "
                 f"signals={shutdown['signal_escalation']} "
                 f"residual_processes={shutdown['residual_process_count']} "
                 f"residual_threads={shutdown['residual_thread_count']} "
-                f"forced_exit={shutdown['forced_exit_receipt']}"
+                f"forced_exit={shutdown['forced_exit_receipt']} "
+                f"complete={shutdown['complete']}"
             ),
             (
                 f"Rollback: target={rollback['target_generation']} "
                 f"later_slices={rollback['later_accepted_slices']} "
-                f"historical={rollback['target_is_historical_predecessor']}"
+                f"historical={rollback['target_is_historical_predecessor']} "
+                f"preserves_later={rollback['compensation_preserves_later_slices']}"
             ),
             (
                 f"Evidence: plan={evidence['activation_plan_digest']} "
@@ -238,6 +264,9 @@ def _render_text(payload: dict[str, Any]) -> str:
             (
                 f"Coverage: bridge={summary['bridge_coverage_state']} "
                 f"owner={summary['bridge_owner']} "
+                f"population={summary['bridge_population_digest']} "
+                f"age={summary['bridge_age_seconds']} "
+                f"last_use={summary['bridge_last_observed_use']} "
                 f"deadline={summary['bridge_deadline']}"
             ),
             (
@@ -251,14 +280,21 @@ def _render_text(payload: dict[str, Any]) -> str:
     violations = validation["violations"]
     if isinstance(violations, list) and violations:
         lines.append("Violations: " + ", ".join(str(item) for item in violations))
-    return "\n".join(lines) + "\n"
+    return _terminal_safe_output("\n".join(lines) + "\n")
 
 
-def _terminal_safe(value: str) -> str:
-    return "".join(
-        f"\\x{ord(character):02x}" if ord(character) < 32 or ord(character) == 127 else character
-        for character in value
-    )
+def _terminal_safe_output(value: str) -> str:
+    escaped: list[str] = []
+    for character in value:
+        if character == "\n":
+            escaped.append(character)
+            continue
+        if unicodedata.category(character) not in {"Cc", "Cs"}:
+            escaped.append(character)
+            continue
+        codepoint = ord(character)
+        escaped.append(f"\\x{codepoint:02x}" if codepoint <= 0xFF else f"\\u{codepoint:04x}")
+    return "".join(escaped)
 
 
 __all__ = ["REPORT_SCHEMA", "RenderedLayoutStatus", "render_status"]

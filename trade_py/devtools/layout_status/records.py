@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import time
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -97,7 +98,7 @@ class ExplicitRecordReader:
     ) -> None:
         raw_manifest = os.fspath(manifest)
         if (
-            _contains_terminal_control(raw_manifest)
+            contains_unsafe_text(raw_manifest)
             or not manifest.is_absolute()
             or any(part in {".", ".."} for part in manifest.parts)
         ):
@@ -420,7 +421,14 @@ def _parse_references(value: Any, path: str) -> tuple[RecordReference, ...]:
                 record=path,
             )
         name = _required_string(raw, "name", path)
-        relative = _required_string(raw, "path", path)
+        relative_value = raw.get("path")
+        if not isinstance(relative_value, str) or not relative_value or len(relative_value) > 256:
+            raise invalid(
+                "layout.status.record_shape",
+                "Evidence reference path must be a bounded non-empty string.",
+                record=path,
+            )
+        relative = relative_value
         digest = _required_digest(raw, "digest", path)
         _validate_relative_path(relative)
         if name in names or relative in paths:
@@ -439,7 +447,7 @@ def _validate_relative_path(raw: str) -> PurePosixPath:
     path = PurePosixPath(raw)
     if (
         not raw
-        or _contains_terminal_control(raw)
+        or contains_unsafe_text(raw)
         or path.is_absolute()
         or "\\" in raw
         or any(part in {"", ".", ".."} for part in path.parts)
@@ -454,13 +462,20 @@ def _validate_relative_path(raw: str) -> PurePosixPath:
     return path
 
 
-def _contains_terminal_control(value: str) -> bool:
-    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+def contains_unsafe_text(value: str) -> bool:
+    """Reject terminal controls and unencodable surrogate code points."""
+
+    return any(unicodedata.category(character) in {"Cc", "Cs"} for character in value)
 
 
 def _required_string(value: dict[str, Any], key: str, path: str) -> str:
     result = value.get(key)
-    if not isinstance(result, str) or not result or len(result) > 256:
+    if (
+        not isinstance(result, str)
+        or not result
+        or len(result) > 256
+        or contains_unsafe_text(result)
+    ):
         raise invalid(
             "layout.status.record_shape",
             f"Evidence field {key} must be a bounded non-empty string.",
@@ -601,5 +616,6 @@ __all__ = [
     "RecordReference",
     "canonical_json",
     "canonical_record_digest",
+    "contains_unsafe_text",
     "parse_record",
 ]

@@ -24,7 +24,11 @@ from trade_py.devtools.layout_status.models import (
     ShutdownSnapshot,
     ValidationReportSnapshot,
 )
-from trade_py.devtools.layout_status.records import EvidenceRecord, canonical_json
+from trade_py.devtools.layout_status.records import (
+    EvidenceRecord,
+    canonical_json,
+    contains_unsafe_text,
+)
 
 _DIGEST_RE: Final = re.compile(r"sha256:[0-9a-f]{64}")
 _COMMIT_RE: Final = re.compile(r"[0-9a-f]{40}")
@@ -672,7 +676,12 @@ def _string(
     payload: dict[str, Any], key: str, record: EvidenceRecord, *, maximum: int = 256
 ) -> str:
     value = payload.get(key)
-    if not isinstance(value, str) or not value or len(value) > maximum:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > maximum
+        or contains_unsafe_text(value)
+    ):
         _fail(record, "layout.status.evidence_shape", f"{key} must be a bounded string.")
     return value
 

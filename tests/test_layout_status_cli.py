@@ -465,8 +465,16 @@ def _fixture(
                 "fence": 3,
             }
         )
+        start = _process_receipt(operation_payload, "process_started")
         operation_payload["process"]["receipts"] = [
-            _process_receipt(operation_payload, "process_started")
+            start,
+            _process_receipt(
+                operation_payload,
+                "teardown",
+                supersedes_receipt_id=start["receipt_id"],
+                observed_at="2026-07-27T12:00:02Z",
+                live_descendant_count=0,
+            ),
         ]
     prepared = _record("prepared_evidence", "prepared-1", prepared_payload)
     selector_payload["prepared_evidence_ref"] = prepared["record_digest"]
@@ -675,6 +683,10 @@ def test_json_and_human_views_share_attention_action_and_exit(
     assert "route=passed openapi=passed sse=passed capability=passed" in human
     assert f"Web: build={DIGEST_C} missing_assets=0" in human
     assert "Native: capability=passed build=passed differential=passed notebook=passed" in human
+    assert "Operation: id=operation-1 attempt=attempt-1" in human
+    assert "Outcome: failure=none detail=None degraded=none" in human
+    assert "Receipts: process_started@2026-07-27T12:00:01Z->None" in human
+    assert f"population={DIGEST_C} age=None last_use=None" in human
 
 
 @pytest.mark.parametrize(
@@ -718,7 +730,7 @@ def test_json_and_human_views_share_attention_action_and_exit(
                 "matching_live_instances": 0,
                 "zero_live_descendants": True,
             },
-            {"stage": "complete", "complete": True},
+            {"stage": "complete", "signal_escalation": "term", "complete": True},
         ),
     ],
 )
@@ -856,6 +868,210 @@ def test_historical_start_requires_exact_terminal_absence_receipt(tmp_path: Path
         ExplicitRecordReader(
             _fixture(tmp_path, operation_payload=operation, include_migration=False)
         ).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+def test_absence_without_historical_start_requires_terminal_receipt(tmp_path: Path) -> None:
+    operation = _operation_payload(
+        states=_states(
+            migration="prepared",
+            execution="stopped",
+            startup="stopped",
+            reconciliation="absence_proved",
+        ),
+        action="retry_identical_invocation",
+        phase="start_intent_recorded",
+    )
+    operation["process"].update(
+        {
+            "matching_live_instances": 0,
+            "zero_live_descendants": True,
+            "receipts": [
+                _process_receipt(
+                    operation,
+                    "terminal_absence",
+                    observed_at="2026-07-27T12:00:01Z",
+                    live_descendant_count=0,
+                )
+            ],
+        }
+    )
+    status = validate_graph(
+        ExplicitRecordReader(
+            _fixture(tmp_path, operation_payload=operation, include_migration=False)
+        ).read()
+    )
+
+    assert status.constraints.exit_code == 1
+    assert status.constraints.derived_action == "retry_identical_invocation"
+
+
+def test_terminal_receipt_must_causally_follow_superseded_start(tmp_path: Path) -> None:
+    operation = _operation_payload(
+        states=_states(
+            migration="prepared",
+            execution="stopped",
+            startup="stopped",
+            reconciliation="absence_proved",
+        ),
+        action="retry_identical_invocation",
+        phase="process_started",
+    )
+    start = _process_receipt(
+        operation,
+        "process_started",
+        observed_at="2026-07-27T12:00:02Z",
+    )
+    absence = _process_receipt(
+        operation,
+        "terminal_absence",
+        supersedes_receipt_id=start["receipt_id"],
+        observed_at="2026-07-27T12:00:01Z",
+        live_descendant_count=0,
+    )
+    operation["process"].update(
+        {
+            "matching_live_instances": 0,
+            "zero_live_descendants": True,
+            "receipts": [absence, start],
+        }
+    )
+    status = validate_graph(
+        ExplicitRecordReader(
+            _fixture(tmp_path, operation_payload=operation, include_migration=False)
+        ).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+def test_process_receipt_must_follow_prepared_evidence(tmp_path: Path) -> None:
+    operation = _operation_payload()
+    operation["process"]["receipts"] = [
+        _process_receipt(
+            operation,
+            "process_started",
+            observed_at="2026-07-27T11:59:59Z",
+        )
+    ]
+    status = validate_graph(
+        ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+def test_adopted_rejects_terminal_process_receipts(tmp_path: Path) -> None:
+    operation = _operation_payload(
+        states=_states(reconciliation="adopted"),
+        action="none",
+    )
+    start = operation["process"]["receipts"][0]
+    operation["process"]["receipts"].append(
+        _process_receipt(
+            operation,
+            "terminal_absence",
+            supersedes_receipt_id=start["receipt_id"],
+            observed_at="2026-07-27T12:00:02Z",
+            live_descendant_count=0,
+        )
+    )
+    status = validate_graph(
+        ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+@pytest.mark.parametrize("phase", ["prepared", "selector_committed", "start_intent_recorded"])
+def test_pre_start_phases_reject_start_and_live_process(
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    operation = _operation_payload(
+        states=_states(
+            migration="prepared",
+            execution="running",
+            startup="starting",
+            reconciliation="pending",
+        ),
+        action="resume_reconciliation",
+        phase=phase,
+    )
+    status = validate_graph(
+        ExplicitRecordReader(
+            _fixture(tmp_path, operation_payload=operation, include_migration=False)
+        ).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+def test_failed_phase_with_process_started_history_requires_start_receipt(
+    tmp_path: Path,
+) -> None:
+    operation = _operation_payload(
+        states=_states(
+            migration="prepared",
+            execution="failed",
+            failure="tool_failure",
+            startup="failed",
+        ),
+        action="investigate",
+        phase="failed",
+    )
+    operation["process"]["receipts"] = []
+    operation["tool_exit_code"] = 70
+    operation["failure_detail"] = "validator_exit_70"
+    status = validate_graph(
+        ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+@pytest.mark.parametrize(
+    "shutdown_changes",
+    [
+        {
+            "stage": "not_started",
+            "signal_escalation": "term_kill",
+            "forced_exit_receipt": True,
+        },
+        {
+            "stage": "kill",
+            "signal_escalation": "none",
+            "forced_exit_receipt": False,
+        },
+    ],
+)
+def test_shutdown_stage_and_escalation_products_are_closed(
+    tmp_path: Path,
+    shutdown_changes: dict[str, Any],
+) -> None:
+    operation = _operation_payload(
+        states=_states(
+            migration="prepared",
+            execution="failed",
+            failure="tool_failure",
+            startup="failed",
+        ),
+        action="investigate",
+        phase="failed",
+    )
+    operation["tool_exit_code"] = 70
+    operation["failure_detail"] = "validator_exit_70"
+    operation["shutdown"].update(shutdown_changes)
+    status = validate_graph(
+        ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
     )
 
     assert status.constraints.exit_code == 2
@@ -1378,7 +1594,10 @@ def test_absolute_manifest_and_relative_references_cannot_escape(tmp_path: Path)
     assert escape.value.error.code == "layout.status.reference_path"
 
 
-@pytest.mark.parametrize("control", ["\x00", "\x01", "\x1b", "\x7f"])
+@pytest.mark.parametrize(
+    "control",
+    ["\x00", "\x01", "\x1b", "\x7f", "\x80", "\x9b", "\x9f"],
+)
 def test_manifest_and_reference_paths_reject_terminal_controls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1403,6 +1622,32 @@ def test_manifest_and_reference_paths_reject_terminal_controls(
     assert "layout.status.reference_path" in output
     assert control not in output
     assert f"\\x{ord(control):02x}" in output
+
+
+def test_manifest_and_reference_paths_reject_lone_surrogates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    surrogate = "\ud800"
+    with pytest.raises(LayoutStatusInvalid) as manifest_path:
+        ExplicitRecordReader(Path(f"/tmp/status{surrogate}.json"))
+    assert manifest_path.value.error.code == "layout.status.manifest_not_absolute"
+
+    manifest = _fixture(tmp_path)
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    record["references"][0]["path"] = f"records/{surrogate}authority.json"
+    record["record_digest"] = canonical_record_digest(record)
+    _write(manifest, record)
+    monkeypatch.setenv("TRADE_LAYOUT_STATUS_MANIFEST", str(manifest))
+
+    code = dev.main(["layout-status"])
+    output = capsys.readouterr().out
+
+    assert code == 2
+    assert "layout.status.reference_path" in output
+    assert surrogate not in output
+    assert "\\ud800" in output
 
 
 def test_top_level_layout_status_ignores_dotenv_manifest_injection(

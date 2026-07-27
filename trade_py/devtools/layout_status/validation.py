@@ -15,7 +15,12 @@ from trade_py.devtools.layout_status.constraints import (
 )
 from trade_py.devtools.layout_status.deadline import InvocationDeadline
 from trade_py.devtools.layout_status.errors import invalid
-from trade_py.devtools.layout_status.records import EvidenceGraph, EvidenceRecord
+from trade_py.devtools.layout_status.models import ProcessReceipt
+from trade_py.devtools.layout_status.records import (
+    EvidenceGraph,
+    EvidenceRecord,
+    contains_unsafe_text,
+)
 from trade_py.devtools.layout_status.schema import (
     ConsumerInventorySnapshot,
     LayoutSelectorSnapshotV1,
@@ -301,9 +306,11 @@ def _cross_record_facts(
             and operation.process.fence == selector.fence
         )
     phases_ordered = _phase_consistency(operation, migration)
-    receipts_valid = _receipt_consistency(operation, migration) and _operation_consistency(
-        operation
-    )
+    receipts_valid = _receipt_consistency(
+        operation,
+        migration,
+        prepared,
+    ) and _operation_consistency(operation)
     rollback_target_valid = _rollback_consistency(operation, selector)
     if migration is not None:
         identities_match = identities_match and (
@@ -382,19 +389,12 @@ def _phase_consistency(
 def _receipt_consistency(
     operation: OperationStatusSnapshotV1,
     migration: MigrationEvidenceRef | None,
+    prepared: PreparedEvidenceRef,
 ) -> bool:
     process = operation.process
     shutdown = operation.shutdown
     reconciliation = operation.axes.reconciliation_state
-    if shutdown.complete and (
-        shutdown.stage != "complete"
-        or shutdown.residual_process_count != 0
-        or shutdown.residual_thread_count != 0
-    ):
-        return False
-    if shutdown.stage == "complete" and not shutdown.complete:
-        return False
-    if shutdown.complete and process.matching_live_instances != 0:
+    if not _shutdown_consistency(operation):
         return False
     if (
         operation.axes.startup_state in {"started_healthy", "started_degraded"}
@@ -411,8 +411,6 @@ def _receipt_consistency(
         or process.zero_live_descendants
     ):
         return False
-    if shutdown.signal_escalation == "term_kill" and not shutdown.forced_exit_receipt:
-        return False
     if operation.axes.failure_class == "process_cleanup_incomplete" and (
         shutdown.complete
         or (shutdown.residual_process_count == 0 and shutdown.residual_thread_count == 0)
@@ -422,10 +420,20 @@ def _receipt_consistency(
     starts = tuple(item for item in receipts if item.receipt_type == "process_started")
     absences = tuple(item for item in receipts if item.receipt_type == "terminal_absence")
     teardowns = tuple(item for item in receipts if item.receipt_type == "teardown")
-    if (
-        operation.activation_phase in {"process_started", "verified", "rollback_verified"}
-        and not starts
-    ):
+    if any(_parse_utc(item.observed_at) <= _parse_utc(prepared.prepared_at) for item in receipts):
+        return False
+    start_recorded = (
+        "process_started" in migration.phases
+        if migration is not None
+        else operation.activation_phase == "process_started"
+    )
+    if (start_recorded and len(starts) != 1) or (not start_recorded and starts):
+        return False
+    if operation.activation_phase in {
+        "prepared",
+        "selector_committed",
+        "start_intent_recorded",
+    } and (starts or teardowns or process.matching_live_instances != 0):
         return False
     if operation.activation_phase == "verified" and (
         migration is None
@@ -437,28 +445,36 @@ def _receipt_consistency(
     if reconciliation == "adopted":
         return (
             len(starts) == 1
+            and not absences
+            and not teardowns
             and process.matching_live_instances == 1
             and operation.activation_phase in {"process_started", "verified"}
         )
     if reconciliation == "absence_proved":
-        if process.matching_live_instances != 0 or not process.zero_live_descendants:
+        if (
+            process.matching_live_instances != 0
+            or not process.zero_live_descendants
+            or len(absences) != 1
+            or teardowns
+        ):
             return False
         if not starts:
-            return not absences and not teardowns
-        return (
-            len(starts) == 1
-            and len(absences) == 1
-            and not teardowns
-            and absences[0].supersedes_receipt_id == starts[0].receipt_id
-            and absences[0].live_descendant_count == 0
+            return (
+                absences[0].supersedes_receipt_id is None and absences[0].live_descendant_count == 0
+            )
+        return _terminal_supersedes_start(
+            starts[0],
+            absences[0],
         )
     if reconciliation == "fenced_teardown":
         return (
-            len(starts) <= 1
-            and len(teardowns) == 1
+            len(teardowns) == 1
             and not absences
-            and (not starts or teardowns[0].supersedes_receipt_id == starts[0].receipt_id)
-            and teardowns[0].live_descendant_count == 0
+            and (
+                _terminal_without_start(teardowns[0])
+                if not starts
+                else _terminal_supersedes_start(starts[0], teardowns[0])
+            )
             and process.matching_live_instances == 0
             and process.zero_live_descendants
             and shutdown.complete
@@ -467,7 +483,66 @@ def _receipt_consistency(
         )
     if operation.activation_phase == "verified":
         return len(starts) == 1 and not absences and not teardowns
-    return True
+    if migration is not None and migration.terminal_outcome == "rolled_back":
+        return (
+            not absences
+            and len(teardowns) == 1
+            and (
+                _terminal_without_start(teardowns[0])
+                if not starts
+                else _terminal_supersedes_start(starts[0], teardowns[0])
+            )
+            and process.matching_live_instances == 0
+            and process.zero_live_descendants
+            and shutdown.complete
+        )
+    return not absences and not teardowns
+
+
+def _shutdown_consistency(operation: OperationStatusSnapshotV1) -> bool:
+    shutdown = operation.shutdown
+    process = operation.process
+    if shutdown.stage == "not_started":
+        return (
+            shutdown.signal_escalation == "none"
+            and shutdown.residual_process_count == 0
+            and shutdown.residual_thread_count == 0
+            and not shutdown.forced_exit_receipt
+            and not shutdown.complete
+        )
+    if shutdown.stage == "term":
+        return (
+            shutdown.signal_escalation == "term"
+            and not shutdown.forced_exit_receipt
+            and not shutdown.complete
+        )
+    if shutdown.stage == "kill":
+        return (
+            shutdown.signal_escalation == "term_kill"
+            and shutdown.forced_exit_receipt
+            and not shutdown.complete
+        )
+    return (
+        shutdown.stage == "complete"
+        and shutdown.signal_escalation in {"term", "term_kill"}
+        and shutdown.forced_exit_receipt == (shutdown.signal_escalation == "term_kill")
+        and shutdown.residual_process_count == 0
+        and shutdown.residual_thread_count == 0
+        and shutdown.complete
+        and process.matching_live_instances == 0
+    )
+
+
+def _terminal_without_start(terminal: ProcessReceipt) -> bool:
+    return terminal.supersedes_receipt_id is None and terminal.live_descendant_count == 0
+
+
+def _terminal_supersedes_start(start: ProcessReceipt, terminal: ProcessReceipt) -> bool:
+    return (
+        terminal.supersedes_receipt_id == start.receipt_id
+        and terminal.live_descendant_count == 0
+        and _parse_utc(terminal.observed_at) > _parse_utc(start.observed_at)
+    )
 
 
 def _operation_consistency(operation: OperationStatusSnapshotV1) -> bool:
@@ -740,7 +815,7 @@ def _match_manifest_reference(
 
 def _string(payload: dict[str, Any], key: str, record: EvidenceRecord) -> str:
     value = payload.get(key)
-    if not isinstance(value, str) or not value or len(value) > 256:
+    if not isinstance(value, str) or not value or len(value) > 256 or contains_unsafe_text(value):
         _fail(record, "layout.status.manifest_shape", f"{key} must be a bounded string.")
     return value
 
