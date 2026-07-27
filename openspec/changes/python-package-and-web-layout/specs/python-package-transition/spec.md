@@ -63,6 +63,12 @@ ownership evidence.
 
 A mixed-owner file SHALL remain at its legacy path or be split by its owning
 child. It SHALL NOT be copied whole to make the target tree appear complete.
+Every concrete owner transfer SHALL additionally have its own strictly
+approved layout child that freezes the exact module/export manifest,
+prerequisite SHAs, complete consumer index, authority/generation refs,
+revision-fenced activation and rollback commands, performance baseline and
+focused topology. The parent layout approval SHALL NOT authorize modules
+selected after its digest.
 
 #### Scenario: A file has dependencies on multiple business owners
 - **WHEN** classification finds cross-owner state transitions, SQL, artifacts or provider calls in one file
@@ -70,7 +76,11 @@ child. It SHALL NOT be copied whole to make the target tree appear complete.
 
 #### Scenario: An owner-ready module is selected
 - **WHEN** its semantic child is implemented, public contracts are stable and the consumer inventory is current
-- **THEN** one bounded migration slice may add the target implementation and explicit legacy forwarder with focused rollback evidence
+- **THEN** one bounded digest-approved layout child may add the target implementation and explicit legacy forwarder with focused rollback evidence
+
+#### Scenario: A module is selected only during implementation
+- **WHEN** the exact file/export/consumer/selector manifest is absent from the current strict-approved child digest
+- **THEN** the parent package foundation cannot move or forward that module and a concrete owner-slice child is required
 
 ### Requirement: Root and installed CLI contracts SHALL remain compatible
 
@@ -100,6 +110,9 @@ consumer set, deprecation behavior, last observed supported use, minimum
 compatibility window, deadline, rollback target and cleanup child. A bridge
 SHALL remain installed for at least 30 days after target authority and SHALL
 not be removed while usage is unknown or any supported consumer remains.
+Forwarding SHALL be one hop only. Each slice SHALL report cumulative bridge
+count, imported-module delta, p95 startup/import delta and RSS delta; a bridge
+chain or absent cost evidence blocks authority advancement.
 
 The owner Interface adapter SHALL emit only bounded bridge/generation,
 supported-consumer-class and outcome observations at an already-owned facade.
@@ -116,6 +129,14 @@ supported use for the full window, `complete` population coverage without a
 missing or stale interval, release/deprecation evidence, source, editable and
 wheel validation without the bridge, and a successful rollback drill.
 
+Until a separately governed `layout-bridge-observability` child identifies
+actual repository/deployment producer, nonblocking exporter, collector,
+population source, retention owner and query adapter, dynamic coverage SHALL
+be `unavailable` and retirement SHALL remain blocked. That child SHALL use
+closed consumer/outcome enums and reviewed finite bridge, generation, series,
+event-rate, retention and overflow bounds. Overflow or dropped observations
+SHALL make coverage `partial` without blocking application requests.
+
 #### Scenario: Telemetry is unavailable
 - **WHEN** supported-use evidence cannot be collected for part of the compatibility window
 - **THEN** use state is `unknown` and retirement remains blocked
@@ -131,3 +152,11 @@ wheel validation without the bridge, and a successful rollback drill.
 #### Scenario: A bridge meets its age but still has a consumer
 - **WHEN** the minimum window elapsed but a script, deployment command, SDK, notebook or test still imports the legacy path
 - **THEN** cleanup reports the consumer and retains the bridge
+
+#### Scenario: Bridge telemetry exceeds its bound
+- **WHEN** a producer observes an unknown class/outcome or exceeds reviewed series, event-rate or retained-generation capacity
+- **THEN** it records bounded overflow/drop evidence, marks population coverage `partial`, keeps the request path nonblocking and retains the bridge
+
+#### Scenario: A forwarder delegates through another forwarder
+- **WHEN** authority validation finds more than one compatibility hop between a legacy import and implementation
+- **THEN** the slice is rejected and the legacy path must delegate directly to the one target authority

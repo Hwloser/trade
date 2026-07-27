@@ -40,11 +40,13 @@ forwarders until measured retirement conditions pass.
 - Require source-tree, editable-install and clean-wheel proof for dual package
   discovery before any source move. The installed wheel, not repository
   `sys.path`, is the authority for package correctness.
-- Introduce `src/trade` only for modules whose semantic owner has already been
-  selected by an approved child change. A legacy `trade_py` module may become a
-  thin one-way forwarding module only after old/new identity and import
-  behavior are tested. The target package never imports a legacy implementation
-  as an architectural dependency.
+- Introduce `src/trade` first as an additive package-authority foundation.
+  A production module enters it only through a separately strict-approved,
+  digest-bound implementation child whose manifest names exact files,
+  consumers, owner prerequisite SHAs, selectors and rollback commands. A
+  legacy `trade_py` module may become a thin one-way forwarding module only
+  after old/new identity and import behavior are tested. The target package
+  never imports a legacy implementation as an architectural dependency.
 - Move the FastAPI backend only after its Context query/use-case and Bootstrap
   owners exist. Preserve `trade_web:create_app`, route registry, OpenAPI/error/
   SSE goldens and reload child importability through a compatibility module.
@@ -67,6 +69,15 @@ forwarders until measured retirement conditions pass.
 - Add package-authority, forbidden reverse-forwarding, wheel-membership,
   console parity, ASGI/reload, route/OpenAPI/SSE, Web asset, SDK/notebook,
   native-isolation and test-collection guards.
+- Define a deployment-owned layout control store for real authority changes.
+  It uses a per-scope monotonic revision/fencing token, linearizable
+  compare-and-set, idempotent operation records, immutable evidence and
+  crash reconciliation. The initial package foundation may add schemas,
+  validators and read-only status, but it does not activate a generation;
+  the mutable controller is delivered by its own strict-approved child.
+- Establish measured startup/import, source-inventory, Web-build, telemetry
+  cardinality and validation-resource budgets so compatibility cannot hide
+  unbounded operational cost.
 
 ## Non-Goals
 
@@ -85,6 +96,9 @@ forwarders until measured retirement conditions pass.
   the Platform/Bootstrap owner child explicitly migrates them.
 - No implementation before this child has six-role review and current strict
   approval.
+- No package/module, native, ASGI/Bootstrap, frontend-default or test-topology
+  authority transfer under this umbrella digest. Every concrete transfer has
+  its own OpenSpec child, frozen manifest, six-role review and strict approval.
 
 ## Alternatives Considered
 
@@ -99,11 +113,12 @@ forwarders until measured retirement conditions pass.
 3. **Duplicate implementations under both package roots.** This makes imports
    appear compatible but permits two module objects, two registries and two
    runtime owners. Rejected.
-4. **Selected: staged authority transfer with one-way compatibility.** Prove
-   packaging first, move only owner-ready modules, preserve old names as
-   explicit forwarders, compare public contracts, and retire bridges by
-   measured criteria. This costs a bounded compatibility window but keeps every
-   slice independently testable and reversible.
+4. **Selected: staged authority transfer with one-way compatibility and a
+   fenced deployment selector.** Prove packaging first, move only owner-ready
+   modules through digest-bound children, preserve old names as explicit
+   forwarders, compare public contracts, and retire bridges by measured
+   criteria. This adds review and control-store overhead but keeps every slice
+   independently testable, crash-recoverable and reversible.
 
 ## Capabilities
 
@@ -144,17 +159,21 @@ forwarders until measured retirement conditions pass.
 
 ## Compatibility, Rollout and Rollback
 
-The implementation is a sequence of independently reviewable commits and may
-be split into more than one PR if the approved task gates require it:
+The implementation is a sequence of independently reviewable changes. This
+parent may implement only the additive package-discovery proof, authority and
+evidence schemas, source guards, deterministic inventory index and read-only
+layout diagnostics. Every authority-changing unit below is a mandatory child
+OpenSpec change and separate reviewable PR:
 
-1. packaging proof and authority guards;
-2. `_trade_native` isolation;
-3. owner-ready Python modules plus one-way legacy forwarders;
-4. installed SDK/notebook compatibility;
-5. FastAPI compatibility bridge and target interface/bootstrap modules;
-6. Vite workspace movement to `web/`;
-7. tools/examples/test-layout classification;
-8. measured legacy retirement in `tests-and-legacy-cleanup`.
+1. package-authority foundation without activation;
+2. deployment selector/control-plane implementation;
+3. `_trade_native` isolation;
+4. each owner-ready Python module slice plus one-way legacy forwarders;
+5. installed SDK/notebook compatibility;
+6. FastAPI compatibility bridge and target interface/bootstrap modules;
+7. Vite workspace movement and later default activation;
+8. each tools/examples/test-layout classification slice;
+9. measured legacy retirement in `tests-and-legacy-cleanup`.
 
 Every slice preserves the old entrypoint or root and has an explicit selector
 or revert path. A failed slice restores the old package discovery/import,
@@ -164,13 +183,15 @@ rollback.
 
 ## Design Quality Governance
 
-This is a Non-trivial architecture and public-contract change. The
-`public_contract` and `runtime_concurrency` profiles apply because package
-names, entrypoints, ASGI reload/process imports and runtime ownership must
-remain stable during dual-root operation. Persistent-write, schema-migration,
+This is a Non-trivial architecture, public-contract and durable-control-state
+change. The `public_contract`, `persistent_write` and `runtime_concurrency`
+profiles apply because package names, entrypoints, ASGI reload/process imports
+and runtime ownership must remain stable during dual-root operation, while
+real deployment activation requires a durable revision-fenced selector,
+operation journal and immutable evidence store. Schema-migration,
 point-in-time, predictive-model and external-event-data profiles do not apply:
-the child changes source/package/layout infrastructure only and tests use
-temporary installation roots.
+the new store has no predecessor schema or business payload, no business data
+is moved, and tests use temporary installation/control roots.
 
 Implementation starts only after:
 

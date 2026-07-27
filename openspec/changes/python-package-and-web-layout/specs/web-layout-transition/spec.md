@@ -37,6 +37,12 @@ Package movement SHALL NOT change startup/shutdown order, command admission,
 EventBus admission, process-group supervision, DB close ordering, shared
 deadlines, force-exit diagnostics or residual-worker behavior. Runtime
 lifecycle changes require their own strictly approved owner change.
+Process acceptance SHALL exercise real OS descendants, not importability alone:
+parent death before and after child spawn, a grandchild that ignores SIGTERM,
+bounded process-group KILL escalation, reload-supervisor teardown, cleanup
+failure classification and zero residual PIDs. The rollout evidence SHALL
+record the bounded shutdown stage, escalation signal, residual process/thread
+counts and forced-exit receipt without arguments, stacks or user payloads.
 
 #### Scenario: A workflow child is spawned after backend movement
 - **WHEN** the runtime command runner starts its supervised child module
@@ -45,6 +51,14 @@ lifecycle changes require their own strictly approved owner change.
 #### Scenario: Web shutdown leaves residual work
 - **WHEN** the moved application is stopped with a blocked command, handler or cleanup stage
 - **THEN** existing bounded shutdown and forced-exit fixtures retain their approved outcome and the compatibility layer does not mask or duplicate the residual owner
+
+#### Scenario: A descendant ignores graceful termination
+- **WHEN** a supervised child or grandchild remains alive after the TERM deadline during shutdown, reload teardown or validation timeout
+- **THEN** the owned process group receives bounded KILL escalation, zero residual PIDs are verified and any cleanup failure remains distinct from the original command outcome
+
+#### Scenario: Startup automation fails after core resources start
+- **WHEN** the frozen current runtime would log and continue after automation startup failure
+- **THEN** the layout transition preserves an explicit `started_degraded` compatibility state and does not silently convert it to fully healthy or fatal startup; changing that policy belongs to the Bootstrap owner child
 
 ### Requirement: Frontend workspace movement SHALL preserve build and served assets
 
@@ -66,6 +80,14 @@ local-development `trade web --build` and source-newer auto-build behavior
 SHALL remain compatible in this child and SHALL NOT be treated as deployment
 activation evidence.
 
+Root precedence SHALL select exactly one frontend source root before any
+recursive stat or build. Build caching SHALL bind selected-root identity,
+lockfile, Node/package-manager/Vite versions and sorted source digest, retain
+only reviewed unreferenced generations within its size bound and never combine
+legacy and target trees. No-change startup, cold build and incremental build
+SHALL satisfy the reviewed absolute/relative budgets or fail without changing
+the selected deployment build.
+
 #### Scenario: Target Web build succeeds but assets are incomplete
 - **WHEN** `web/` emits `index.html` but a manifest-referenced asset is missing or its digest differs from the recorded build
 - **THEN** target-default activation fails and the prior Web build remains selected
@@ -77,6 +99,10 @@ activation evidence.
 #### Scenario: A client opens an existing deep link
 - **WHEN** a non-API application path is requested from the target build
 - **THEN** FastAPI serves the reviewed SPA index behavior without intercepting `/api`, `/docs` or `/openapi.json`
+
+#### Scenario: A file changes under the unselected frontend root
+- **WHEN** the legacy and target roots both exist but precedence selects only one root
+- **THEN** source-newer detection and cache invalidation inspect only the selected root, and the unselected change neither triggers a build nor contaminates its cache key
 
 ### Requirement: Web product and BFF contracts SHALL not change through layout movement
 

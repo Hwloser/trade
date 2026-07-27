@@ -65,19 +65,21 @@ all source/editable/wheel or differential evidence.
 A missing wheel member, checkout-dependent origin, duplicate module owner,
 unknown consumer, ASGI/reload/child import failure, route/SSE/asset mismatch,
 native differential mismatch, notebook prohibited access or residual process
-leaves the previous generation authoritative. Finite validation deadlines
-terminate owned process groups and report timeout separately from assertion,
-contract and tool failures. Recovery selects the prior package, ASGI, Web or
-native generation and reruns its focused matrix.
+cannot advance module authority. Finite validation deadlines terminate owned
+process groups and report timeout separately from assertion, contract, cleanup
+and tool failures. Durable activation phases reconcile crashes before or after
+selector commit; rollback selects the prior package, ASGI, Web or native
+generation through a new forward revision and reruns its focused matrix.
 
 ### Performance and capacity
 
 One authority slice is limited to 50 production modules and 500 consumer
-records, uses sorted tracked paths, never randomly samples or silently
-truncates, and runs at most two isolated install environments concurrently.
-Package, native and Web checks have finite reviewed deadlines and process-tree
-cleanup. Inputs at ten times the admitted slice size fail closed into smaller
-reviewable slices instead of consuming unbounded memory or CI time.
+records, reuses one sorted tree index per content digest, never randomly
+samples or silently truncates, and enforces finite global workers, heavy jobs,
+RSS, disk and admission wait. Cold/warm startup records p50/p95, RSS and module
+count; Web caches bind one selected root; current and synthetic ten-times scans
+have explicit wall/RSS gates. Package, native and Web checks retain finite
+deadlines and verified process-tree cleanup.
 
 ### Observability and operations
 
@@ -85,8 +87,11 @@ Reports expose package generation, wheel/member digest, module origins and
 authority, duplicate/reverse/unclassified consumers, CLI parity, ASGI/reload/
 child status, route/OpenAPI/SSE/capability parity, Web manifest/assets, native
 availability/differential state, notebook clean-run state, bridge age/use and
-early-stop reason. `not_run`, `unavailable`, `failed`, `timeout`, `mismatch`,
-`passed`, `rolled_back` and `retireable` remain distinct.
+early-stop reason. Selector generation/revision, activation phase,
+reconciliation, shutdown escalation and residual counts are visible without
+arguments or payloads. Migration, execution, failure, rollback and operator
+action remain orthogonal; absent or overflowed bridge telemetry blocks
+retirement.
 
 ### Validation strategy
 
@@ -97,6 +102,19 @@ typecheck/unit/build/bundle/asset smokes; SDK/notebook clean-environment tests;
 native absent/present plus C++/Python differential fixtures; collection mapping;
 compileall; repository quality gates; strict design checking; and six-role
 implementation review. All data fixtures are temporary and offline.
+
+### Persistent-write safety
+
+The only durable write surface is an explicit deployment control root owned by
+the layout controller; service managers write only their fenced process
+receipts, while Contexts, interfaces, bridges and status are read-only. A
+per-scope lock and expected generation/revision CAS publish canonical selector
+JSON using same-directory stage, fsync, atomic replace and directory fsync.
+Operation ID makes lost responses idempotent, revisions never decrease, and
+`prepared`, `selector_committed`, `process_started` and `verified` receipts
+support crash reconciliation. Corrupt or ambiguous state is retained and
+blocks mutation; rollback writes a higher revision selecting the prior
+generation, and referenced evidence is not collected.
 
 ### Alternatives and trade-offs
 
@@ -109,12 +127,14 @@ semantic owners, proves installed behavior and permits independent rollback.
 
 ### Rollout and rollback
 
-Rollout freezes prerequisites and consumers, proves dual-root packaging, adds
-authority guards, isolates native naming, migrates bounded owner-ready Python
-slices, then independently migrates SDK/notebook, ASGI/backend, frontend and
-test/tool paths. No global switch activates all roots. Each slice keeps the old
-path and prior generation selectable; cleanup waits at least 30 days, requires
-known zero supported use, and belongs to `tests-and-legacy-cleanup`.
+This parent freezes prerequisites and consumers and implements only dual-root
+packaging proof, source authority/index guards, schemas and read-only status.
+A mandatory selector-control child precedes activation, and every native,
+owner-module, SDK/notebook, ASGI, frontend-default and test-topology transfer
+has its own frozen manifest and strict approval. No global switch activates all
+roots. Each slice keeps the old path and prior generation selectable; cleanup
+waits at least 30 days, requires known zero supported use, and belongs to
+`tests-and-legacy-cleanup`.
 
 ## Current-State Audit
 
@@ -402,6 +422,10 @@ migration_evidence_ref
 bridge_coverage_ref
 rollback_target
 retirement_deadline
+selector_scope
+selector_revision
+selector_fence
+operation_id
 state
 ```
 
@@ -488,7 +512,10 @@ mismatch. Unknown or malformed combinations fail validation.
 Every slice produces an immutable `LayoutActivationPlanV1` before cutover. It
 names the current and target generation, authority scope, exact selector
 mechanism, precedence, activation command, rollback command, evidence ref,
-operator, deadline and post-action checks. The allowed mechanisms are:
+operator, deadline and post-action checks. The plan also binds an
+`operation_id`, expected selector revision, expected generation and the digest
+of every command argv; it never embeds a shell string. The allowed mechanisms
+are:
 
 | Scope | Selector and precedence | Atomic activation and rollback |
 |---|---|---|
@@ -499,14 +526,124 @@ operator, deadline and post-action checks. The allowed mechanisms are:
 
 In-place package replacement, a `latest` path, mutable symlink without a
 generation compare-and-swap, and one flag switching all scopes are forbidden.
-An operator confirms the scope and expected current generation; a stale
-expected generation fails without activation. The post-action diagnostic must
-observe the requested generation and evidence digest before the slice advances.
-These selector rules govern deployment cutover. They do not change the current
+An operator confirms the scope, expected current generation and expected
+revision. The only mutating selector API is:
+
+```text
+CAS(
+    scope,
+    expected_generation,
+    expected_revision,
+    target_generation,
+    operation_id,
+    plan_digest,
+    evidence_ref,
+) -> SelectorRef(new_revision)
+```
+
+The operation is linearizable for one scope and allocates exactly
+`new_revision = expected_revision + 1`. A stale generation or revision fails
+without mutation. Repeating the same `operation_id` and input digest returns
+the previously committed `SelectorRef`; reusing an operation ID with different
+inputs is a conflict. Revisions never decrease or repeat. Rollback is a new
+forward revision selecting the retained prior generation, not restoration of
+an old revision. Every service-manager/startup reader receives generation and
+revision together and refuses to publish a start or verification receipt when
+its fence is older than the current selector.
+
+The post-action diagnostic must observe the requested generation, revision,
+process receipt and evidence digest before the slice advances. These selector
+rules govern deployment cutover. They do not change the current
 local-development `trade web --build` and source-newer auto-build behavior in
 this layout child; that behavior remains a compatibility contract until a
 separate Web developer-workflow change versions it. Deployment activation never
 uses that mutable local build path as `WebBuildRef` evidence.
+
+### Deployment layout control store
+
+The mutable selector is deployment control state, not a CI report. A mandatory
+implementation child owns a `LayoutSelectorStore` port and the first POSIX
+adapter under `tools/layout_control/`; application Contexts and compatibility
+modules cannot write it. Mutation requires an explicitly configured absolute
+deployment-state root outside the repository, business-data root and package
+generation. There is no guessed production default. The POSIX adapter is
+admissible only when every controller and service manager for that scope uses
+the same filesystem with documented linearizable `flock` and atomic-rename
+semantics; otherwise a later deployment-specific adapter must provide the same
+contract.
+
+The root contains bounded, versioned state:
+
+```text
+layout-control/v1/
+├── selectors/<scope>.json
+├── locks/<scope>.lock
+├── operations/<scope>/<operation_id>/
+│   ├── plan.json
+│   └── receipts/<sequence>-<phase>.json
+├── processes/<scope>/<revision>/<instance_id>.json
+└── evidence/<digest>.json
+```
+
+`selectors/<scope>.json` is the sole current-selector authority and binds
+scope, generation, monotonic revision/fence, operation ID, plan digest,
+evidence ref and canonical payload digest. `plan.json`, phase receipts,
+process receipts and final evidence are immutable and content/digest checked.
+Only the deployment layout controller writes selectors and operation receipts;
+the service manager writes a bounded process-start/stop receipt for its own
+instance; `layout-status` is read-only. Root/directories are owner-only
+(`0700`), records are `0600`, symlinks/non-regular files and path traversal are
+rejected, and IDs and JSON size are bounded before path construction.
+
+Selector CAS takes one exclusive per-scope lock, validates the complete
+predecessor, stages canonical JSON in the destination directory, flushes and
+fsyncs the file, atomically replaces the selector, and fsyncs the directory.
+Readers either hold the shared scope lock or read one atomic complete selector
+and verify its digest. A malformed, oversized, missing-field, wrong-owner or
+inconsistent predecessor blocks all mutation; no mtime, PID absence or age
+causes automatic repair.
+
+Current selectors are retained indefinitely. Operation, process and evidence
+records are retained for at least the longer of 90 days, the declared rollback
+support window and every referencing bridge's compatibility window. No record
+referenced by the current selector, retained prior generation, unresolved
+operation, rollback plan or bridge can be collected. Retention is a separate
+audited operation; it never advances or repairs a selector.
+
+### Activation phases and crash reconciliation
+
+Each operation appends exactly ordered durable receipts:
+
+```text
+prepared -> selector_committed -> process_started -> verified
+```
+
+`prepared` proves the target artifact and immutable plan. `selector_committed`
+binds the returned revision. `process_started` binds an admitted service
+instance to that same generation/revision. `verified` binds post-start
+contract evidence. A failure or rollback appends a typed receipt; it never
+rewrites an earlier phase. Only `verified` may advance module/root authority.
+
+Recovery is idempotent by `operation_id`:
+
+- a crash before selector CAS leaves `prepared` and may retry the same CAS;
+- a lost CAS response returns the already committed revision for the same
+  operation and digest;
+- a crash after CAS but before restart observes `selector_committed` and no
+  matching process receipt, then resumes the exact plan command while within
+  deadline or starts a new rollback operation;
+- a crash after process start revalidates the current fence and resumes
+  verification;
+- a running process, receipt or evidence generation that disagrees with the
+  current selector is fenced, reported as `reconciliation_required` and never
+  repaired by overwriting the selector;
+- a missed deadline, corrupt predecessor or ambiguous external service-manager
+  result halts automatic progress and requires an explicit operator decision.
+
+Startup reconciliation runs before a mutable layout command accepts another
+operation for that scope. Concurrent activation, activation-versus-rollback,
+delayed-controller, lost-response and crash-at-every-phase fixtures must prove
+one selector winner, monotonic revisions and no stale verified process.
 
 ### Package discovery and installation model
 
@@ -630,13 +767,19 @@ Dataset or Study references.
 
 `MigrationEvidenceRef` identifies one complete activation or rollback proof:
 
-- schema version, migration ID, slice ID and attempt ID;
+- schema version, migration ID, slice ID, attempt ID and idempotent operation
+  ID;
 - source commit/tree, policy digest and approved OpenSpec artifact digest;
 - `ConsumerInventoryRef`, `ModuleAuthorityRef` and applicable
   `PackageGenerationRef`/`WebBuildRef`/native artifact refs;
-- activation-plan digest and selectors observed before and after;
+- activation-plan digest and selector generations/revisions/fences observed
+  before and after;
+- ordered `prepared`, `selector_committed`, `process_started` and `verified`
+  receipts, with reconciliation outcome;
 - toolchain versions, ordered command identities and monotonic deadline policy;
 - per-check typed execution/failure/rollback status and partial-evidence refs;
+- bounded shutdown stage, TERM/KILL escalation, residual process/thread counts
+  and forced-exit receipt, without argv, stack or user payload;
 - UTC started/finished observations and sorted report-entry digest;
 - final evidence-manifest digest.
 
@@ -658,6 +801,18 @@ does not rewrite the failed evidence.
 
 These references are test/deployment evidence. They contain no mutable
 `latest`, arbitrary path or real data identity.
+
+`LayoutSelectorRef` identifies:
+
+- store schema and scope;
+- immutable selected generation;
+- monotonic revision/fence;
+- operation ID, plan digest and evidence ref;
+- predecessor generation/revision;
+- canonical selector payload digest.
+
+It is the only mutable deployment authority, but each published ref value and
+all supporting operation receipts are immutable audit facts.
 
 ## Code Dependency Graph
 
@@ -720,8 +875,11 @@ durable state.
 
 ## Database and Table Ownership
 
-This child creates no database table and runs no migration. Physical co-location
-and ownership ledgers remain as specified by the parent.
+This child creates no business database table and runs no business migration.
+The deployment selector/evidence root is a new isolated control-plane store
+owned by deployment layout tooling, not Platform Persistence or a business
+Context. Physical business-data co-location and ownership ledgers remain as
+specified by the parent.
 
 Compatibility modules may not query another Context's table to preserve an old
 import. A module that still depends on `TradeDB` or `db._conn` is not
@@ -729,7 +887,8 @@ owner-ready and remains at its old path until its owner repository migration.
 
 ## Artifact Ownership
 
-The child creates only build/test reports in temporary or CI artifact roots:
+The child creates build/test reports plus explicitly configured deployment
+control records:
 
 | Artifact | Owner | Durable runtime authority |
 |---|---|---|
@@ -738,7 +897,9 @@ The child creates only build/test reports in temporary or CI artifact roots:
 | Web build manifest/assets | Web build | deployable static artifact only |
 | import/console/route goldens | contract tests | no |
 | native differential report | owning Context adapter tests | no |
-| migration evidence | OpenSpec/CI | no |
+| layout selector | deployment layout controller | yes, one current ref per scope |
+| operation/process receipts | controller/service manager | immutable audit/recovery facts |
+| migration evidence | deployment layout controller | immutable activation authority evidence |
 
 No market-data, model, research, decision or catalog artifact moves.
 
@@ -793,7 +954,8 @@ approved public import selected by the interface child). The notebook:
 - never searches the repository;
 - never imports adapters/repositories;
 - never reads parquet directly;
-- resolves immutable refs through SDK queries;
+- resolves one immutable generation through SDK queries and pins its
+  snapshot/run/release/artifact refs for the complete handle lifetime;
 - runs from a clean working directory against temporary fixtures.
 
 The current notebook stays unchanged until that SDK exists.
@@ -802,9 +964,12 @@ The current notebook stays unchanged until that SDK exists.
 
 Scheduler/event/import adapter strings and command DTOs are public compatibility
 facts. Their files move only after Platform/Process/Capture owners exist and
-contract fixtures cover old/new module names. File imports continue to become
-`RequestCapture(mode="import")`; layout movement cannot introduce a direct
-Dataset build path.
+contract fixtures cover old/new module names. A scheduler fixture must also
+freeze schedule ID/topic, registration order, cadence, wall time, timezone or
+explicit process-local clock, trading-session guard, DST behavior,
+misfire/catch-up policy and injected-clock behavior. File imports continue to
+become `RequestCapture(mode="import")`; layout movement cannot introduce a
+direct Dataset build path.
 
 ## Web Page Compatibility
 
@@ -835,10 +1000,14 @@ rollback and deployment escape hatch.
 ## SDK and Notebook Compatibility
 
 SDK wire DTOs, immutable-ref serialization and errors are shared by CLI/HTTP
-and notebook consumers. Notebook parity compares snapshot identity, quality
-state, lifecycle state, bars/findings and research metadata against the old SDK
-on a temporary immutable fixture. It does not compare mutable current/latest
-data.
+and notebook consumers. `SnapshotHandle` resolves a selector at most once and
+pins one immutable snapshot plus run/release/artifact lineage for all subsequent
+context, bars, findings and research queries. A concurrent release change
+cannot mix generations: the handle returns the pinned generation or an
+explicit stale/conflict error. Notebook parity compares snapshot identity,
+quality state, lifecycle state, bars/findings and research metadata against the
+old SDK on a temporary immutable fixture. It does not compare mutable
+current/latest data.
 
 ## C++ Integration Boundary
 
@@ -891,9 +1060,15 @@ Every candidate file is classified by:
 8. target cell (`contracts`, `domain`, `use_cases`, `ports`, `adapters`);
 9. compatibility obligation and retirement condition;
 10. focused tests, failure states and rollback selector.
+11. clock source/timezone and source, publication, observed, knowledge and
+    partition-time semantics where event/news/schedule behavior exists;
+12. lateness/finality, replay range and idempotency identity for event-like
+    inputs.
 
 Names alone are not evidence. Files with multiple owners are split by behavior
 in their owning child; they are never copied whole into a target Context.
+Scheduler, news, sentiment and external-event files remain `blocked` until
+their owning child freezes these temporal semantics.
 
 ## Requirements and Acceptance
 
@@ -916,6 +1091,11 @@ in their owning child; they are never copied whole into a target Context.
    disposition.
 10. Every slice can return to its immediately preceding generation without
     database or artifact rollback.
+11. Selector revisions are monotonic and fenced, every activation is
+    crash-recoverable by operation ID, and stale process receipts cannot
+    verify a generation.
+12. Compatibility startup/import, discovery, Web-build and validation-resource
+    budgets pass against committed baselines.
 
 ### Non-goals and blocked acceptance
 
@@ -930,6 +1110,8 @@ depends on repository CWD fails the change.
 |---|---|---|
 | package discovery/version | package/build configuration | Contexts do not inspect checkout layout |
 | module authority manifest/guard | architecture developer tooling | compatibility modules consume explicit records |
+| selector and activation journal | deployment layout controller | Contexts, CLI/HTTP and compatibility modules never mutate it |
+| service process receipt | deployment service manager | controller validates; application business code does not write it |
 | business behavior | owning Context cell | package change does not rewrite semantics |
 | CLI/HTTP/SDK adapters | Interfaces | Contexts expose contracts/use cases/queries |
 | runtime construction/shutdown | Bootstrap with Platform primitives | CLI/ASGI compatibility delegates once |
@@ -946,6 +1128,12 @@ depends on repository CWD fails the change.
   generation.
 - Compatibility direction is legacy to target only.
 - Package, Web and native evidence binds exact content and environment.
+- Selector revision/fence is strictly monotonic per scope; rollback never
+  decrements it.
+- One operation ID identifies one immutable plan/input digest and can be
+  retried without a second transition.
+- Only a process receipt matching the current scope, generation and revision
+  can be verified.
 - An unavailable optional native module is not represented as available.
 - A missing Web build yields the existing explicit fallback/API behavior, not a
   fabricated healthy UI.
@@ -983,7 +1171,11 @@ fallback imports.
 | native build/source mismatch | native unavailable | disable adapter; retain Python path |
 | notebook clean run failure | old notebook remains | do not move/remove path logic yet |
 | shutdown/lifecycle mismatch | no Bootstrap forwarding | restore legacy owner and rerun runtime tests |
-| migration interrupted | previous generation remains authoritative | discard incomplete target/shadow evidence |
+| crash before selector commit | prior selector remains authoritative | retry the same operation ID |
+| crash after selector commit | current selector remains authoritative but unverified | reconcile phase/receipt, resume exact plan or issue forward-revision rollback |
+| stale controller/process fence | no verification or overwrite | stop, report conflict and require fresh plan |
+| corrupt selector/operation record | all mutation stopped | preserve state and investigate; never auto-repair |
+| migration interrupted before authority verification | selector may have changed but module authority does not advance | recover from durable phases and retain incomplete evidence |
 
 No exception is classified as a successful migration or killed compatibility
 requirement. Tool failures and contract mismatches are reported separately.
@@ -995,21 +1187,59 @@ bounded:
 
 - operate on Git-tracked source, not data/build/vendor trees;
 - cap one authority slice to 50 production modules and 500 consumer records;
-- process deterministic sorted paths;
+- build one immutable shared tree index per repository tree/scanner/rules digest
+  and derive deterministic owner/module partitions from that index;
+- process deterministic sorted paths; partition overflow fails with exact
+  ownership groups rather than arbitrary file chunks;
 - build one wheel per Python ABI/platform validation job;
 - allow at most two isolated install environments concurrently;
+- schedule at most two heavy build/browser/native jobs and
+  `min(4, max(1, floor(available_cpu / 2)))` ordinary validation workers
+  globally; refuse after a two-minute queue deadline instead of
+  oversubscribing;
+- cap aggregate validation RSS at the lower of 75% of detected runner memory
+  and 8 GiB, and temporary output at 10 GiB; capacity refusal retains partial
+  evidence and runs cleanup;
 - bound every subprocess and terminate its process group on timeout;
 - compare Web asset manifests by path/digest without loading all assets into
   memory;
 - use a 5-minute per packaging smoke, 10-minute native build smoke and
   15-minute Web build/test smoke unless repository baseline evidence justifies
   a reviewed change;
-- at 10x current module count, fail with a capacity diagnostic and require
-  smaller slices rather than silently truncating evidence.
+- at 10x current module count, the shared-index benchmark must scan once, use
+  no more than 10x baseline wall time plus 5 seconds and no more than 3x
+  baseline peak RSS plus 64 MiB; individual over-50/500 authority partitions
+  still fail closed into smaller slices.
 
-Runtime import startup, CLI help and ASGI factory baselines are recorded before
-and after each slice. A regression budget must be justified from measured
-variance; this design invents no absolute latency claim.
+Before a compatibility slice, one committed baseline JSON is produced on the
+same runner image, Python build and dependency lock. Cold cases run in 15 fresh
+processes; warm callable cases run 30 times after five discarded warmups. The
+matrix covers root and installed CLI help, one selected-domain help,
+`import trade_web`, `import trade`, and factory construction without lifespan
+or business-data access. It records p50/p95 monotonic duration, peak RSS and
+sorted imported-module count. A candidate fails when:
+
+- p95 exceeds the greater of 120% of baseline or baseline plus 50 ms;
+- peak RSS exceeds the greater of 115% of baseline or baseline plus 16 MiB;
+- imported-module count exceeds the greater of 110% of baseline or baseline
+  plus 10 modules; or
+- any one-hop bridge causes a second implementation import or the cumulative
+  bridge count/cost is absent from evidence.
+
+Thresholds may change only in the concrete digest-bound child with measured
+variance and reviewer approval; a noisy result is retried as a complete matrix,
+never by dropping a failed sample.
+
+For Web development compatibility, root precedence selects exactly one source
+root before recursive stat or build checks. A build cache key binds selected
+root identity, lockfile, package manager/Node/Vite versions and sorted source
+digest; it never combines legacy and target roots. Cache records are immutable,
+retain at most three generations and 2 GiB, and use LRU eviction only for
+unselected/unreferenced builds. The no-change launcher check must remain within
+the greater of 120% of baseline or baseline plus 500 ms; cold build remains
+within 15 minutes; incremental build must remain within the greater of 125% of
+baseline or baseline plus 5 seconds. Cache-key, invalidation, no-change, cold,
+incremental and stale-output fixtures are gates for the Web child.
 
 ## Observability and Operations
 
@@ -1017,9 +1247,24 @@ The package/build authority guard owns immutable evidence-manifest generation.
 Owner Interface adapters expose bounded compatibility-use observations only at
 already-owned CLI, ASGI, SDK, scheduler, event and import facades; compatibility
 module import itself performs no network, file or metric I/O. The deployment
-observability adapter owns population coverage and retention in the existing
-operator telemetry system. The cleanup child consumes
-`BridgeUseCoverageRef`; it does not infer zero from missing observations.
+observability adapter is not currently repository-grounded. Therefore dynamic
+bridge coverage is initially `unavailable`, and retirement remains blocked.
+The mandatory `layout-bridge-observability` prerequisite child must name the
+actual producer module, nonblocking queue/exporter, collector, deployment
+population source, retention owner and read adapter before any observation can
+be classified `complete`. The cleanup child consumes `BridgeUseCoverageRef`; it
+does not infer zero from missing observations.
+
+That prerequisite uses closed consumer classes
+`cli|http|sdk|scheduler|event|import` and outcomes
+`used|delegation_failed|unsupported`; arbitrary values are rejected. It
+aggregates at least one minute locally, retains no arguments or payloads,
+permits at most 512 active bridges, eight retained generations and 20,000
+active series, limits each process to 1,000 observation increments per second,
+and retains aggregate evidence for at least 90 days. Any overflow, drop,
+unknown class, missing interval or unhealthy collector increments a bounded
+overflow counter, changes coverage to `partial`, and blocks retirement without
+blocking the request/import path.
 
 No new business database, artifact catalog or shared runtime facade is used for
 these records. If a deployment has no approved observability adapter, bridge
@@ -1046,6 +1291,9 @@ and JSON output expose:
 - compatibility bridge owner, population coverage, age, last observed use and
   deadline;
 - independent migration, execution, failure and rollback states;
+- selector revision/fence, activation phase and reconciliation state;
+- shutdown stage, signal escalation, residual process/thread counts and
+  forced-exit receipt;
 - tool exit code, operator action and partial-evidence ref;
 - whether validation or rollout stopped early and why.
 
@@ -1061,6 +1309,8 @@ empty expected set.
 ### Architecture and package
 
 - static dependency and module-authority guards;
+- deployment selector store schema, permission, atomicity, fencing,
+  idempotency, corruption and retention tests in a temporary explicit root;
 - source/editable/clean-wheel imports;
 - wheel member allowlist and origin checks;
 - old/new import-order and concurrency fixtures;
@@ -1070,22 +1320,39 @@ empty expected set.
 ### HTTP and Web
 
 - ASGI factory/reload and runtime child subprocess smoke;
+- parent death before and after child spawn, descendants that ignore TERM,
+  process-group KILL escalation, reload-supervisor teardown, cleanup-failure
+  classification and zero residual PID fixtures;
 - complete route registry and OpenAPI failure/success baseline;
 - payload/error/SSE/capability goldens;
 - Vite typecheck, unit, build and bundle checks;
+- unique-root build-cache key/invalidation and no-change/cold/incremental
+  performance gates;
 - manifest/asset/root/SPA deep-link smoke;
 - Playwright desktop/mobile checks remain owned by product UI changes.
 
 ### SDK, notebook and native
 
 - clean installed SDK/notebook run using temporary immutable fixtures;
-- prohibited repo scan/path/adapters checks;
+- a release-race fixture proving one pinned snapshot/run/release/artifact
+  generation across context, bars, findings and research queries or an explicit
+  stale/conflict failure;
+- semantic old/new assertions for snapshot ID, run/release lineage, artifact
+  hashes, knowledge mode/cut, revision policy, quality and lifecycle state in
+  addition to shape goldens;
+- prohibited repo scan/path/adapters checks with an explicitly injected
+  temporary root; unset roots and DB/parquet/socket/provider access outside it
+  fail before open;
 - native absent/present import tests;
 - CMake build/ctest and Context-owned C++/Python differential fixtures.
 
 ### Repository and delivery
 
 - existing test collection count before/after every test-layout slice;
+- scheduler temporal registration and event/news classification guards before
+  those files can move;
+- startup/import/RSS/module-count, shared-index current/10x and global-resource
+  contention performance checks;
 - `python -m compileall` for both package roots and tests;
 - `./trade dev check --show-plan`, `./trade dev check`;
 - focused frontend and C++ checks as applicable;
@@ -1126,6 +1393,36 @@ Required package/layout fixtures include:
 - migration generation rollback fixture;
 - bridge usage/retirement guard.
 
+## Persistent-write safety
+
+The only new durable write surface is the explicit deployment layout control
+store. `tools/layout_control` is the sole selector/operation writer; the
+deployment service manager writes only its own fenced process receipt. Context,
+Interface, compatibility and read-only status code cannot write this root.
+Every attempt is keyed by scope plus operation ID and immutable plan digest.
+
+Per-scope locks serialize complete predecessor validation and selector CAS.
+Canonical bounded JSON is staged in the destination directory, flushed,
+fsynced, atomically replaced and followed by directory fsync. Immutable
+receipts use create-exclusive names and content-digest verification. A reader
+observes one predecessor or successor selector and validates its digest and
+revision; it cannot observe partial JSON.
+
+Crash windows and reconciliation are specified by the durable activation
+phases above. Corrupt, symlinked, oversized, inconsistent or ambiguous
+predecessor state is preserved and blocks mutation. A partial operation never
+advances module authority, and rollback allocates a new revision instead of
+rewinding or deleting audit history. Temporary-root tests inject failure before
+and after every write/sync/replace/restart/verification boundary and verify
+selector digest, monotonic revision, process fencing and retained receipts.
+
+The control root contains no business data and requires an explicit absolute
+path. Backup verification copies the bounded selector/operation/evidence tree
+to a temporary root, verifies every canonical digest and reference, and proves
+that the current and retained prior generation can be diagnosed. Code rollback
+does not delete or decrement durable selector state; decommission is a separate
+reviewed deployment operation after all selectors and bridge references retire.
+
 ## Migration Phases
 
 ### Phase 0: prerequisites and frozen evidence
@@ -1139,53 +1436,72 @@ contract; otherwise remain legacy.
 ### Phase 1: package discovery and authority guard
 
 Prove dual-root source/editable/wheel installation and add deterministic
-authority/forbidden-dependency checks. Preserve all entrypoints.
+authority/forbidden-dependency checks, evidence schemas, shared tree index and
+read-only diagnostics. Preserve all entrypoints. This phase neither writes a
+deployment selector nor changes module/root authority.
 
 Exit: wheel/member/origin/console matrix passes with no target business move.
 
-### Phase 2: native namespace isolation
+### Phase 2: layout control-plane child
+
+Implement the deployment selector store, linearizable revision-fenced CAS,
+activation journal, service-manager process receipts, recovery reconciler,
+retention and explicit operator commands under a separately reviewed child.
+
+Exit: temporary deployment roots prove concurrent CAS, lost response, crash at
+each phase, stale-process fencing, corrupt-state refusal, forward-revision
+rollback and read-only status. No business slice is activated by this proof.
+
+### Phase 3: native namespace isolation
 
 Reconcile binding sources, build `_trade_native`, add adapter-only guard and
-differential tests. Keep native optional.
+differential tests through its mandatory concrete child. Keep native optional.
 
 Exit: no package collision; absent/present states explicit.
 
-### Phase 3: owner-ready Python modules
+### Phase 4: owner-ready Python modules
 
-Move one bounded owner slice into `src/trade`, update target-internal imports,
-replace old modules with explicit forwarders and verify module authority.
+For each bounded owner slice, first create a strict-approved child containing
+its exact manifest, prerequisite SHAs, inventory, authority record, selectors,
+rollback commands and focused topology. Then move that slice into `src/trade`,
+update target-internal imports, replace old modules with explicit forwarders
+and verify module authority.
 
 Exit: one implementation authority, legacy snapshots pass, rollback tested.
 
-### Phase 4: SDK and notebook
+### Phase 5: SDK and notebook
 
 Expose the approved installed SDK and move the paired notebook to
-`examples/notebooks` only after a clean external run.
+`examples/notebooks` only after a clean external run, a pinned-generation race
+test and semantic lineage parity.
 
 Exit: no `sys.path`, repo scan, direct parquet, repository or adapter import.
 
-### Phase 5: ASGI/backend
+### Phase 6: ASGI/backend
 
-Move only already-extracted HTTP/BFF and Bootstrap components. Retain
-`trade_web:create_app` and runtime child compatibility modules.
+Through its mandatory concrete child, move only already-extracted HTTP/BFF and
+Bootstrap components. Retain `trade_web:create_app` and runtime child
+compatibility modules.
 
 Exit: complete HTTP/ASGI/reload/lifecycle parity and one runtime owner.
 
-### Phase 6: frontend
+### Phase 7: frontend
 
-Move the Vite workspace to `web/`, update tooling/default discovery and retain
-explicit old-root rollback.
+Through an independent child, move the Vite workspace to `web/`, update
+tooling/default discovery and retain explicit old-root rollback. Default-root
+activation is digest-bound independently from the physical move.
 
 Exit: typecheck/unit/build/bundle/assets/dev proxy/FastAPI host pass.
 
-### Phase 7: tools/examples/tests
+### Phase 8: tools/examples/tests
 
 Classify root scripts individually and migrate test categories without changing
-business behavior or collection silently. Extract governed historical facts.
+business behavior or collection silently. Each topology mutation uses a
+concrete child. Extract governed historical facts.
 
 Exit: all moved paths have a non-cosmetic disposition.
 
-### Phase 8: retirement
+### Phase 9: retirement
 
 Owned by `tests-and-legacy-cleanup`. Remove a bridge only after its minimum
 30-day compatibility window, zero observed supported use for the full window,
@@ -1208,6 +1524,9 @@ coverage and blocks retirement.
 |---|---|---|
 | duplicate module objects or singleton owners | P0 | explicit authority records and import-order/process tests |
 | source checkout hides broken wheel | P0 | clean-wheel environment outside repository |
+| concurrent selector writers or delayed controller | P0 | revision-fenced linearizable CAS and stale-reader refusal |
+| crash between selector, restart and evidence | P0 | durable operation phases and startup reconciliation |
+| corrupt selector or ambiguous process generation | P0 | fail closed, preserve state, explicit operator decision |
 | ASGI reload/child string breaks | P0 | retain legacy strings and process smoke |
 | second Bootstrap/shutdown owner | P0 | compatibility factory delegates only; lifecycle tests |
 | native initializer/output mismatch | P0 | reconcile source/target/output before enablement |
@@ -1216,6 +1535,10 @@ coverage and blocks retirement.
 | frontend built but assets not served | P1 | manifest, path, SPA and FastAPI host smoke |
 | string monkeypatch/dynamic consumer missed | P1 | source inventory plus runtime import tests |
 | old script accidentally executed after movement | P1 | no movement until owner/safety classification |
+| SDK handle mixes moving generations | P1 | pin one immutable generation and race-test semantic lineage |
+| compatibility degrades startup/CI cost | P1 | enforce p95/RSS/module/index/build/resource budgets |
+| schedule/news time semantics drift | P1 | temporal classification and owner prerequisite before movement |
+| telemetry cardinality or collector gap hides use | P1 | closed bounds; overflow/absence blocks retirement |
 | bridge never retired | P2 | age/use/owner/deadline report and cleanup child |
 | historical document removed prematurely | P2 | reference/provenance/retention ledger |
 
@@ -1224,18 +1547,21 @@ coverage and blocks retirement.
 Rollback is generation-based and per slice:
 
 1. stop advancing the affected migration record;
-2. verify the expected current generation, then execute the exact
-   `LayoutActivationPlanV1` rollback for only the affected scope;
+2. recover the operation journal and current selector generation/revision;
+   if state is unambiguous, create a new rollback operation and execute the
+   exact `LayoutActivationPlanV1` rollback for only the affected scope;
 3. restore the legacy forwarder as implementation only if it was the prior
    authoritative generation;
 4. for Python/ASGI select the retained prior immutable deployment generation;
    for Web set the prior `WebBuildRef` directory through the documented
    precedence; for native select the prior generation or disable only the owner
-   adapter;
+   adapter. Every rollback CAS increments revision and fences the failed
+   generation;
 5. restart the affected process generation and run `./trade dev layout-status
    --json` plus the scope-specific contract checks;
-6. require observed selector, authority and digest to equal the rollback target;
-   otherwise mark `rollback_state=failed`, halt rollout and escalate P0;
+6. require observed selector generation/revision, process receipt, authority
+   and digest to equal the rollback target; otherwise mark
+   `rollback_state=failed`, halt rollout and escalate P0;
 7. retain failed target files and both evidence manifests for diagnosis or
    revert the isolated commit;
 8. do not alter databases or immutable business artifacts.
@@ -1257,14 +1583,27 @@ implementation consumes, rather than duplicates:
 6. `cli-http-sdk-compatibility`;
 7. `btc-observation-analysis-ui-v1`.
 
-If the implementation exceeds one reviewable PR, create ordered implementation
-children without changing this ADR:
+This parent implementation is limited to additive package discovery proof,
+schemas/validators, deterministic source inventory/authority guards and
+read-only status. The following ordered implementation children are mandatory,
+not conditional on PR size:
 
-1. `package-authority-and-native-isolation`;
-2. `owner-ready-python-layout-slices`;
-3. `http-bootstrap-layout-compatibility`;
-4. `web-workspace-layout`;
-5. `tool-example-test-layout`;
+1. `layout-selector-control-plane`;
+2. `native-module-isolation`;
+3. one `owner-<name>-python-layout-slice` per bounded owner transfer;
+4. `sdk-notebook-layout-compatibility`;
+5. `http-bootstrap-layout-compatibility`;
+6. `web-workspace-physical-layout`;
+7. `web-workspace-default-activation`;
+8. one `tool-example-test-layout-<scope>` per bounded topology mutation;
+9. `layout-bridge-observability` before dynamic coverage may be complete.
+
+Each child freezes its exact files/exports, source and prerequisite SHAs,
+consumer/tree index, authority and deployment refs, selector revisions,
+activation/rollback argv, performance baseline, focused tests and rollback
+topology before code. It runs its own six-role review and strict approval. The
+native, ASGI, frontend-default and test-topology children may not be folded
+into an owner slice.
 
 Final bridge removal stays in `tests-and-legacy-cleanup`.
 
@@ -1273,10 +1612,12 @@ Final bridge removal stays in `tests-and-legacy-cleanup`.
 Rollout is off by default for each module/root until its shadow evidence passes.
 There is no global flag that switches every package at once. Package generation,
 ASGI factory and Web build selectors are independently reversible. Deployment
-first creates `LayoutActivationPlanV1`, verifies a canary/temporary immutable
-generation, confirms the expected-current selector, atomically enables one
-bounded slice, verifies `MigrationEvidenceRef`, then observes compatibility and
-only later permits cleanup.
+first creates `LayoutActivationPlanV1` and a `prepared` receipt, verifies a
+canary/temporary immutable generation, confirms expected selector generation
+and revision, commits one revision-fenced CAS, records the matching process
+start, verifies `MigrationEvidenceRef`, then observes compatibility and only
+later permits cleanup. A crash resumes by operation ID before another mutation
+is admitted.
 
 The old root remains installed and importable for at least 30 days after target
 authority for that contract, unless a later reviewed public-contract policy

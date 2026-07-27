@@ -8,8 +8,8 @@ reason = "The child governs the installed distribution and import namespaces, ro
 
 [[impacts]]
 id = "persistent_write"
-applies = false
-reason = "Package builds, wheel manifests, Web builds and validation reports are developer or CI artifacts only; the child introduces no runtime database, parquet, manifest, catalog, pointer, outbox, cache or business-artifact writer and all tests use temporary roots."
+applies = true
+reason = "Real layout activation requires a new isolated deployment control store containing revision-fenced per-scope selectors, idempotent operation phases, process receipts and immutable evidence. It is not business data and its mutable controller is delivered by a separately strict-approved child, but this architecture owns its durable safety contract."
 
 [[impacts]]
 id = "schema_migration"
@@ -43,15 +43,30 @@ compatibility = "Every existing public command, import, ASGI string, URL, method
 migration = "First prove source/editable/clean-wheel dual discovery and authority guards; then isolate `_trade_native`; then migrate only owner-ready bounded Python slices; then installed SDK/notebook, owner-ready ASGI/BFF/Bootstrap and the Vite workspace. Each slice keeps the old path and independent rollback selector for at least the compatibility window."
 rollback = "Select and reinstall the immediately preceding package, ASGI, Web-build or native generation, restore the prior authority/forwarding state, rerun its contract matrix and retain every database and immutable business artifact. A failed slice never requires reverting earlier semantic Context migrations."
 
+[evidence.storage]
+authoritative_writer = "The deployment layout controller behind LayoutSelectorStore is the sole selector and operation-phase writer under an explicitly configured absolute deployment control root; the deployment service manager writes only its own generation/revision-fenced process receipt. Contexts, interfaces, compatibility modules and layout-status are read-only, and no TradeDB or business artifact is used."
+idempotency_key = "Scope plus operation_id and immutable LayoutActivationPlanV1 digest identify one attempt. Repeating identical inputs returns the already committed SelectorRef, while reuse with different generation, expected revision, argv digest or evidence ref is a conflict."
+concurrency_control = "One exclusive per-scope lock serializes complete predecessor validation and selector CAS. CAS compares expected generation and expected monotonic revision, allocates exactly revision plus one, and every process/start/verify reader rejects a stale fence. The POSIX adapter is allowed only on a shared filesystem with documented linearizable flock and atomic-rename semantics."
+staging_validation = "The controller validates explicit absolute root isolation, owner-only modes, bounded scope and operation identities, regular non-symlink predecessors, canonical schema, payload digest, expected generation/revision, immutable artifact and plan refs, and exact argv digests before staging any selector or receipt."
+atomic_visibility = "Canonical bounded JSON is staged in the destination directory, flushed and fsynced, atomically replaced for selectors, then followed by directory fsync. Immutable phase/process/evidence receipts use create-exclusive digest-addressed names. A reader observes one complete predecessor or successor selector, never partial JSON."
+crash_windows = "Durable prepared, selector_committed, process_started and verified phases cover every activation window. Crash before CAS leaves the predecessor selected; a lost CAS response is recovered by operation ID; crash after CAS resumes the exact start or explicit rollback; crash after start revalidates the current fence before verification."
+corrupt_predecessor = "Malformed, oversized, missing-field, wrong-owner, symlinked, non-regular, digest-mismatched or internally inconsistent selector, operation or process state is preserved and blocks all mutation. PID absence, record age and mtime never authorize repair, takeover or generation guessing."
+partial_results = "Only a verified operation advances module or root authority. Prepared, selector-only, process-started, timed-out, cleanup-incomplete and reconciliation-required attempts remain visible; rollback is a new forward revision and never rewrites failed evidence or decrements a fence."
+reader_consistency = "Layout status and service managers read one digest-verified selector generation/revision. Process and verification receipts must equal the current fence. Current selectors remain indefinitely and referenced prior-generation, operation, evidence and bridge records remain retained for the full rollback/compatibility obligation."
+backup_hash_verification = "Temporary-root backup drills copy the bounded selector, operation, process and evidence tree, reject unsafe members, verify canonical SHA-256 and all references, and prove current and retained prior generations can be diagnosed. No business DB, parquet, provider or package root is included."
+small_sample_verification = "Temporary explicit roots race concurrent activation and rollback, inject lost responses and crashes before and after every stage/write/sync/replace/start/verify boundary, reject stale process receipts and corrupt state, and prove idempotent recovery, monotonic revisions, forward rollback and zero authority advance before verified."
+rollback = "Rollback creates a reviewed operation that CAS-selects the retained prior immutable generation at a new higher revision, starts and verifies that fence, and retains all prior selectors and receipts. Reverting code never deletes, rewinds or silently repairs durable control state."
+audit_trail = "Selector refs and immutable phase, process, verification and rollback receipts retain scope, operation ID, predecessor/target generation and revision, plan/evidence digests, bounded actor identity, UTC observations, typed failure/reconciliation state, shutdown stage/signals/residual counts and canonical record digest without command arguments, stacks, credentials or business payloads."
+
 [evidence.concurrency]
 ownership = "Package validation owns only its spawned build/install/import/console processes and temporary environments; Uvicorn owns server worker/reload processes; Bootstrap remains the sole target runtime composition owner; WebResourceContainer remains the current command/EventBus/DB shutdown owner until its approved Bootstrap migration; each Context native adapter owns its optional `_trade_native` call behind a Port."
-bound = "One module-authority slice is capped at 50 production modules and 500 consumer records. Paths are sorted and never sampled or silently truncated. At most two isolated install environments run concurrently. Default reviewed subprocess budgets are five minutes per package smoke, ten minutes per native build smoke and fifteen minutes per Web build/test smoke, with smaller task-specific deadlines where measured baselines permit."
-ordering = "Freeze the tracked consumer inventory and prerequisite SHAs, prove the target build in shadow mode, verify source/editable/wheel or old/new Web/native parity, install an explicit legacy-to-target forwarder, activate one target authority, observe the compatibility window, and only then hand retirement to cleanup. Runtime shutdown continues to close command and EventBus admission before draining work and closing the DB."
-atomicity = "A migration generation is admitted only when all required build, import, contract and rollback evidence for that slice passes. No partial wheel, target source copy, incomplete Web build or native artifact changes authority. Exactly one implementation and one runtime lifecycle owner are visible per logical module/generation."
-timeout_cancellation = "Every build, install, import, console, ASGI, browser and native check runs with a finite monotonic deadline in an owned process group. Timeout terminates graceful then forced process-tree cleanup, records `timeout` separately from test or tool failure, retains completed evidence and never advances authority. Layout movement preserves current Web shared-deadline and force-exit behavior."
-backpressure = "Inventory and consumer caps reject oversized slices and require deterministic subdivision. Validation uses no unbounded work queue; at most two install environments are active and one migration generation per logical module may be under activation."
-partial_failure = "A failed package member/origin check, duplicate module owner, route/SSE/asset mismatch, reload/child import failure, native differential mismatch, notebook prohibition, unknown consumer or incomplete cleanup leaves the prior generation authoritative. Tool failure, unavailable prerequisite, timeout and contract mismatch remain distinct report states."
-capacity_validation = "Fixtures exercise exact 50/500 limits and one-over refusal, deterministic ordering, source/editable/clean-wheel isolation, import-order and concurrent import identity, duplicate registry/resource detection, two-install concurrency, hung process-tree cleanup, ASGI reload/child import, blocked Web shutdown, manifest asset completeness and optional native absent/present behavior. Ten-times-current candidate input must fail closed into smaller slices rather than truncate."
+bound = "One module-authority slice is capped at 50 production modules and 500 consumer records. One shared index is built per tree/scanner/rules digest. At most two isolated installs and two heavy build/browser/native jobs run concurrently; ordinary workers are min(4, max(1, floor(available_cpu/2))). Aggregate RSS is bounded by min(75% runner memory, 8 GiB), temporary output by 10 GiB and admission wait by two minutes."
+ordering = "Freeze the shared tree index, consumer inventory and prerequisite SHAs; create a digest-bound implementation child; prove target shadow parity and performance; append prepared; CAS selector generation/revision; record matching process start; verify; observe compatibility; then hand retirement to cleanup. Runtime shutdown closes admission before draining work, killing owned descendants when necessary and closing the DB."
+atomicity = "A migration authority advances only after one operation reaches verified with matching selector and process fence. No partial wheel, source copy, Web build, native artifact, selector-only phase or stale process changes authority. Exactly one implementation and one runtime lifecycle owner are visible per logical module/generation."
+timeout_cancellation = "Every build, install, import, console, ASGI, browser and native check runs with a finite monotonic deadline in an owned process group. Timeout sends bounded TERM then KILL to the complete process tree, verifies zero residual PIDs, records timeout separately from cleanup/tool/test failure, retains partial evidence and never advances authority."
+backpressure = "Inventory/consumer and global worker/RSS/disk bounds reject oversized work without sampling. One mutating operation per selector scope holds the lock; admission has a finite wait and there is no unbounded queue. Bridge telemetry overflow changes coverage to partial without blocking application requests."
+partial_failure = "A failed package, authority, performance, route/SSE/asset, reload/process-tree, native, pinned-SDK, temporal, or cleanup check leaves authority unadvanced or starts an explicit forward-revision rollback. Tool failure, unavailable prerequisite, timeout, cleanup failure, contract mismatch, capacity refusal and reconciliation-required remain distinct."
+capacity_validation = "Fixtures cover exact 50/500 and one-over refusal, one shared scan with deterministic partitions, current and synthetic 10x wall/RSS budgets, startup p50/p95/RSS/module-count thresholds, global worker/RSS/disk contention, Web no-change/cold/incremental cache behavior, concurrent selector/rollback races, hung descendant TERM/KILL cleanup, reload teardown, and bounded telemetry overflow."
 
 [[obligations]]
 id = "layout.package"
@@ -90,6 +105,8 @@ failure_states = [
   "unclassified private consumer",
   "CLI or lazy-import regression",
   "premature bridge retirement",
+  "one-hop or cumulative bridge cost exceeds evidence",
+  "startup, RSS or imported-module budget regression",
 ]
 spec_requirements = [
   "python-package-transition:The distribution SHALL expose legacy and target packages through one deterministic build",
@@ -98,7 +115,48 @@ spec_requirements = [
   "python-package-transition:Root and installed CLI contracts SHALL remain compatible",
   "python-package-transition:Compatibility bridges SHALL have measured retirement criteria",
 ]
-validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "2.4", "2.5", "4.1", "4.2", "4.3", "7.2", "7.3", "8.1", "8.2", "8.3"]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "4.1", "4.2", "4.3", "7.2", "7.3", "8.1", "8.2", "8.3"]
+
+[[obligations]]
+id = "layout.control"
+owner = "Deployment layout controller and fenced service-manager receipt adapter"
+paths = [
+  "tools/layout_control/",
+  "trade_py/devtools/",
+  "openspec/changes/layout-selector-control-plane/",
+  "tests/architecture/",
+  "tests/integration/",
+]
+contracts = [
+  "explicit isolated deployment control root",
+  "linearizable generation and revision compare-and-set",
+  "monotonic selector fencing and idempotent operation identity",
+  "durable prepared, selector_committed, process_started and verified receipts",
+  "stale process and controller refusal",
+  "crash reconciliation before new mutation",
+  "immutable evidence retention and read-only status",
+  "forward-revision rollback",
+]
+failure_states = [
+  "stale expected generation or revision",
+  "concurrent activation or rollback conflict",
+  "operation ID reused with different input",
+  "lost selector response",
+  "crash before or after selector commit",
+  "selector committed without matching process",
+  "stale process receipt",
+  "corrupt, symlinked, oversized or ambiguous predecessor",
+  "reconciliation required",
+  "rollback process or verification failure",
+  "premature evidence collection",
+]
+spec_requirements = [
+  "layout-migration-governance:Deployment selector state SHALL be durable, fenced and crash-recoverable",
+  "layout-migration-governance:Every migration slice SHALL be independently reversible",
+  "layout-migration-governance:Migration evidence SHALL bind inventory, activation and outcomes",
+  "layout-migration-governance:Layout status SHALL be read-only, typed and actionable",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.4", "2.5", "2.7", "4.1", "4.2", "6.1", "6.2", "6.3", "8.1", "8.2", "8.3"]
 
 [[obligations]]
 id = "layout.web"
@@ -122,6 +180,8 @@ contracts = [
   "independent backend and frontend rollback generations",
   "exact independently selected immutable deployment and Web build generations",
   "complete bridge-use deployment coverage before retirement",
+  "real process-tree cleanup and bounded shutdown receipt",
+  "unique-root Web cache and build performance budgets",
 ]
 failure_states = [
   "ASGI factory or reload import unavailable",
@@ -134,6 +194,9 @@ failure_states = [
   "backend and frontend rollback coupled",
   "active generation differs from activation plan",
   "bridge coverage missing a supported deployment",
+  "stale deployment selector or process fence",
+  "reload or child descendant survives shutdown",
+  "Web cache mixes legacy and target roots",
 ]
 spec_requirements = [
   "web-layout-transition:The legacy ASGI import SHALL remain a thin compatibility contract",
@@ -142,7 +205,7 @@ spec_requirements = [
   "web-layout-transition:Web product and BFF contracts SHALL not change through layout movement",
   "web-layout-transition:Backend and frontend cutovers SHALL be independently reversible",
 ]
-validation_tasks = ["1.1", "1.2", "1.3", "6.1", "6.2", "6.3", "7.2", "7.3", "8.1", "8.2", "8.3"]
+validation_tasks = ["1.1", "1.2", "1.3", "2.6", "2.7", "6.1", "6.2", "6.3", "7.2", "7.3", "8.1", "8.2", "8.3"]
 
 [[obligations]]
 id = "layout.native"
@@ -203,6 +266,10 @@ contracts = [
   "read-only actionable operator diagnostics",
   "independent generation rollback",
   "no real business data access",
+  "mandatory digest-bound concrete implementation children",
+  "pinned SDK snapshot and semantic lineage parity",
+  "scheduler, event and news temporal classification",
+  "global validation and telemetry capacity bounds",
 ]
 failure_states = [
   "directory name treated as semantic owner",
@@ -218,6 +285,10 @@ failure_states = [
   "layout status mutates runtime or business state",
   "bridge use inferred from incomplete coverage",
   "package or layout test opens real data",
+  "concrete slice selected after strict approval",
+  "SDK handle mixes release generations",
+  "scheduler or news path moves with unknown clock/finality",
+  "validation or telemetry silently truncates after overflow",
 ]
 spec_requirements = [
   "layout-migration-governance:Every current path SHALL have a source-evidenced disposition before movement or retirement",
@@ -227,7 +298,9 @@ spec_requirements = [
   "layout-migration-governance:Migration validation SHALL be bounded, deterministic and process-clean",
   "layout-migration-governance:Migration evidence SHALL bind inventory, activation and outcomes",
   "layout-migration-governance:Every migration slice SHALL be independently reversible",
+  "layout-migration-governance:Deployment selector state SHALL be durable, fenced and crash-recoverable",
+  "layout-migration-governance:Concrete authority changes SHALL have digest-bound implementation children",
   "layout-migration-governance:Layout status SHALL be read-only, typed and actionable",
   "layout-migration-governance:Package and layout operations SHALL not access real business data",
 ]
-validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.3", "2.4", "2.5", "4.1", "4.2", "4.3", "5.1", "5.2", "5.3", "6.1", "6.2", "6.3", "7.1", "7.2", "7.3", "8.1", "8.2", "8.3"]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.3", "2.4", "2.5", "2.6", "2.7", "4.1", "4.2", "4.3", "5.1", "5.2", "5.3", "6.1", "6.2", "6.3", "7.1", "7.2", "7.3", "8.1", "8.2", "8.3"]
