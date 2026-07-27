@@ -619,7 +619,9 @@ Platform/Processes shared transaction.
 The write-side proof is not one global hot counter and does not clone a complete
 manifest on every admission. Platform maintains exactly 16 deterministic
 retention shards. The first four bytes of SHA-256 over the length-framed durable
-dependent identity select one shard modulo 16. The dependent identity's
+dependent identity are interpreted as one unsigned 32-bit big-endian integer;
+that integer modulo 16 selects the shard. Big-endian is part of the V1 contract
+and is not host, database or language dependent. The dependent identity's
 visibility/retirement transaction touches at most its selected shard row for
 the exact registry key, uses at most three CAS attempts under the original
 deadline and fails the dependent transaction closed on exhaustion. Each row

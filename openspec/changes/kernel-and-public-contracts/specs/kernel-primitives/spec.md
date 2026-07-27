@@ -297,8 +297,10 @@ dependent identity, payload, path or codec implementation.
 The future Platform persistence owner SHALL maintain a complete bounded
 `RequiredOwnerCodecManifestV1` instead of proving retention by scanning durable
 projections, replay keys or receipts at startup. Runtime write accounting SHALL
-use exactly 16 Platform-owned retention shards selected by the first four bytes
-of SHA-256 over the length-framed durable dependent identity modulo 16. A
+use exactly 16 Platform-owned retention shards. The selector SHALL interpret the
+first four bytes of SHA-256 over the length-framed durable dependent identity as
+one unsigned 32-bit big-endian integer and take that integer modulo 16. It SHALL
+NOT use host, database or language-native byte order. A
 visibility or retirement transaction SHALL update at most one shard row for
 the referenced registry key, SHALL NOT clone or rewrite the complete manifest,
 and SHALL use at most three CAS attempts under the existing admission
