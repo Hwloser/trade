@@ -12,12 +12,17 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, NoReturn
 
+from trade_py.devtools.layout_status.deadline import InvocationDeadline
 from trade_py.devtools.layout_status.errors import LayoutStatusInvalid, invalid
 
 SCHEMA_VERSION: Final = "trade.layout.record.v1"
 RECORD_TYPES: Final = frozenset(
     {
         "layout_status_manifest",
+        "consumer_inventory",
+        "module_authority",
+        "package_generation",
+        "validation_report",
         "layout_selector_snapshot",
         "operation_status_snapshot",
         "prepared_evidence",
@@ -27,6 +32,8 @@ RECORD_TYPES: Final = frozenset(
 _DIGEST_PREFIX: Final = "sha256:"
 _OPEN_FLAGS: Final = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY_FLAGS: Final = _OPEN_FLAGS | getattr(os, "O_DIRECTORY", 0)
+_LEAF_FLAGS: Final = _OPEN_FLAGS | getattr(os, "O_NONBLOCK", 0)
+_MAX_JSON_DEPTH: Final = 64
 
 
 @dataclass(frozen=True)
@@ -86,22 +93,38 @@ class ExplicitRecordReader:
         *,
         limits: ReaderLimits = _DEFAULT_LIMITS,
         monotonic: Callable[[], float] = time.monotonic,
+        deadline: InvocationDeadline | None = None,
     ) -> None:
-        if not manifest.is_absolute() or any(part in {".", ".."} for part in manifest.parts):
+        raw_manifest = os.fspath(manifest)
+        if (
+            _contains_terminal_control(raw_manifest)
+            or not manifest.is_absolute()
+            or any(part in {".", ".."} for part in manifest.parts)
+        ):
             raise invalid(
                 "layout.status.manifest_not_absolute",
-                "TRADE_LAYOUT_STATUS_MANIFEST must be a normalized absolute path.",
+                (
+                    "TRADE_LAYOUT_STATUS_MANIFEST must be a normalized absolute path "
+                    "without control characters."
+                ),
             )
         self._manifest = manifest
         self._root = manifest.parent
         self._limits = limits
-        self._monotonic = monotonic
-        self._deadline = float(monotonic()) + limits.deadline_seconds
+        self._deadline = deadline or InvocationDeadline(
+            seconds=limits.deadline_seconds,
+            monotonic=monotonic,
+        )
         self._aggregate_bytes = 0
+
+    @property
+    def deadline(self) -> InvocationDeadline:
+        return self._deadline
 
     def read(self) -> EvidenceGraph:
         pending: list[tuple[str, str | None, int]] = [(self._manifest.name, None, 0)]
         records: dict[str, EvidenceRecord] = {}
+        record_ids: dict[str, str] = {}
         expected_digests: dict[str, str] = {}
         while pending:
             self._check_deadline()
@@ -132,7 +155,7 @@ class ExplicitRecordReader:
             else:
                 expected_digests[relative] = ""
             payload = self._read_relative(relative)
-            record = parse_record(payload, path=relative)
+            record = parse_record(payload, path=relative, deadline=self._deadline)
             if expected_digest is not None and record.record_digest != expected_digest:
                 self._raise(
                     "layout.status.reference_digest",
@@ -146,6 +169,14 @@ class ExplicitRecordReader:
                     "One evidence digest is stored under multiple explicit paths.",
                     relative,
                 )
+            prior_id_path = record_ids.get(record.record_id)
+            if prior_id_path is not None and prior_id_path != relative:
+                self._raise(
+                    "layout.status.duplicate_record_id",
+                    "Evidence record IDs must be unique within one explicit graph.",
+                    relative,
+                )
+            record_ids[record.record_id] = relative
             records[record.record_digest] = record
             for reference in reversed(record.references):
                 pending.append((reference.path, reference.digest, depth + 1))
@@ -157,7 +188,8 @@ class ExplicitRecordReader:
                 "The selected root is not a layout status manifest.",
                 self._manifest.name,
             )
-        _assert_acyclic(records.values(), root.path)
+        _assert_acyclic(records.values(), root.path, deadline=self._deadline)
+        self._check_deadline()
         return EvidenceGraph(
             root=root,
             records=tuple(sorted(records.values(), key=lambda item: item.path)),
@@ -174,7 +206,7 @@ class ExplicitRecordReader:
                 next_fd = os.open(component, _DIRECTORY_FLAGS, dir_fd=directory_fd)
                 os.close(directory_fd)
                 directory_fd = next_fd
-            file_fd = os.open(components[-1], _OPEN_FLAGS, dir_fd=directory_fd)
+            file_fd = os.open(components[-1], _LEAF_FLAGS, dir_fd=directory_fd)
             try:
                 metadata = os.fstat(file_fd)
                 if not stat.S_ISREG(metadata.st_mode):
@@ -244,27 +276,29 @@ class ExplicitRecordReader:
         return payload
 
     def _check_deadline(self) -> None:
-        if float(self._monotonic()) > self._deadline:
-            self._raise(
-                "layout.status.deadline",
-                "Layout evidence validation exceeded five seconds.",
-                None,
-            )
+        self._deadline.check()
 
     @staticmethod
     def _raise(code: str, message: str, record: str | None) -> NoReturn:
         raise invalid(code, message, record=record)
 
 
-def parse_record(raw: bytes, *, path: str) -> EvidenceRecord:
+def parse_record(
+    raw: bytes,
+    *,
+    path: str,
+    deadline: InvocationDeadline | None = None,
+) -> EvidenceRecord:
+    _check(deadline)
     try:
+        _validate_json_depth(raw, path=path, deadline=deadline)
         text = raw.decode("utf-8", "strict")
         decoded = json.loads(
             text,
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise invalid(
             "layout.status.record_json",
             "A selected evidence record is not canonical finite JSON.",
@@ -313,14 +347,22 @@ def parse_record(raw: bytes, *, path: str) -> EvidenceRecord:
             record=path,
         )
     references = _parse_references(decoded["references"], path)
-    canonical = canonical_record_digest(decoded)
+    _check(deadline)
+    try:
+        canonical = canonical_record_digest(decoded)
+        canonical_payload = canonical_json(decoded)
+    except (RecursionError, ValueError) as exc:
+        raise invalid(
+            "layout.status.record_json",
+            "A selected evidence record exceeds canonical JSON limits.",
+            record=path,
+        ) from exc
     if record_digest != canonical:
         raise invalid(
             "layout.status.record_digest",
             "Evidence record content does not match its canonical digest.",
             record=path,
         )
-    canonical_payload = canonical_json(decoded)
     if len(canonical_payload) > 256 * 1024:
         raise invalid(
             "layout.status.record_size",
@@ -333,6 +375,7 @@ def parse_record(raw: bytes, *, path: str) -> EvidenceRecord:
             "Evidence records must use canonical JSON encoding.",
             record=path,
         )
+    _check(deadline)
     return EvidenceRecord(
         record_type=record_type,
         record_id=record_id,
@@ -396,6 +439,7 @@ def _validate_relative_path(raw: str) -> PurePosixPath:
     path = PurePosixPath(raw)
     if (
         not raw
+        or _contains_terminal_control(raw)
         or path.is_absolute()
         or "\\" in raw
         or any(part in {"", ".", ".."} for part in path.parts)
@@ -408,6 +452,10 @@ def _validate_relative_path(raw: str) -> PurePosixPath:
             record=raw or None,
         )
     return path
+
+
+def _contains_terminal_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 def _required_string(value: dict[str, Any], key: str, path: str) -> str:
@@ -454,12 +502,18 @@ def _reject_constant(value: str) -> NoReturn:
     raise ValueError(f"non-finite JSON number: {value}")
 
 
-def _assert_acyclic(records: Iterable[EvidenceRecord], root_path: str) -> None:
+def _assert_acyclic(
+    records: Iterable[EvidenceRecord],
+    root_path: str,
+    *,
+    deadline: InvocationDeadline | None = None,
+) -> None:
     by_path = {item.path: item for item in records}
     visited: set[str] = set()
     active: set[str] = set()
 
     def visit(path: str) -> None:
+        _check(deadline)
         if path in active:
             raise invalid(
                 "layout.status.reference_cycle",
@@ -482,6 +536,45 @@ def _assert_acyclic(records: Iterable[EvidenceRecord], root_path: str) -> None:
         visited.add(path)
 
     visit(root_path)
+
+
+def _validate_json_depth(
+    raw: bytes,
+    *,
+    path: str,
+    deadline: InvocationDeadline | None,
+) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, value in enumerate(raw):
+        if index % 4096 == 0:
+            _check(deadline)
+        if in_string:
+            if escaped:
+                escaped = False
+            elif value == ord("\\"):
+                escaped = True
+            elif value == ord('"'):
+                in_string = False
+            continue
+        if value == ord('"'):
+            in_string = True
+        elif value in {ord("{"), ord("[")}:
+            depth += 1
+            if depth > _MAX_JSON_DEPTH:
+                raise invalid(
+                    "layout.status.record_json",
+                    "A selected evidence record exceeds the JSON nesting limit.",
+                    record=path,
+                )
+        elif value in {ord("}"), ord("]")}:
+            depth = max(0, depth - 1)
+
+
+def _check(deadline: InvocationDeadline | None) -> None:
+    if deadline is not None:
+        deadline.check()
 
 
 def _open_absolute_directory(path: Path) -> int:

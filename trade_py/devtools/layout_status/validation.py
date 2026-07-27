@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Final, NoReturn
 
 from trade_py.devtools.layout_status.constraints import (
@@ -13,17 +13,26 @@ from trade_py.devtools.layout_status.constraints import (
     ConstraintResult,
     LayoutStatusConstraintsV1,
 )
+from trade_py.devtools.layout_status.deadline import InvocationDeadline
 from trade_py.devtools.layout_status.errors import invalid
 from trade_py.devtools.layout_status.records import EvidenceGraph, EvidenceRecord
 from trade_py.devtools.layout_status.schema import (
+    ConsumerInventorySnapshot,
     LayoutSelectorSnapshotV1,
     MigrationEvidenceRef,
+    ModuleAuthoritySnapshot,
     OperationStatusSnapshotV1,
+    PackageGenerationSnapshot,
     PreparedEvidenceRef,
+    ValidationReportSnapshot,
+    parse_authority,
+    parse_inventory,
     parse_migration,
     parse_operation,
+    parse_package,
     parse_prepared,
     parse_selector,
+    parse_validation_report,
 )
 
 _MANIFEST_KEYS: Final = {
@@ -120,6 +129,10 @@ class LayoutStatusSummary:
 @dataclass(frozen=True)
 class ValidatedLayoutStatus:
     summary: LayoutStatusSummary
+    inventory: ConsumerInventorySnapshot
+    authority: ModuleAuthoritySnapshot
+    package: PackageGenerationSnapshot
+    validation_report: ValidationReportSnapshot
     selector: LayoutSelectorSnapshotV1
     operation: OperationStatusSnapshotV1
     prepared: PreparedEvidenceRef
@@ -129,19 +142,39 @@ class ValidatedLayoutStatus:
     aggregate_bytes: int
 
 
-def validate_graph(graph: EvidenceGraph) -> ValidatedLayoutStatus:
+def validate_graph(
+    graph: EvidenceGraph,
+    *,
+    deadline: InvocationDeadline | None = None,
+) -> ValidatedLayoutStatus:
+    _check_deadline(deadline)
     manifest = _manifest(graph.root)
     summary = _summary(manifest, graph.root)
     references = {item.name: item.digest for item in graph.root.references}
-    required = {"selector", "operation", "prepared"}
+    required = {
+        "inventory",
+        "authority",
+        "package",
+        "validation_report",
+        "selector",
+        "operation",
+        "prepared",
+    }
     reference_names = set(references)
     if reference_names != required and reference_names != required | {"migration"}:
         _fail(
             graph.root,
             "layout.status.manifest_references",
-            "Manifest must reference selector, operation, prepared, and optional migration records.",
+            (
+                "Manifest must reference inventory, authority, package, validation report, "
+                "selector, operation, prepared, and optional migration records."
+            ),
         )
 
+    inventory = parse_inventory(graph.by_digest(references["inventory"]))
+    authority = parse_authority(graph.by_digest(references["authority"]))
+    package = parse_package(graph.by_digest(references["package"]))
+    validation_report = parse_validation_report(graph.by_digest(references["validation_report"]))
     _match_manifest_reference(manifest, "selector_ref", references["selector"], graph.root)
     _match_manifest_reference(manifest, "operation_ref", references["operation"], graph.root)
     _match_manifest_reference(manifest, "prepared_evidence_ref", references["prepared"], graph.root)
@@ -163,12 +196,30 @@ def validate_graph(graph: EvidenceGraph) -> ValidatedLayoutStatus:
     migration = (
         parse_migration(graph.by_digest(migration_digest)) if migration_digest is not None else None
     )
-    facts = _cross_record_facts(selector, operation, prepared, migration)
+    _check_deadline(deadline)
+    facts = _cross_record_facts(
+        summary,
+        inventory,
+        authority,
+        package,
+        validation_report,
+        selector,
+        operation,
+        prepared,
+        migration,
+    )
     constraints = LayoutStatusConstraintsV1.evaluate(
         operation.axes,
         supplied_action=operation.operator_action,
         facts=facts,
-        additional_classifications=_summary_classifications(summary),
+        additional_classifications=_summary_classifications(
+            summary,
+            inventory,
+            authority,
+            validation_report,
+            prepared,
+            operation,
+        ),
     )
     if constraints.exit_code == 2 and not constraints.violations:
         _fail(
@@ -176,9 +227,24 @@ def validate_graph(graph: EvidenceGraph) -> ValidatedLayoutStatus:
             "layout.status.constraints",
             "Layout status constraints rejected evidence without a typed violation.",
         )
-    _validate_manifest_identity(summary, selector, prepared, operation, graph.root)
+    _validate_manifest_identity(
+        summary,
+        inventory,
+        authority,
+        package,
+        validation_report,
+        selector,
+        prepared,
+        operation,
+        graph.root,
+    )
+    _check_deadline(deadline)
     return ValidatedLayoutStatus(
         summary=summary,
+        inventory=inventory,
+        authority=authority,
+        package=package,
+        validation_report=validation_report,
         selector=selector,
         operation=operation,
         prepared=prepared,
@@ -190,11 +256,17 @@ def validate_graph(graph: EvidenceGraph) -> ValidatedLayoutStatus:
 
 
 def _cross_record_facts(
+    summary: LayoutStatusSummary,
+    inventory: ConsumerInventorySnapshot,
+    authority: ModuleAuthoritySnapshot,
+    package: PackageGenerationSnapshot,
+    validation_report: ValidationReportSnapshot,
     selector: LayoutSelectorSnapshotV1,
     operation: OperationStatusSnapshotV1,
     prepared: PreparedEvidenceRef,
     migration: MigrationEvidenceRef | None,
 ) -> ConstraintFacts:
+    receipt_identities_match = _receipt_identities_match(operation, prepared)
     identities_match = (
         selector.operation_id == operation.operation_id == prepared.operation_id
         and operation.attempt_id == prepared.attempt_id
@@ -203,17 +275,35 @@ def _cross_record_facts(
         and selector.prepared_evidence_ref == prepared.record_digest
         and selector.predecessor_generation == prepared.expected_generation
         and selector.predecessor_revision == prepared.expected_revision
-        and selector.fence > prepared.expected_fence
+        and selector.fence == prepared.expected_fence + 1
         and selector.generation == prepared.intended_target_generation
         and operation.process.deployment_unit == prepared.deployment_unit
         and operation.process.invocation_token == prepared.invocation_token
-        and operation.process.generation == selector.generation
-        and operation.process.revision == selector.revision
-        and operation.process.fence == selector.fence
         and operation.rollback.plan_scope == selector.scope
+        and inventory.record_digest in prepared.immutable_input_refs
+        and authority.record_digest in prepared.immutable_input_refs
+        and package.record_digest in prepared.immutable_input_refs
+        and validation_report.record_digest in prepared.immutable_input_refs
+        and authority.consumer_inventory_ref == inventory.record_digest
+        and authority.activation_plan_digest == prepared.activation_plan_digest
+        and receipt_identities_match
     )
+    if operation.axes.reconciliation_state == "fenced_teardown":
+        identities_match = identities_match and (
+            operation.process.fence < selector.fence
+            and operation.process.generation == selector.predecessor_generation
+            and operation.process.revision == selector.predecessor_revision
+        )
+    else:
+        identities_match = identities_match and (
+            operation.process.generation == selector.generation
+            and operation.process.revision == selector.revision
+            and operation.process.fence == selector.fence
+        )
     phases_ordered = _phase_consistency(operation, migration)
-    receipts_valid = _receipt_consistency(operation)
+    receipts_valid = _receipt_consistency(operation, migration) and _operation_consistency(
+        operation
+    )
     rollback_target_valid = _rollback_consistency(operation, selector)
     if migration is not None:
         identities_match = identities_match and (
@@ -221,6 +311,11 @@ def _cross_record_facts(
             and migration.attempt_id == operation.attempt_id
             and migration.scope == operation.scope
             and migration.prepared_evidence_ref == prepared.record_digest
+            and migration.operation_status_ref == operation.record_digest
+            and migration.consumer_inventory_ref == inventory.record_digest
+            and migration.module_authority_ref == authority.record_digest
+            and package.record_digest in migration.artifact_refs
+            and migration.report_entries_digest == validation_report.report_entries_digest
             and migration.activation_plan_digest == selector.plan_digest
             and migration.source_commit == prepared.source_commit
             and migration.source_tree_digest == prepared.source_tree_digest
@@ -233,6 +328,11 @@ def _cross_record_facts(
             and migration.selector_after.revision == selector.revision
             and migration.selector_after.fence == selector.fence
             and migration.typed_outcomes == operation.axes
+            and migration.command_digests == prepared.command_digests
+            and (
+                operation.partial_evidence_ref is None
+                or operation.partial_evidence_ref in migration.partial_evidence_refs
+            )
         )
     return ConstraintFacts(
         receipts_valid=receipts_valid,
@@ -251,11 +351,38 @@ def _phase_consistency(
             "verified",
             "failed",
             "rollback_verified",
-        }
-    return operation.activation_phase == migration.phases[-1]
+        } and operation.axes.migration_state not in {"target_authoritative", "retireable"}
+    if operation.activation_phase != migration.phases[-1]:
+        return False
+    if migration.terminal_outcome == "verified":
+        return (
+            operation.axes.execution_state == "passed"
+            and operation.axes.failure_class == "none"
+            and operation.axes.rollback_state == "not_required"
+            and operation.axes.startup_state in {"started_healthy", "started_degraded"}
+        )
+    if migration.terminal_outcome == "failed":
+        return (
+            operation.axes.execution_state in {"failed", "stopped"}
+            and (
+                operation.axes.failure_class != "none"
+                or operation.axes.reconciliation_state == "fenced_teardown"
+            )
+            and operation.axes.migration_state not in {"target_authoritative", "retireable"}
+        )
+    return (
+        migration.terminal_outcome == "rolled_back"
+        and operation.axes.execution_state in {"failed", "stopped"}
+        and operation.axes.failure_class != "none"
+        and operation.axes.rollback_state == "succeeded"
+        and operation.axes.migration_state not in {"target_authoritative", "retireable"}
+    )
 
 
-def _receipt_consistency(operation: OperationStatusSnapshotV1) -> bool:
+def _receipt_consistency(
+    operation: OperationStatusSnapshotV1,
+    migration: MigrationEvidenceRef | None,
+) -> bool:
     process = operation.process
     shutdown = operation.shutdown
     reconciliation = operation.axes.reconciliation_state
@@ -265,6 +392,25 @@ def _receipt_consistency(operation: OperationStatusSnapshotV1) -> bool:
         or shutdown.residual_thread_count != 0
     ):
         return False
+    if shutdown.stage == "complete" and not shutdown.complete:
+        return False
+    if shutdown.complete and process.matching_live_instances != 0:
+        return False
+    if (
+        operation.axes.startup_state in {"started_healthy", "started_degraded"}
+        and process.matching_live_instances != 1
+    ):
+        return False
+    if operation.axes.startup_state in {"started_healthy", "started_degraded"} and (
+        shutdown.stage != "not_started"
+        or shutdown.signal_escalation != "none"
+        or shutdown.residual_process_count != 0
+        or shutdown.residual_thread_count != 0
+        or shutdown.forced_exit_receipt
+        or shutdown.complete
+        or process.zero_live_descendants
+    ):
+        return False
     if shutdown.signal_escalation == "term_kill" and not shutdown.forced_exit_receipt:
         return False
     if operation.axes.failure_class == "process_cleanup_incomplete" and (
@@ -272,31 +418,102 @@ def _receipt_consistency(operation: OperationStatusSnapshotV1) -> bool:
         or (shutdown.residual_process_count == 0 and shutdown.residual_thread_count == 0)
     ):
         return False
+    receipts = process.receipts
+    starts = tuple(item for item in receipts if item.receipt_type == "process_started")
+    absences = tuple(item for item in receipts if item.receipt_type == "terminal_absence")
+    teardowns = tuple(item for item in receipts if item.receipt_type == "teardown")
+    if (
+        operation.activation_phase in {"process_started", "verified", "rollback_verified"}
+        and not starts
+    ):
+        return False
+    if operation.activation_phase == "verified" and (
+        migration is None
+        or migration.terminal_outcome != "verified"
+        or len(starts) != 1
+        or process.matching_live_instances != 1
+    ):
+        return False
     if reconciliation == "adopted":
         return (
-            process.process_started_receipt
+            len(starts) == 1
             and process.matching_live_instances == 1
             and operation.activation_phase in {"process_started", "verified"}
         )
     if reconciliation == "absence_proved":
+        if process.matching_live_instances != 0 or not process.zero_live_descendants:
+            return False
+        if not starts:
+            return not absences and not teardowns
         return (
-            process.matching_live_instances == 0
-            and process.zero_live_descendants
-            and (
-                not process.historical_process_started
-                or (process.terminal_receipt and process.terminal_identity_match)
-            )
+            len(starts) == 1
+            and len(absences) == 1
+            and not teardowns
+            and absences[0].supersedes_receipt_id == starts[0].receipt_id
+            and absences[0].live_descendant_count == 0
         )
     if reconciliation == "fenced_teardown":
         return (
-            process.teardown_receipt
-            and process.teardown_identity_match
+            len(starts) <= 1
+            and len(teardowns) == 1
+            and not absences
+            and (not starts or teardowns[0].supersedes_receipt_id == starts[0].receipt_id)
+            and teardowns[0].live_descendant_count == 0
             and process.matching_live_instances == 0
             and process.zero_live_descendants
             and shutdown.complete
             and shutdown.residual_process_count == 0
             and shutdown.residual_thread_count == 0
         )
+    if operation.activation_phase == "verified":
+        return len(starts) == 1 and not absences and not teardowns
+    return True
+
+
+def _operation_consistency(operation: OperationStatusSnapshotV1) -> bool:
+    axes = operation.axes
+    if axes.execution_state == "passed" and (
+        operation.tool_exit_code != 0
+        or operation.stopped_early
+        or operation.stop_reason is not None
+        or operation.failure_detail is not None
+    ):
+        return False
+    if axes.failure_class == "none":
+        if operation.failure_detail is not None or operation.tool_exit_code not in {None, 0}:
+            return False
+    elif operation.failure_detail is None:
+        return False
+    if operation.stopped_early != (operation.stop_reason is not None):
+        return False
+    if axes.startup_state == "started_degraded":
+        if not operation.degraded_components:
+            return False
+    elif operation.degraded_components:
+        return False
+    if axes.startup_state == "failed" and axes.failure_class == "none":
+        return False
+    return True
+
+
+def _receipt_identities_match(
+    operation: OperationStatusSnapshotV1,
+    prepared: PreparedEvidenceRef,
+) -> bool:
+    process = operation.process
+    for receipt in process.receipts:
+        if (
+            receipt.operation_id != operation.operation_id
+            or receipt.attempt_id != operation.attempt_id
+            or receipt.deployment_unit != process.deployment_unit
+            or receipt.deployment_unit != prepared.deployment_unit
+            or receipt.invocation_token != process.invocation_token
+            or receipt.invocation_token != prepared.invocation_token
+            or receipt.generation != process.generation
+            or receipt.revision != process.revision
+            or receipt.fence != process.fence
+        ):
+            return False
     return True
 
 
@@ -324,11 +541,28 @@ def _rollback_consistency(
 
 def _summary_classifications(
     summary: LayoutStatusSummary,
+    inventory: ConsumerInventorySnapshot,
+    authority: ModuleAuthoritySnapshot,
+    validation_report: ValidationReportSnapshot,
+    prepared: PreparedEvidenceRef,
+    operation: OperationStatusSnapshotV1,
 ) -> tuple[tuple[str, Classification], ...]:
-    inventory = (
+    generated = _parse_utc(inventory.generated_at)
+    prepared_at = _parse_utc(prepared.prepared_at)
+    age_seconds = int((prepared_at - generated).total_seconds())
+    inventory_classification: Classification = (
         "healthy"
-        if summary.inventory_completeness == "complete" and summary.inventory_age_seconds <= 86_400
+        if (
+            inventory.completeness_state == "complete"
+            and inventory.unclassified_consumer_count == 0
+            and 0 <= age_seconds <= inventory.max_age_seconds <= 86_400
+            and summary.inventory_completeness == inventory.completeness_state
+            and summary.inventory_age_seconds == age_seconds
+        )
         else "invalid"
+    )
+    authority_classification: Classification = (
+        "healthy" if authority.state == operation.axes.migration_state else "invalid"
     )
     consumers = (
         "healthy"
@@ -342,23 +576,33 @@ def _summary_classifications(
         else "valid_attention"
     )
     parity_values = (
-        summary.root_console_parity,
-        summary.asgi_import_state,
-        summary.reload_child_import_state,
-        summary.route_parity_state,
-        summary.openapi_parity_state,
-        summary.sse_parity_state,
-        summary.capability_parity_state,
-        summary.native_capability_state,
-        summary.native_build_state,
-        summary.native_differential_state,
-        summary.notebook_state,
+        validation_report.root_console_parity,
+        validation_report.asgi_import_state,
+        validation_report.reload_child_import_state,
+        validation_report.route_parity_state,
+        validation_report.openapi_parity_state,
+        validation_report.sse_parity_state,
+        validation_report.capability_parity_state,
+        validation_report.native_capability_state,
+        validation_report.native_build_state,
+        validation_report.native_differential_state,
+        validation_report.notebook_state,
     )
     parity = "healthy" if all(item == "passed" for item in parity_values) else "valid_attention"
-    web = "healthy" if summary.web_missing_asset_count == 0 else "valid_attention"
-    bridge = "healthy" if summary.bridge_coverage_state == "complete" else "valid_attention"
+    web = (
+        "healthy"
+        if (
+            validation_report.web_build_digest is not None
+            and validation_report.web_missing_asset_count == 0
+        )
+        else "valid_attention"
+    )
+    bridge: Classification = (
+        "valid_attention" if summary.bridge_coverage_state == "unavailable" else "invalid"
+    )
     return (
-        ("inventory", inventory),
+        ("inventory", inventory_classification),
+        ("authority", authority_classification),
         ("consumers", consumers),
         ("compatibility", parity),
         ("web_assets", web),
@@ -368,6 +612,10 @@ def _summary_classifications(
 
 def _validate_manifest_identity(
     summary: LayoutStatusSummary,
+    inventory: ConsumerInventorySnapshot,
+    authority: ModuleAuthoritySnapshot,
+    package: PackageGenerationSnapshot,
+    validation_report: ValidationReportSnapshot,
     selector: LayoutSelectorSnapshotV1,
     prepared: PreparedEvidenceRef,
     operation: OperationStatusSnapshotV1,
@@ -381,6 +629,31 @@ def _validate_manifest_identity(
         or summary.selected_fence != selector.fence
         or summary.source_commit != prepared.source_commit
         or summary.source_tree_digest != prepared.source_tree_digest
+        or inventory.source_commit != summary.source_commit
+        or inventory.tree_digest != summary.source_tree_digest
+        or inventory.scanner_source_digest != summary.inventory_scanner_digest
+        or inventory.rules_digest != summary.inventory_rules_digest
+        or authority.legacy_module != summary.legacy_module_origin
+        or authority.target_module != summary.target_module_origin
+        or authority.target_module != summary.selected_authority
+        or package.wheel_digest != summary.wheel_digest
+        or package.wheel_member_count != summary.wheel_member_count
+        or validation_report.source_commit != summary.source_commit
+        or validation_report.source_tree_digest != summary.source_tree_digest
+        or validation_report.package_generation_ref != package.record_digest
+        or validation_report.root_console_parity != summary.root_console_parity
+        or validation_report.asgi_import_state != summary.asgi_import_state
+        or validation_report.reload_child_import_state != summary.reload_child_import_state
+        or validation_report.route_parity_state != summary.route_parity_state
+        or validation_report.openapi_parity_state != summary.openapi_parity_state
+        or validation_report.sse_parity_state != summary.sse_parity_state
+        or validation_report.capability_parity_state != summary.capability_parity_state
+        or validation_report.web_build_digest != summary.web_build_digest
+        or validation_report.web_missing_asset_count != summary.web_missing_asset_count
+        or validation_report.native_capability_state != summary.native_capability_state
+        or validation_report.native_build_state != summary.native_build_state
+        or validation_report.native_differential_state != summary.native_differential_state
+        or validation_report.notebook_state != summary.notebook_state
         or operation.scope != summary.scope
     ):
         _fail(
@@ -562,6 +835,15 @@ def _timestamp(payload: dict[str, Any], key: str, record: EvidenceRecord) -> str
             f"{key} must be an explicit UTC timestamp.",
         )
     return value
+
+
+def _parse_utc(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _check_deadline(deadline: InvocationDeadline | None) -> None:
+    if deadline is not None:
+        deadline.check()
 
 
 def _optional_timestamp(payload: dict[str, Any], key: str, record: EvidenceRecord) -> str | None:

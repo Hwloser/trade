@@ -1,4 +1,8 @@
-"""Read-only package-layout evidence vocabulary and diagnostics."""
+"""Pure package-layout state vocabulary.
+
+I/O-facing readers and validators intentionally remain in their owner modules so
+importing the legality oracle does not initialize filesystem-facing code.
+"""
 
 from trade_py.devtools.layout_status.constraints import (
     ConstraintFacts,
@@ -6,28 +10,10 @@ from trade_py.devtools.layout_status.constraints import (
     LayoutStatusAxes,
     LayoutStatusConstraintsV1,
 )
-from trade_py.devtools.layout_status.records import (
-    EvidenceGraph,
-    EvidenceRecord,
-    ExplicitRecordReader,
-    ReaderLimits,
-)
-from trade_py.devtools.layout_status.validation import (
-    LayoutStatusSummary,
-    ValidatedLayoutStatus,
-    validate_graph,
-)
 
 __all__ = [
     "ConstraintFacts",
     "ConstraintResult",
-    "EvidenceGraph",
-    "EvidenceRecord",
-    "ExplicitRecordReader",
     "LayoutStatusAxes",
     "LayoutStatusConstraintsV1",
-    "LayoutStatusSummary",
-    "ReaderLimits",
-    "ValidatedLayoutStatus",
-    "validate_graph",
 ]

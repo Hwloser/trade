@@ -6,6 +6,7 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from trade_py.devtools.layout_status.deadline import InvocationDeadline
 from trade_py.devtools.layout_status.errors import LayoutStatusError
 from trade_py.devtools.layout_status.validation import ValidatedLayoutStatus
 
@@ -23,10 +24,13 @@ def render_status(
     *,
     error: LayoutStatusError | None = None,
     as_json: bool,
+    deadline: InvocationDeadline | None = None,
 ) -> RenderedLayoutStatus:
     if (status is None) == (error is None):
         raise ValueError("Exactly one layout status or error is required")
     payload = _status_payload(status) if status is not None else _error_payload(error)
+    if deadline is not None:
+        deadline.check()
     exit_code = int(payload["exit_code"])
     if as_json:
         output = json.dumps(
@@ -35,14 +39,23 @@ def render_status(
             indent=2,
             sort_keys=True,
         )
+        if deadline is not None:
+            deadline.check()
         return RenderedLayoutStatus(output + "\n", exit_code)
-    return RenderedLayoutStatus(_render_text(payload), exit_code)
+    output = _render_text(payload)
+    if deadline is not None:
+        deadline.check()
+    return RenderedLayoutStatus(output, exit_code)
 
 
 def _status_payload(status: ValidatedLayoutStatus) -> dict[str, Any]:
     result = status.constraints
     operation = status.operation
     evidence = {
+        "consumer_inventory_ref": status.inventory.record_digest,
+        "module_authority_ref": status.authority.record_digest,
+        "package_generation_ref": status.package.record_digest,
+        "validation_report_ref": status.validation_report.record_digest,
         "prepared_evidence_ref": status.prepared.record_digest,
         "migration_evidence_ref": (
             status.migration.record_digest if status.migration is not None else None
@@ -122,7 +135,7 @@ def _render_text(payload: dict[str, Any]) -> str:
     if isinstance(error, dict):
         lines.append(f"Error: {error['code']}: {error['message']}")
         if error["record"] is not None:
-            lines.append(f"Record: {error['record']}")
+            lines.append(f"Record: {_terminal_safe(str(error['record']))}")
         return "\n".join(lines) + "\n"
 
     summary = payload["summary"]
@@ -160,6 +173,25 @@ def _render_text(payload: dict[str, Any]) -> str:
                 f"Origins: legacy={summary['legacy_module_origin']} "
                 f"target={summary['target_module_origin']}"
             ),
+            (
+                f"Compatibility: console={summary['root_console_parity']} "
+                f"asgi={summary['asgi_import_state']} "
+                f"reload_child={summary['reload_child_import_state']} "
+                f"route={summary['route_parity_state']} "
+                f"openapi={summary['openapi_parity_state']} "
+                f"sse={summary['sse_parity_state']} "
+                f"capability={summary['capability_parity_state']}"
+            ),
+            (
+                f"Web: build={summary['web_build_digest']} "
+                f"missing_assets={summary['web_missing_asset_count']}"
+            ),
+            (
+                f"Native: capability={summary['native_capability_state']} "
+                f"build={summary['native_build_state']} "
+                f"differential={summary['native_differential_state']} "
+                f"notebook={summary['notebook_state']}"
+            ),
             (f"Source: commit={summary['source_commit']} tree={summary['source_tree_digest']}"),
             (
                 f"Inventory: {summary['inventory_completeness']} "
@@ -195,6 +227,10 @@ def _render_text(payload: dict[str, Any]) -> str:
             ),
             (
                 f"Evidence: plan={evidence['activation_plan_digest']} "
+                f"inventory={evidence['consumer_inventory_ref']} "
+                f"authority={evidence['module_authority_ref']} "
+                f"package={evidence['package_generation_ref']} "
+                f"validation={evidence['validation_report_ref']} "
                 f"prepared={evidence['prepared_evidence_ref']} "
                 f"final={evidence['migration_evidence_ref']} "
                 f"partial={evidence['partial_evidence_ref']}"
@@ -216,6 +252,13 @@ def _render_text(payload: dict[str, Any]) -> str:
     if isinstance(violations, list) and violations:
         lines.append("Violations: " + ", ".join(str(item) for item in violations))
     return "\n".join(lines) + "\n"
+
+
+def _terminal_safe(value: str) -> str:
+    return "".join(
+        f"\\x{ord(character):02x}" if ord(character) < 32 or ord(character) == 127 else character
+        for character in value
+    )
 
 
 __all__ = ["REPORT_SCHEMA", "RenderedLayoutStatus", "render_status"]

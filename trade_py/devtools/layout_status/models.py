@@ -8,6 +8,78 @@ from trade_py.devtools.layout_status.constraints import LayoutStatusAxes
 
 
 @dataclass(frozen=True)
+class ConsumerInventorySnapshot:
+    record_digest: str
+    schema_version: int
+    source_commit: str
+    tree_digest: str
+    scanner_name: str
+    scanner_version: str
+    scanner_source_digest: str
+    included_roots: tuple[str, ...]
+    explicit_exclusions: tuple[str, ...]
+    rules_digest: str
+    generated_at: str
+    max_age_seconds: int
+    completeness_state: str
+    production_module_count: int
+    consumer_count: int
+    unclassified_consumer_count: int
+    entry_digest: str
+    report_digest: str
+
+
+@dataclass(frozen=True)
+class ModuleAuthoritySnapshot:
+    record_digest: str
+    legacy_module: str
+    target_module: str
+    owner: str
+    contract_generation: str
+    implementation_digest: str
+    compatibility_direction: str
+    state: str
+    consumer_inventory_ref: str
+    activation_plan_digest: str
+
+
+@dataclass(frozen=True)
+class PackageGenerationSnapshot:
+    record_digest: str
+    distribution_name: str
+    distribution_version: str
+    python_tag: str
+    platform_tag: str
+    wheel_digest: str
+    wheel_member_digest: str
+    wheel_member_count: int
+    compatibility_manifest_digest: str
+
+
+@dataclass(frozen=True)
+class ValidationReportSnapshot:
+    record_digest: str
+    source_commit: str
+    source_tree_digest: str
+    package_generation_ref: str
+    root_console_parity: str
+    asgi_import_state: str
+    reload_child_import_state: str
+    route_parity_state: str
+    openapi_parity_state: str
+    sse_parity_state: str
+    capability_parity_state: str
+    web_build_digest: str | None
+    web_missing_asset_count: int
+    native_capability_state: str
+    native_build_state: str
+    native_differential_state: str
+    notebook_state: str
+    report_entries_digest: str
+    report_digest: str
+
+
+@dataclass(frozen=True)
 class PreparedEvidenceRef:
     record_digest: str
     operation_id: str
@@ -46,20 +118,31 @@ class LayoutSelectorSnapshotV1:
 
 
 @dataclass(frozen=True)
+class ProcessReceipt:
+    receipt_id: str
+    receipt_type: str
+    observed_at: str
+    operation_id: str
+    attempt_id: str
+    deployment_unit: str
+    invocation_token: str
+    generation: str
+    revision: int
+    fence: int
+    supersedes_receipt_id: str | None
+    live_descendant_count: int
+
+
+@dataclass(frozen=True)
 class ProcessSnapshot:
     deployment_unit: str
     invocation_token: str
     generation: str
     revision: int
     fence: int
-    process_started_receipt: bool
     matching_live_instances: int
-    historical_process_started: bool
-    terminal_receipt: bool
-    terminal_identity_match: bool
     zero_live_descendants: bool
-    teardown_receipt: bool
-    teardown_identity_match: bool
+    receipts: tuple[ProcessReceipt, ...]
 
 
 @dataclass(frozen=True)
@@ -123,6 +206,7 @@ class MigrationEvidenceRef:
     artifact_refs: tuple[str, ...]
     activation_plan_digest: str
     prepared_evidence_ref: str
+    operation_status_ref: str
     selector_before: SelectorObservation
     selector_after: SelectorObservation
     phases: tuple[str, ...]
@@ -136,12 +220,17 @@ class MigrationEvidenceRef:
 
 
 __all__ = [
+    "ConsumerInventorySnapshot",
     "LayoutSelectorSnapshotV1",
     "MigrationEvidenceRef",
+    "ModuleAuthoritySnapshot",
     "OperationStatusSnapshotV1",
+    "PackageGenerationSnapshot",
     "PreparedEvidenceRef",
+    "ProcessReceipt",
     "ProcessSnapshot",
     "RollbackSnapshot",
     "SelectorObservation",
     "ShutdownSnapshot",
+    "ValidationReportSnapshot",
 ]

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
+import stat
 import subprocess
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -11,6 +14,8 @@ from typing import Any
 import pytest
 
 from trade_py.cli import dev
+from trade_py.cli import main as main_cli
+from trade_py.devtools.layout_status.deadline import InvocationDeadline
 from trade_py.devtools.layout_status.errors import LayoutStatusInvalid
 from trade_py.devtools.layout_status.records import (
     ExplicitRecordReader,
@@ -44,6 +49,86 @@ def _write(path: Path, record: dict[str, Any]) -> None:
     path.write_bytes(canonical_json(record) + b"\n")
 
 
+def _content_digest(payload: dict[str, Any], digest_key: str) -> str:
+    content = dict(payload)
+    content.pop(digest_key, None)
+    return "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
+
+
+def _inventory_payload() -> dict[str, Any]:
+    payload = {
+        "schema_version": 1,
+        "source_commit": COMMIT,
+        "tree_digest": DIGEST_B,
+        "scanner_name": "layout-scanner",
+        "scanner_version": "v1",
+        "scanner_source_digest": DIGEST_A,
+        "included_roots": ["src/trade", "trade_py"],
+        "explicit_exclusions": ["segment:tests"],
+        "rules_digest": DIGEST_B,
+        "generated_at": "2026-07-27T11:59:00Z",
+        "max_age_seconds": 86_400,
+        "completeness_state": "complete",
+        "production_module_count": 2,
+        "consumer_count": 4,
+        "unclassified_consumer_count": 0,
+        "entry_digest": DIGEST_C,
+    }
+    payload["report_digest"] = _content_digest(payload, "report_digest")
+    return payload
+
+
+def _authority_payload(inventory_ref: str, *, state: str) -> dict[str, Any]:
+    return {
+        "legacy_module": "trade_py",
+        "target_module": "trade",
+        "owner": "bootstrap",
+        "contract_generation": "layout-v1",
+        "implementation_digest": DIGEST_C,
+        "compatibility_direction": "legacy_to_target",
+        "state": state,
+        "consumer_inventory_ref": inventory_ref,
+        "activation_plan_digest": DIGEST_A,
+    }
+
+
+def _package_payload() -> dict[str, Any]:
+    return {
+        "distribution_name": "trade-py",
+        "distribution_version": "0.1.0",
+        "python_tag": "py3",
+        "platform_tag": "any",
+        "wheel_digest": DIGEST_A,
+        "wheel_member_digest": DIGEST_B,
+        "wheel_member_count": 42,
+        "compatibility_manifest_digest": DIGEST_C,
+    }
+
+
+def _validation_report_payload(package_ref: str) -> dict[str, Any]:
+    payload = {
+        "source_commit": COMMIT,
+        "source_tree_digest": DIGEST_B,
+        "package_generation_ref": package_ref,
+        "root_console_parity": "passed",
+        "asgi_import_state": "passed",
+        "reload_child_import_state": "passed",
+        "route_parity_state": "passed",
+        "openapi_parity_state": "passed",
+        "sse_parity_state": "passed",
+        "capability_parity_state": "passed",
+        "web_build_digest": DIGEST_C,
+        "web_missing_asset_count": 0,
+        "native_capability_state": "passed",
+        "native_build_state": "passed",
+        "native_differential_state": "passed",
+        "notebook_state": "passed",
+        "report_entries_digest": DIGEST_C,
+    }
+    payload["report_digest"] = _content_digest(payload, "report_digest")
+    return payload
+
+
 def _selector_payload() -> dict[str, Any]:
     payload = {
         "scope": "python_deployment",
@@ -62,7 +147,7 @@ def _selector_payload() -> dict[str, Any]:
     return payload
 
 
-def _prepared_payload() -> dict[str, Any]:
+def _prepared_payload(*, immutable_input_refs: list[str]) -> dict[str, Any]:
     return {
         "operation_id": "operation-1",
         "attempt_id": "attempt-1",
@@ -73,7 +158,7 @@ def _prepared_payload() -> dict[str, Any]:
         "approved_design_digest": DIGEST_A,
         "activation_plan_digest": DIGEST_A,
         "current_composition_digest": DIGEST_B,
-        "immutable_input_refs": [DIGEST_A, DIGEST_B],
+        "immutable_input_refs": sorted(immutable_input_refs),
         "intended_target_generation": "generation-2",
         "expected_generation": "generation-1",
         "expected_revision": 1,
@@ -87,7 +172,7 @@ def _prepared_payload() -> dict[str, Any]:
 
 def _states(
     *,
-    migration: str = "retireable",
+    migration: str = "target_authoritative",
     execution: str = "passed",
     failure: str = "none",
     rollback: str = "not_required",
@@ -107,10 +192,20 @@ def _states(
 def _operation_payload(
     *,
     states: dict[str, str] | None = None,
-    action: str = "none",
+    action: str = "continue_validation",
     phase: str = "verified",
 ) -> dict[str, Any]:
-    return {
+    process = {
+        "deployment_unit": "trade-api",
+        "invocation_token": "invocation-1",
+        "generation": "generation-2",
+        "revision": 2,
+        "fence": 2,
+        "matching_live_instances": 1,
+        "zero_live_descendants": False,
+        "receipts": [],
+    }
+    operation = {
         "operation_id": "operation-1",
         "attempt_id": "attempt-1",
         "scope": "python_deployment",
@@ -123,21 +218,7 @@ def _operation_payload(
         "stop_reason": None,
         "failure_detail": None,
         "degraded_components": [],
-        "process": {
-            "deployment_unit": "trade-api",
-            "invocation_token": "invocation-1",
-            "generation": "generation-2",
-            "revision": 2,
-            "fence": 2,
-            "process_started_receipt": True,
-            "matching_live_instances": 1,
-            "historical_process_started": False,
-            "terminal_receipt": False,
-            "terminal_identity_match": False,
-            "zero_live_descendants": False,
-            "teardown_receipt": False,
-            "teardown_identity_match": False,
-        },
+        "process": process,
         "shutdown": {
             "stage": "not_started",
             "signal_escalation": "none",
@@ -154,11 +235,43 @@ def _operation_payload(
             "compensation_preserves_later_slices": False,
         },
     }
+    process["receipts"] = [_process_receipt(operation, "process_started")]
+    return operation
+
+
+def _process_receipt(
+    operation: dict[str, Any],
+    receipt_type: str,
+    *,
+    supersedes_receipt_id: str | None = None,
+    observed_at: str = "2026-07-27T12:00:01Z",
+    live_descendant_count: int = 1,
+) -> dict[str, Any]:
+    process = operation["process"]
+    payload = {
+        "receipt_type": receipt_type,
+        "observed_at": observed_at,
+        "operation_id": operation["operation_id"],
+        "attempt_id": operation["attempt_id"],
+        "deployment_unit": process["deployment_unit"],
+        "invocation_token": process["invocation_token"],
+        "generation": process["generation"],
+        "revision": process["revision"],
+        "fence": process["fence"],
+        "supersedes_receipt_id": supersedes_receipt_id,
+        "live_descendant_count": live_descendant_count,
+    }
+    payload["receipt_id"] = _content_digest(payload, "receipt_id")
+    return payload
 
 
 def _migration_payload(
     operation: dict[str, Any],
     prepared_digest: str,
+    inventory_ref: str,
+    authority_ref: str,
+    package_ref: str,
+    report_entries_digest: str,
 ) -> dict[str, Any]:
     phase = operation["activation_phase"]
     if phase == "verified":
@@ -201,11 +314,12 @@ def _migration_payload(
         "source_tree_digest": DIGEST_B,
         "policy_digest": DIGEST_C,
         "approved_design_digest": DIGEST_A,
-        "consumer_inventory_ref": DIGEST_A,
-        "module_authority_ref": DIGEST_B,
-        "artifact_refs": [DIGEST_C],
+        "consumer_inventory_ref": inventory_ref,
+        "module_authority_ref": authority_ref,
+        "artifact_refs": [package_ref],
         "activation_plan_digest": DIGEST_A,
         "prepared_evidence_ref": prepared_digest,
+        "operation_status_ref": "",
         "selector_before": {
             "generation": "generation-1",
             "revision": 1,
@@ -222,8 +336,12 @@ def _migration_payload(
         "toolchain": ["python-3.10"],
         "deadline_milliseconds": 5000,
         "typed_outcomes": operation["states"],
-        "partial_evidence_refs": [],
-        "report_entries_digest": DIGEST_C,
+        "partial_evidence_refs": (
+            [operation["partial_evidence_ref"]]
+            if operation["partial_evidence_ref"] is not None
+            else []
+        ),
+        "report_entries_digest": report_entries_digest,
     }
 
 
@@ -269,9 +387,9 @@ def _manifest_payload(
         "notebook_state": "passed",
         "bridge_owner": "interfaces",
         "bridge_population_digest": DIGEST_C,
-        "bridge_coverage_state": "complete",
-        "bridge_age_seconds": 60,
-        "bridge_last_observed_use": "2026-07-27T11:59:00Z",
+        "bridge_coverage_state": "unavailable",
+        "bridge_age_seconds": None,
+        "bridge_last_observed_use": None,
         "bridge_deadline": "2026-10-27T12:00:00Z",
         "selector_ref": selector_digest,
         "operation_ref": operation_digest,
@@ -285,12 +403,40 @@ def _fixture(
     *,
     operation_payload: dict[str, Any] | None = None,
     manifest_changes: dict[str, Any] | None = None,
+    validation_report_changes: dict[str, Any] | None = None,
     include_migration: bool = True,
 ) -> Path:
     root = tmp_path / "layout-control"
     operation_payload = deepcopy(operation_payload or _operation_payload())
     rollback_succeeded = operation_payload["states"]["rollback_state"] == "succeeded"
-    prepared_payload = _prepared_payload()
+    inventory = _record("consumer_inventory", "inventory-1", _inventory_payload())
+    package = _record("package_generation", "package-1", _package_payload())
+    validation_report_payload = _validation_report_payload(package["record_digest"])
+    if validation_report_changes:
+        validation_report_payload.update(validation_report_changes)
+        validation_report_payload["report_digest"] = _content_digest(
+            validation_report_payload,
+            "report_digest",
+        )
+    validation_report = _record(
+        "validation_report", "validation-report-1", validation_report_payload
+    )
+    authority = _record(
+        "module_authority",
+        "authority-1",
+        _authority_payload(
+            inventory["record_digest"],
+            state=operation_payload["states"]["migration_state"],
+        ),
+    )
+    prepared_payload = _prepared_payload(
+        immutable_input_refs=[
+            inventory["record_digest"],
+            authority["record_digest"],
+            package["record_digest"],
+            validation_report["record_digest"],
+        ]
+    )
     selector_payload = _selector_payload()
     if rollback_succeeded:
         target = operation_payload["rollback"]["target_generation"]
@@ -319,6 +465,9 @@ def _fixture(
                 "fence": 3,
             }
         )
+        operation_payload["process"]["receipts"] = [
+            _process_receipt(operation_payload, "process_started")
+        ]
     prepared = _record("prepared_evidence", "prepared-1", prepared_payload)
     selector_payload["prepared_evidence_ref"] = prepared["record_digest"]
     selector_payload["selector_payload_digest"] = (
@@ -337,13 +486,27 @@ def _fixture(
     )
     selector = _record("layout_selector_snapshot", "selector-1", selector_payload)
     operation = _record("operation_status_snapshot", "operation-1", operation_payload)
+    migration_payload = (
+        _migration_payload(
+            operation_payload,
+            prepared["record_digest"],
+            inventory["record_digest"],
+            authority["record_digest"],
+            package["record_digest"],
+            validation_report_payload["report_entries_digest"],
+        )
+        if include_migration
+        else None
+    )
+    if migration_payload is not None:
+        migration_payload["operation_status_ref"] = operation["record_digest"]
     migration = (
         _record(
             "migration_evidence",
             "migration-1",
-            _migration_payload(operation_payload, prepared["record_digest"]),
+            migration_payload,
         )
-        if include_migration
+        if migration_payload is not None
         else None
     )
     if migration is not None and rollback_succeeded:
@@ -359,6 +522,10 @@ def _fixture(
         }
         migration["record_digest"] = canonical_record_digest(migration)
     for name, record in (
+        ("records/inventory.json", inventory),
+        ("records/authority.json", authority),
+        ("records/package.json", package),
+        ("records/validation-report.json", validation_report),
         ("records/prepared.json", prepared),
         ("records/selector.json", selector),
         ("records/operation.json", operation),
@@ -387,9 +554,24 @@ def _fixture(
     manifest = _record("layout_status_manifest", "status-1", manifest_payload)
     manifest["references"] = [
         {
+            "name": "authority",
+            "path": "records/authority.json",
+            "digest": authority["record_digest"],
+        },
+        {
+            "name": "inventory",
+            "path": "records/inventory.json",
+            "digest": inventory["record_digest"],
+        },
+        {
             "name": "operation",
             "path": "records/operation.json",
             "digest": operation["record_digest"],
+        },
+        {
+            "name": "package",
+            "path": "records/package.json",
+            "digest": package["record_digest"],
         },
         {
             "name": "prepared",
@@ -400,6 +582,11 @@ def _fixture(
             "name": "selector",
             "path": "records/selector.json",
             "digest": selector["record_digest"],
+        },
+        {
+            "name": "validation_report",
+            "path": "records/validation-report.json",
+            "digest": validation_report["record_digest"],
         },
     ]
     if migration is not None:
@@ -414,6 +601,34 @@ def _fixture(
     path = root / "status.json"
     _write(path, manifest)
     return path
+
+
+def _rewrite_record_and_manifest_reference(
+    manifest: Path,
+    *,
+    reference_name: str,
+    mutate: Any,
+) -> None:
+    manifest_record = json.loads(manifest.read_text(encoding="utf-8"))
+    reference = next(
+        item for item in manifest_record["references"] if item["name"] == reference_name
+    )
+    record_path = manifest.parent / reference["path"]
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    mutate(record)
+    record["record_digest"] = canonical_record_digest(record)
+    _write(record_path, record)
+    reference["digest"] = record["record_digest"]
+    manifest_key = {
+        "migration": "migration_evidence_ref",
+        "operation": "operation_ref",
+        "prepared": "prepared_evidence_ref",
+        "selector": "selector_ref",
+    }.get(reference_name)
+    if manifest_key is not None:
+        manifest_record["payload"][manifest_key] = record["record_digest"]
+    manifest_record["record_digest"] = canonical_record_digest(manifest_record)
+    _write(manifest, manifest_record)
 
 
 def test_parser_contract_and_unset_root_fail_before_business_data(
@@ -433,7 +648,7 @@ def test_parser_contract_and_unset_root_fail_before_business_data(
     assert payload["summary"] is None
 
 
-def test_json_and_human_views_share_enum_action_and_exit(
+def test_json_and_human_views_share_attention_action_and_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -446,16 +661,20 @@ def test_json_and_human_views_share_enum_action_and_exit(
     human_code = dev.main(["layout-status"])
     human = capsys.readouterr().out
 
-    assert json_code == human_code == 0
-    assert payload["status"] == "HEALTHY"
+    assert json_code == human_code == 1
+    assert payload["status"] == "ATTENTION"
     assert payload["operation"]["states"]["reconciliation_state"] == "not_required"
-    assert payload["operation"]["operator_action"] == "none"
-    assert payload["validation"]["record_count"] == 5
-    assert "Layout status: HEALTHY (exit 0)" in human
+    assert payload["operation"]["operator_action"] == "continue_validation"
+    assert payload["validation"]["record_count"] == 9
+    assert "Layout status: ATTENTION (exit 1)" in human
     assert "reconciliation_state=not_required" in human
-    assert "action=none" in human
+    assert "action=continue_validation" in human
     assert "revision=2 fence=2" in human
     assert "residual_processes=0 residual_threads=0" in human
+    assert "Compatibility: console=passed asgi=passed reload_child=passed" in human
+    assert "route=passed openapi=passed sse=passed capability=passed" in human
+    assert f"Web: build={DIGEST_C} missing_assets=0" in human
+    assert "Native: capability=passed build=passed differential=passed notebook=passed" in human
 
 
 @pytest.mark.parametrize(
@@ -470,7 +689,7 @@ def test_json_and_human_views_share_enum_action_and_exit(
             ),
             "resume_reconciliation",
             "start_intent_recorded",
-            {"process_started_receipt": False, "matching_live_instances": 0},
+            {"receipts": [], "matching_live_instances": 0},
             {},
         ),
         (
@@ -482,13 +701,7 @@ def test_json_and_human_views_share_enum_action_and_exit(
             ),
             "retry_identical_invocation",
             "process_started",
-            {
-                "matching_live_instances": 0,
-                "historical_process_started": True,
-                "terminal_receipt": True,
-                "terminal_identity_match": True,
-                "zero_live_descendants": True,
-            },
+            {"matching_live_instances": 0, "zero_live_descendants": True},
             {},
         ),
         (
@@ -504,8 +717,6 @@ def test_json_and_human_views_share_enum_action_and_exit(
             {
                 "matching_live_instances": 0,
                 "zero_live_descendants": True,
-                "teardown_receipt": True,
-                "teardown_identity_match": True,
             },
             {"stage": "complete", "complete": True},
         ),
@@ -523,13 +734,44 @@ def test_reconciliation_attention_goldens(
 ) -> None:
     operation = _operation_payload(states=states, action=action, phase=phase)
     operation["process"].update(process_changes)
+    start = operation["process"]["receipts"][0] if operation["process"]["receipts"] else None
+    if states["reconciliation_state"] == "absence_proved":
+        assert start is not None
+        operation["process"]["receipts"].append(
+            _process_receipt(
+                operation,
+                "terminal_absence",
+                supersedes_receipt_id=start["receipt_id"],
+                observed_at="2026-07-27T12:00:02Z",
+                live_descendant_count=0,
+            )
+        )
+    elif states["reconciliation_state"] == "fenced_teardown":
+        assert start is not None
+        operation["process"]["generation"] = "generation-1"
+        operation["process"]["revision"] = 1
+        operation["process"]["fence"] = 1
+        operation["process"]["receipts"] = [
+            _process_receipt(operation, "process_started"),
+        ]
+        start = operation["process"]["receipts"][0]
+        operation["process"]["receipts"].append(
+            _process_receipt(
+                operation,
+                "teardown",
+                supersedes_receipt_id=start["receipt_id"],
+                observed_at="2026-07-27T12:00:02Z",
+                live_descendant_count=0,
+            )
+        )
+        operation["tool_exit_code"] = 0
     operation["shutdown"].update(shutdown_changes)
     if states["rollback_state"] != "not_required":
         operation["rollback"]["target_generation"] = "generation-compensation-3"
     manifest = _fixture(
         tmp_path,
         operation_payload=operation,
-        include_migration=phase in {"failed", "rollback_verified"},
+        include_migration=phase in {"verified", "failed", "rollback_verified"},
     )
     monkeypatch.setenv("TRADE_LAYOUT_STATUS_MANIFEST", str(manifest))
 
@@ -556,9 +798,7 @@ def test_reconciliation_attention_goldens(
                         "operator_action": "continue_validation",
                     }
                 ),
-                operation["process"].update(
-                    {"matching_live_instances": 0, "process_started_receipt": False}
-                ),
+                operation["process"].update({"matching_live_instances": 0, "receipts": []}),
             ),
             "layout.status.receipt_invalid",
         ),
@@ -602,14 +842,15 @@ def test_historical_start_requires_exact_terminal_absence_receipt(tmp_path: Path
         action="retry_identical_invocation",
         phase="process_started",
     )
-    operation["process"].update(
-        {
-            "matching_live_instances": 0,
-            "historical_process_started": True,
-            "terminal_receipt": True,
-            "terminal_identity_match": False,
-            "zero_live_descendants": True,
-        }
+    operation["process"].update({"matching_live_instances": 0, "zero_live_descendants": True})
+    operation["process"]["receipts"].append(
+        _process_receipt(
+            operation,
+            "terminal_absence",
+            supersedes_receipt_id=DIGEST_A,
+            observed_at="2026-07-27T12:00:02Z",
+            live_descendant_count=0,
+        )
     )
     status = validate_graph(
         ExplicitRecordReader(
@@ -641,6 +882,8 @@ def test_non_lifo_historical_rollback_target_is_invalid(tmp_path: Path) -> None:
             "compensation_preserves_later_slices": False,
         }
     )
+    operation["tool_exit_code"] = 1
+    operation["failure_detail"] = "contract_mismatch"
     status = validate_graph(
         ExplicitRecordReader(
             _fixture(tmp_path, operation_payload=operation, include_migration=False)
@@ -683,14 +926,7 @@ def test_timeout_retains_failure_after_successful_forward_rollback(tmp_path: Pat
             "complete": True,
         }
     )
-    operation["process"].update(
-        {
-            "matching_live_instances": 0,
-            "terminal_receipt": True,
-            "terminal_identity_match": True,
-            "zero_live_descendants": True,
-        }
-    )
+    operation["process"].update({"matching_live_instances": 0, "zero_live_descendants": True})
     status = validate_graph(
         ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
     )
@@ -721,6 +957,8 @@ def test_cleanup_residue_is_attention_not_success(tmp_path: Path) -> None:
         phase="failed",
     )
     operation["rollback"]["target_generation"] = "generation-compensation-3"
+    operation["failure_detail"] = "process_cleanup_incomplete"
+    operation["tool_exit_code"] = 1
     operation["shutdown"].update(
         {
             "stage": "kill",
@@ -809,7 +1047,163 @@ def test_unknown_enum_phase_order_and_operation_conflict_return_two(tmp_path: Pa
     assert "layout.status.identity_mismatch" in conflict_status.constraints.violations
 
 
-def test_partial_bridge_coverage_is_attention_with_continue_validation(
+def test_terminal_failure_cannot_reuse_success_axes(tmp_path: Path) -> None:
+    operation = _operation_payload(phase="failed")
+    operation["operator_action"] = "continue_validation"
+    status = validate_graph(
+        ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.phase_order_invalid" in status.constraints.violations
+
+
+@pytest.mark.parametrize(
+    ("operation", "mutate"),
+    [
+        (
+            _operation_payload(),
+            lambda operation: operation["process"].update({"matching_live_instances": 0}),
+        ),
+        (
+            _operation_payload(),
+            lambda operation: operation["shutdown"].update({"stage": "complete", "complete": True}),
+        ),
+        (
+            _operation_payload(),
+            lambda operation: operation["shutdown"].update(
+                {"stage": "term", "signal_escalation": "term"}
+            ),
+        ),
+        (
+            _operation_payload(
+                states=_states(startup="started_degraded"),
+                action="investigate",
+            ),
+            lambda operation: (
+                operation.update({"degraded_components": ["startup-automation"]}),
+                operation["shutdown"].update({"stage": "term", "signal_escalation": "term"}),
+            ),
+        ),
+    ],
+)
+def test_verified_running_process_requires_live_instance_and_no_shutdown(
+    tmp_path: Path,
+    operation: dict[str, Any],
+    mutate: Any,
+) -> None:
+    operation = deepcopy(operation)
+    mutate(operation)
+    status = validate_graph(
+        ExplicitRecordReader(_fixture(tmp_path, operation_payload=operation)).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+def test_authoritative_state_requires_terminal_migration_evidence(tmp_path: Path) -> None:
+    operation = _operation_payload(phase="process_started")
+    status = validate_graph(
+        ExplicitRecordReader(
+            _fixture(tmp_path, operation_payload=operation, include_migration=False)
+        ).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.phase_order_invalid" in status.constraints.violations
+
+
+def test_selector_fence_must_advance_exactly_once(tmp_path: Path) -> None:
+    manifest = _fixture(tmp_path)
+
+    def jump_fence(record: dict[str, Any]) -> None:
+        record["payload"]["fence"] = 9
+        content = dict(record["payload"])
+        content.pop("selector_payload_digest")
+        record["payload"]["selector_payload_digest"] = (
+            "sha256:" + hashlib.sha256(canonical_json(content)).hexdigest()
+        )
+
+    _rewrite_record_and_manifest_reference(
+        manifest,
+        reference_name="selector",
+        mutate=jump_fence,
+    )
+    manifest_record = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_record["payload"]["selected_fence"] = 9
+    manifest_record["record_digest"] = canonical_record_digest(manifest_record)
+    _write(manifest, manifest_record)
+    status = validate_graph(ExplicitRecordReader(manifest).read())
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.identity_mismatch" in status.constraints.violations
+
+
+def test_missing_web_build_digest_cannot_be_classified_healthy(tmp_path: Path) -> None:
+    status = validate_graph(
+        ExplicitRecordReader(
+            _fixture(
+                tmp_path,
+                manifest_changes={"web_build_digest": None},
+                validation_report_changes={"web_build_digest": None},
+            )
+        ).read()
+    )
+
+    assert status.constraints.exit_code == 1
+    assert dict(status.constraints.axis_classifications)["web_assets"] == "valid_attention"
+
+
+def test_terminal_commands_and_report_must_match_prepared_evidence(tmp_path: Path) -> None:
+    manifest = _fixture(tmp_path)
+    _rewrite_record_and_manifest_reference(
+        manifest,
+        reference_name="migration",
+        mutate=lambda record: record["payload"].update(
+            {"command_digests": [DIGEST_B], "report_entries_digest": DIGEST_A}
+        ),
+    )
+    status = validate_graph(ExplicitRecordReader(manifest).read())
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.identity_mismatch" in status.constraints.violations
+
+
+def test_inventory_freshness_is_derived_from_bound_timestamps(tmp_path: Path) -> None:
+    manifest = _fixture(
+        tmp_path,
+        manifest_changes={"inventory_age_seconds": 1},
+    )
+    status = validate_graph(ExplicitRecordReader(manifest).read())
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.additional_invalid" in status.constraints.violations
+
+
+def test_unsuperseded_process_start_cannot_prove_absence(tmp_path: Path) -> None:
+    operation = _operation_payload(
+        states=_states(
+            migration="prepared",
+            execution="stopped",
+            startup="stopped",
+            reconciliation="absence_proved",
+        ),
+        action="retry_identical_invocation",
+        phase="process_started",
+    )
+    operation["process"].update({"matching_live_instances": 0, "zero_live_descendants": True})
+    status = validate_graph(
+        ExplicitRecordReader(
+            _fixture(tmp_path, operation_payload=operation, include_migration=False)
+        ).read()
+    )
+
+    assert status.constraints.exit_code == 2
+    assert "layout.status.receipt_invalid" in status.constraints.violations
+
+
+def test_bridge_coverage_cannot_claim_child_outcomes_before_child_exists(
     tmp_path: Path,
 ) -> None:
     operation = _operation_payload(action="continue_validation")
@@ -823,9 +1217,9 @@ def test_partial_bridge_coverage_is_attention_with_continue_validation(
         ).read()
     )
 
-    assert status.constraints.exit_code == 1
+    assert status.constraints.exit_code == 2
     assert status.constraints.derived_action == "continue_validation"
-    assert dict(status.constraints.axis_classifications)["bridge_coverage"] == "valid_attention"
+    assert dict(status.constraints.axis_classifications)["bridge_coverage"] == "invalid"
 
 
 def test_inventory_over_age_or_incomplete_is_invalid(tmp_path: Path) -> None:
@@ -902,6 +1296,73 @@ def test_reader_enforces_count_size_depth_and_deadline(tmp_path: Path) -> None:
     assert deadline.value.error.code == "layout.status.deadline"
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO fixture requires POSIX")
+def test_reader_rejects_fifo_without_waiting_for_a_writer(tmp_path: Path) -> None:
+    manifest = _fixture(tmp_path)
+    operation_path = manifest.parent / "records" / "operation.json"
+    operation_path.unlink()
+    os.mkfifo(operation_path)
+    assert stat.S_ISFIFO(operation_path.stat().st_mode)
+
+    started = time.monotonic()
+    with pytest.raises(LayoutStatusInvalid) as blocked:
+        ExplicitRecordReader(manifest).read()
+    elapsed = time.monotonic() - started
+
+    assert blocked.value.error.code == "layout.status.not_regular"
+    assert elapsed < 1.0
+
+
+def test_deep_json_returns_typed_invalid_instead_of_stack_error(tmp_path: Path) -> None:
+    manifest = tmp_path / "status.json"
+    manifest.write_bytes(
+        (
+            '{"payload":{"nested":'
+            + "[" * 100
+            + "0"
+            + "]" * 100
+            + '},"record_digest":"sha256:'
+            + "0" * 64
+            + '","record_id":"status","record_type":"layout_status_manifest",'
+            + '"references":[],"schema_version":"trade.layout.record.v1"}'
+        ).encode("utf-8")
+    )
+
+    with pytest.raises(LayoutStatusInvalid) as nested:
+        ExplicitRecordReader(manifest).read()
+
+    assert nested.value.error.code == "layout.status.record_json"
+
+
+def test_invocation_deadline_interrupts_cross_record_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest = _fixture(tmp_path)
+    monkeypatch.setenv("TRADE_LAYOUT_STATUS_MANIFEST", str(manifest))
+    real_validate = validate_graph
+
+    def slow_validate(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.1)
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "trade_py.devtools.layout_status.cli.InvocationDeadline",
+        lambda: InvocationDeadline(seconds=0.02),
+    )
+    monkeypatch.setattr(
+        "trade_py.devtools.layout_status.cli.validate_graph",
+        slow_validate,
+    )
+
+    code = dev.main(["layout-status", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert payload["error"]["code"] == "layout.status.deadline"
+
+
 def test_absolute_manifest_and_relative_references_cannot_escape(tmp_path: Path) -> None:
     with pytest.raises(LayoutStatusInvalid) as relative:
         ExplicitRecordReader(Path("status.json"))
@@ -917,6 +1378,55 @@ def test_absolute_manifest_and_relative_references_cannot_escape(tmp_path: Path)
     assert escape.value.error.code == "layout.status.reference_path"
 
 
+@pytest.mark.parametrize("control", ["\x00", "\x01", "\x1b", "\x7f"])
+def test_manifest_and_reference_paths_reject_terminal_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    control: str,
+) -> None:
+    with pytest.raises(LayoutStatusInvalid) as manifest_path:
+        ExplicitRecordReader(Path(f"/tmp/status{control}.json"))
+    assert manifest_path.value.error.code == "layout.status.manifest_not_absolute"
+
+    manifest = _fixture(tmp_path)
+    record = json.loads(manifest.read_text(encoding="utf-8"))
+    record["references"][0]["path"] = f"records/{control}authority.json"
+    record["record_digest"] = canonical_record_digest(record)
+    _write(manifest, record)
+    monkeypatch.setenv("TRADE_LAYOUT_STATUS_MANIFEST", str(manifest))
+
+    code = dev.main(["layout-status"])
+    output = capsys.readouterr().out
+
+    assert code == 2
+    assert "layout.status.reference_path" in output
+    assert control not in output
+    assert f"\\x{ord(control):02x}" in output
+
+
+def test_top_level_layout_status_ignores_dotenv_manifest_injection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manifest = _fixture(tmp_path)
+    env_file = tmp_path / "trade.env"
+    env_file.write_text(
+        f"TRADE_LAYOUT_STATUS_MANIFEST={manifest}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TRADE_ENV_FILE", str(env_file))
+    monkeypatch.delenv("TRADE_LAYOUT_STATUS_MANIFEST", raising=False)
+
+    code = main_cli.main(["dev", "layout-status", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert payload["error"]["code"] == "layout.status.manifest_unset"
+    assert "TRADE_LAYOUT_STATUS_MANIFEST" not in os.environ
+
+
 def test_cli_does_not_invoke_git_process_or_business_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -930,7 +1440,7 @@ def test_cli_does_not_invoke_git_process_or_business_io(
 
     monkeypatch.setattr("subprocess.Popen", forbidden)
     monkeypatch.setattr("subprocess.run", forbidden)
-    assert dev.main(["layout-status", "--json"]) == 0
+    assert dev.main(["layout-status", "--json"]) == 1
     assert calls == []
 
 
