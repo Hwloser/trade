@@ -394,10 +394,12 @@ semantic_owner
 contract_generation
 authority
 compatibility_direction
-consumer_inventory_digest
+consumer_inventory_ref
 source_digest
 target_digest
-validation_evidence
+activation_plan_ref
+migration_evidence_ref
+bridge_coverage_ref
 rollback_target
 retirement_deadline
 state
@@ -426,8 +428,80 @@ At every non-inventory state:
   public object identity where identity is contractual;
 - unsupported private imports fail explicitly instead of falling through to a
   second implementation;
-- a migration record cannot advance when its consumer inventory changed after
-  validation.
+- a migration record cannot advance when its consumer inventory is incomplete,
+  stale or changed after validation;
+- activation and rollback consume one immutable evidence generation rather than
+  an uncorrelated set of successful command logs.
+
+### Consumer inventory identity and freshness
+
+`ConsumerInventoryRef` binds:
+
+- repository commit and tree digest;
+- scanner name, version and executable/source digest;
+- included roots, explicit exclusions and selection-rules digest;
+- UTC generation time and a 24-hour maximum activation age;
+- production-module, consumer and unclassified-consumer counts;
+- `complete`, `incomplete`, `tool_failed` or `over_budget` completeness state;
+- sorted entry digest and full report digest.
+
+Only `complete` is admissible. Any repository-tree, scanner, rules or scope
+change invalidates the reference immediately; the UTC age bound is additional,
+not a substitute for content identity. A failed scan is `tool_failed`, never an
+empty inventory. More than 50 modules or 500 consumers is `over_budget` and
+requires deterministic subdivision.
+
+### Typed execution, migration and rollback state
+
+Operational reports use independent axes:
+
+```text
+migration_state:
+    inventoried | prepared | shadow_verified | legacy_forwarding |
+    target_authoritative | retireable
+
+execution_state:
+    not_run | running | passed | failed | stopped
+
+failure_class:
+    none | unavailable_prerequisite | timeout | test_failure |
+    contract_mismatch | tool_failure | capacity_refusal |
+    process_cleanup_incomplete
+
+rollback_state:
+    not_required | ready | requested | running | succeeded |
+    failed | unknown
+
+operator_action:
+    none | retry | repair_prerequisite | narrow_slice |
+    restore_previous | investigate
+```
+
+Each report also carries the tool exit code when one exists, bounded failure
+detail, `partial_evidence_ref`, and the active/prior generation identities.
+`retireable` is only a migration state; `rolled_back` is represented by
+`rollback_state=succeeded`; neither can mask timeout, tool failure or contract
+mismatch. Unknown or malformed combinations fail validation.
+
+### Activation and selector contract
+
+Every slice produces an immutable `LayoutActivationPlanV1` before cutover. It
+names the current and target generation, authority scope, exact selector
+mechanism, precedence, activation command, rollback command, evidence ref,
+operator, deadline and post-action checks. The allowed mechanisms are:
+
+| Scope | Selector and precedence | Atomic activation and rollback |
+|---|---|---|
+| Python/module | exact immutable virtualenv or container generation containing the reviewed wheel and authority manifest; no moving package specifier | build a fresh generation, verify it, atomically switch the deployment service target, then restart; switch back to the retained prior generation |
+| ASGI/backend | stable external module string `trade_web:create_app`; its implementation generation is the selected Python deployment generation | switch the Python deployment generation; never edit the Uvicorn string during rollback |
+| Web assets | `--web-dist` > `TRADE_WEB_DIST` > reviewed generation default | select an immutable `WebBuildRef` directory before process start; rollback selects the retained prior directory and restarts without changing backend generation |
+| Native | Context adapter capability policy plus exact `_trade_native` artifact in the selected Python generation | activate only the reviewed adapter/artifact pair; rollback selects the prior Python generation or disables that owner adapter without changing domain code |
+
+In-place package replacement, a `latest` path, mutable symlink without a
+generation compare-and-swap, and one flag switching all scopes are forbidden.
+An operator confirms the scope and expected current generation; a stale
+expected generation fails without activation. The post-action diagnostic must
+observe the requested generation and evidence digest before the slice advances.
 
 ### Package discovery and installation model
 
@@ -546,7 +620,36 @@ Dataset or Study references.
 - owner child;
 - contract generation;
 - implementation source digest;
-- consumer inventory digest.
+- `ConsumerInventoryRef`;
+- activation-plan digest.
+
+`MigrationEvidenceRef` identifies one complete activation or rollback proof:
+
+- schema version, migration ID, slice ID and attempt ID;
+- source commit/tree, policy digest and approved OpenSpec artifact digest;
+- `ConsumerInventoryRef`, `ModuleAuthorityRef` and applicable
+  `PackageGenerationRef`/`WebBuildRef`/native artifact refs;
+- activation-plan digest and selectors observed before and after;
+- toolchain versions, ordered command identities and monotonic deadline policy;
+- per-check typed execution/failure/rollback status and partial-evidence refs;
+- UTC started/finished observations and sorted report-entry digest;
+- final evidence-manifest digest.
+
+Authority may advance only from one `passed` evidence manifest whose observed
+post-selector equals the plan target. A rollback produces a new
+`MigrationEvidenceRef` linked to the failed attempt and prior generation; it
+does not rewrite the failed evidence.
+
+`BridgeUseCoverageRef` identifies:
+
+- bridge and generation identity;
+- declared supported-consumer set digest;
+- deployment population/scope digest;
+- coverage start/end and UTC report time;
+- source-scan and supported-facade observation digests;
+- collector version, health and last successful observation;
+- `complete`, `partial`, `unavailable` or `stale` coverage state;
+- last observed supported use and report digest.
 
 These references are test/deployment evidence. They contain no mutable
 `latest`, arbitrary path or real data identity.
@@ -905,10 +1008,29 @@ variance; this design invents no absolute latency claim.
 
 ## Observability and Operations
 
-CI and local reports expose:
+The package/build authority guard owns immutable evidence-manifest generation.
+Owner Interface adapters expose bounded compatibility-use observations only at
+already-owned CLI, ASGI, SDK, scheduler, event and import facades; compatibility
+module import itself performs no network, file or metric I/O. The deployment
+observability adapter owns population coverage and retention in the existing
+operator telemetry system. The cleanup child consumes
+`BridgeUseCoverageRef`; it does not infer zero from missing observations.
+
+No new business database, artifact catalog or shared runtime facade is used for
+these records. If a deployment has no approved observability adapter, bridge
+coverage is `unavailable` and retirement is blocked. Supported consumers that
+cannot be observed dynamically remain in the explicit consumer inventory until
+their removal is source/deployment-proven.
+
+The additive read-only command `./trade dev layout-status [--json]` reads only
+the selected deployment evidence files and source manifests. It performs no
+provider, DB, parquet, repair, build, activation or rollback operation. Human
+and JSON output expose:
 
 - package generation, wheel digest and member count;
 - legacy/target module origins and selected authority;
+- source commit/tree, inventory scanner/rules identities, completeness and age;
+- migration evidence and activation-plan digests;
 - missing, duplicate, reverse dependency and unclassified consumers;
 - root/console command parity;
 - ASGI/reload/child import status;
@@ -916,12 +1038,18 @@ CI and local reports expose:
 - Web build manifest and missing asset count;
 - native capability/build/differential state;
 - notebook clean-run state;
-- compatibility bridge age, last observed use, owner and deadline;
+- compatibility bridge owner, population coverage, age, last observed use and
+  deadline;
+- independent migration, execution, failure and rollback states;
+- tool exit code, operator action and partial-evidence ref;
 - whether validation or rollout stopped early and why.
 
-States distinguish `not_run`, `unavailable`, `failed`, `mismatch`, `passed`,
-`rolled_back` and `retireable`. Empty inventory is never success unless the
-expected set is explicitly empty.
+JSON uses a versioned schema and stable exit semantics: `0` means a complete,
+internally consistent report, `1` means a valid report with failed, stopped,
+unknown or non-retireable state, and `2` means the report or tool is invalid or
+unavailable. Human output maps every nonzero condition to one operator action.
+Empty inventory is success only when a complete report binds an explicitly
+empty expected set.
 
 ## Validation Strategy
 
@@ -1060,11 +1188,14 @@ complete consumer scan, release-note/deprecation evidence and rollback drill.
 
 ## Observability
 
-Package and layout rollout uses evidence manifests rather than runtime business
-metrics. During a deployment compatibility window, import/entrypoint
-deprecation counters may be emitted only as bounded metadata without user data,
-credentials or stack traces. Absence of telemetry is `unknown`, not zero use,
-and therefore blocks retirement.
+Package and layout rollout uses `MigrationEvidenceRef` and
+`BridgeUseCoverageRef`, not runtime business metrics. Facade observations are
+bounded to bridge/generation, supported-consumer class and outcome; they exclude
+user data, command arguments, credentials, paths and stack traces. They use no
+blocking external call on request or import paths. Collector health and
+deployment-population coverage are part of the report. Any missing interval,
+unknown deployment, failed collector or stale report produces non-complete
+coverage and blocks retirement.
 
 ## Risks
 
@@ -1088,14 +1219,21 @@ and therefore blocks retirement.
 Rollback is generation-based and per slice:
 
 1. stop advancing the affected migration record;
-2. select the prior package/ASGI/Web/native authority;
+2. verify the expected current generation, then execute the exact
+   `LayoutActivationPlanV1` rollback for only the affected scope;
 3. restore the legacy forwarder as implementation only if it was the prior
    authoritative generation;
-4. reinstall/redeploy the prior wheel/Web build ref;
-5. rerun source/editable/wheel, console, HTTP/Web or native checks;
-6. retain failed target files and evidence for diagnosis or revert the isolated
-   commit;
-7. do not alter databases or immutable business artifacts.
+4. for Python/ASGI select the retained prior immutable deployment generation;
+   for Web set the prior `WebBuildRef` directory through the documented
+   precedence; for native select the prior generation or disable only the owner
+   adapter;
+5. restart the affected process generation and run `./trade dev layout-status
+   --json` plus the scope-specific contract checks;
+6. require observed selector, authority and digest to equal the rollback target;
+   otherwise mark `rollback_state=failed`, halt rollout and escalate P0;
+7. retain failed target files and both evidence manifests for diagnosis or
+   revert the isolated commit;
+8. do not alter databases or immutable business artifacts.
 
 Rollback triggers include any duplicate owner, import-origin mismatch,
 entrypoint/route/SSE/asset contract regression, lifecycle residue, native
@@ -1130,8 +1268,10 @@ Final bridge removal stays in `tests-and-legacy-cleanup`.
 Rollout is off by default for each module/root until its shadow evidence passes.
 There is no global flag that switches every package at once. Package generation,
 ASGI factory and Web build selectors are independently reversible. Deployment
-first verifies a canary/temporary installation, then enables one bounded slice,
-then observes compatibility and only later permits cleanup.
+first creates `LayoutActivationPlanV1`, verifies a canary/temporary immutable
+generation, confirms the expected-current selector, atomically enables one
+bounded slice, verifies `MigrationEvidenceRef`, then observes compatibility and
+only later permits cleanup.
 
 The old root remains installed and importable for at least 30 days after target
 authority for that contract, unless a later reviewed public-contract policy

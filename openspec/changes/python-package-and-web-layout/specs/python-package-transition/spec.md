@@ -100,14 +100,32 @@ compatibility window, deadline, rollback target and cleanup child. A bridge
 SHALL remain installed for at least 30 days after target authority and SHALL
 not be removed while usage is unknown or any supported consumer remains.
 
+The owner Interface adapter SHALL emit only bounded bridge/generation,
+supported-consumer-class and outcome observations at an already-owned facade.
+Compatibility module import SHALL perform no network, file or telemetry I/O.
+The deployment observability adapter SHALL produce `BridgeUseCoverageRef`
+containing the supported-consumer and deployment-population digests, coverage
+interval, collector version/health, last successful observation, coverage state,
+last supported use and report digest. Unsupported or dynamically unobservable
+consumers SHALL remain explicit inventory entries until their removal is
+source- and deployment-proven.
+
 Bridge retirement SHALL require a complete consumer scan, zero observed
-supported use for the full window, release/deprecation evidence, source,
-editable and wheel validation without the bridge, and a successful rollback
-drill.
+supported use for the full window, `complete` population coverage without a
+missing or stale interval, release/deprecation evidence, source, editable and
+wheel validation without the bridge, and a successful rollback drill.
 
 #### Scenario: Telemetry is unavailable
 - **WHEN** supported-use evidence cannot be collected for part of the compatibility window
 - **THEN** use state is `unknown` and retirement remains blocked
+
+#### Scenario: A deployment is outside collector coverage
+- **WHEN** the supported deployment-population digest contains an instance or consumer class absent from the coverage report
+- **THEN** coverage is `partial`, zero use is not inferred and retirement remains blocked
+
+#### Scenario: A legacy module is imported
+- **WHEN** the compatibility module loads in a supported process
+- **THEN** import itself performs no external or durable I/O and any usage observation occurs only through the owning facade adapter
 
 #### Scenario: A bridge meets its age but still has a consumer
 - **WHEN** the minimum window elapsed but a script, deployment command, SDK, notebook or test still imports the legacy path

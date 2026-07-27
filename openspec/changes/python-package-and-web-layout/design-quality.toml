@@ -72,6 +72,8 @@ contracts = [
   "root ./trade and trade-py console parity",
   "one implementation authority per logical module",
   "source, editable and clean-wheel member/origin evidence",
+  "digest-bound consumer inventory, activation plan and migration evidence",
+  "read-only typed layout status",
   "measured compatibility bridge retirement",
 ]
 failure_states = [
@@ -81,6 +83,10 @@ failure_states = [
   "duplicate module or import-time side effect",
   "target-to-legacy implementation dependency",
   "stale or over-budget consumer inventory",
+  "uncorrelated activation evidence",
+  "selector compare-and-set conflict",
+  "status axes conflate failure and rollback",
+  "partial or stale bridge population coverage",
   "unclassified private consumer",
   "CLI or lazy-import regression",
   "premature bridge retirement",
@@ -92,7 +98,7 @@ spec_requirements = [
   "python-package-transition:Root and installed CLI contracts SHALL remain compatible",
   "python-package-transition:Compatibility bridges SHALL have measured retirement criteria",
 ]
-validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "2.4", "4.1", "4.2", "4.3", "8.1", "8.2", "8.3"]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "2.4", "2.5", "4.1", "4.2", "4.3", "7.2", "7.3", "8.1", "8.2", "8.3"]
 
 [[obligations]]
 id = "layout.web"
@@ -114,6 +120,8 @@ contracts = [
   "single startup and shutdown owner",
   "Vite commands, proxies, manifest, assets and SPA deep links",
   "independent backend and frontend rollback generations",
+  "exact independently selected immutable deployment and Web build generations",
+  "complete bridge-use deployment coverage before retirement",
 ]
 failure_states = [
   "ASGI factory or reload import unavailable",
@@ -124,6 +132,8 @@ failure_states = [
   "dev proxy or SPA deep-link regression",
   "explicit web-dist override ignored",
   "backend and frontend rollback coupled",
+  "active generation differs from activation plan",
+  "bridge coverage missing a supported deployment",
 ]
 spec_requirements = [
   "web-layout-transition:The legacy ASGI import SHALL remain a thin compatibility contract",
@@ -132,7 +142,7 @@ spec_requirements = [
   "web-layout-transition:Web product and BFF contracts SHALL not change through layout movement",
   "web-layout-transition:Backend and frontend cutovers SHALL be independently reversible",
 ]
-validation_tasks = ["1.1", "1.2", "1.3", "6.1", "6.2", "6.3", "8.1", "8.2", "8.3"]
+validation_tasks = ["1.1", "1.2", "1.3", "6.1", "6.2", "6.3", "7.2", "7.3", "8.1", "8.2", "8.3"]
 
 [[obligations]]
 id = "layout.native"
@@ -188,6 +198,9 @@ contracts = [
   "root script operational ownership",
   "component-owned test collection preservation",
   "bounded deterministic process-clean migration validation",
+  "orthogonal execution, migration, failure and rollback status",
+  "immutable inventory, activation and migration evidence",
+  "read-only actionable operator diagnostics",
   "independent generation rollback",
   "no real business data access",
 ]
@@ -201,6 +214,9 @@ failure_states = [
   "validation timeout leaves process tree",
   "oversized slice truncates evidence",
   "rollback generation unrecoverable",
+  "inventory or migration evidence stale, incomplete or tampered",
+  "layout status mutates runtime or business state",
+  "bridge use inferred from incomplete coverage",
   "package or layout test opens real data",
 ]
 spec_requirements = [
@@ -209,7 +225,9 @@ spec_requirements = [
   "layout-migration-governance:Root scripts SHALL be classified by operational ownership",
   "layout-migration-governance:Test layout migration SHALL preserve component ownership and collection evidence",
   "layout-migration-governance:Migration validation SHALL be bounded, deterministic and process-clean",
+  "layout-migration-governance:Migration evidence SHALL bind inventory, activation and outcomes",
   "layout-migration-governance:Every migration slice SHALL be independently reversible",
+  "layout-migration-governance:Layout status SHALL be read-only, typed and actionable",
   "layout-migration-governance:Package and layout operations SHALL not access real business data",
 ]
-validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.3", "2.4", "4.1", "4.2", "4.3", "5.1", "5.2", "5.3", "6.1", "6.2", "6.3", "7.1", "7.2", "8.1", "8.2", "8.3"]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.3", "2.4", "2.5", "4.1", "4.2", "4.3", "5.1", "5.2", "5.3", "6.1", "6.2", "6.3", "7.1", "7.2", "7.3", "8.1", "8.2", "8.3"]

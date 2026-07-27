@@ -102,13 +102,46 @@ tool failure and unavailable prerequisite SHALL be reported as distinct
 states. Reaching a deadline SHALL terminate the process tree and retain partial
 reports without advancing authority.
 
+Reports SHALL model `migration_state`, `execution_state`, `failure_class`,
+`rollback_state` and `operator_action` as separate closed fields. They SHALL
+include a tool exit code when one exists, a bounded failure detail,
+`partial_evidence_ref`, and active/prior generation identities. Lifecycle state
+SHALL NOT overwrite or imply an execution, failure or rollback result.
+
 #### Scenario: A package smoke process hangs
 - **WHEN** an install, import, console, ASGI or native command exceeds its reviewed deadline
-- **THEN** the whole owned process group is terminated, state is `timeout`, completed evidence is retained and no module authority advances
+- **THEN** the whole owned process group is terminated, `execution_state=stopped`, `failure_class=timeout`, completed evidence is retained and no module authority advances
 
 #### Scenario: The candidate slice exceeds the consumer budget
 - **WHEN** more than 500 current consumers map to the slice
 - **THEN** validation refuses the slice and requires a narrower deterministic grouping rather than taking the first 500 or sampling
+
+#### Scenario: A rollback succeeds after validation failed
+- **WHEN** the prior generation is restored after a contract mismatch
+- **THEN** the report retains `failure_class=contract_mismatch`, records `rollback_state=succeeded` independently and does not relabel the failed validation as passed
+
+### Requirement: Migration evidence SHALL bind inventory, activation and outcomes
+
+Each authority attempt SHALL produce one immutable, digest-bound
+`MigrationEvidenceRef`. It SHALL bind the source commit/tree, policy and
+approved design digest, complete `ConsumerInventoryRef`, authority and
+package/Web/native generation refs, activation-plan digest, selectors observed
+before and after, toolchain and ordered command identities, monotonic deadline
+policy, per-check typed outcomes, partial-evidence refs and final report digest.
+
+`ConsumerInventoryRef` SHALL bind scanner version/source digest, included roots,
+explicit exclusions, selection-rules digest, UTC generation time, counts,
+completeness state and sorted entry/report digests. Activation SHALL admit only
+a `complete` inventory from the same repository tree and scanner rules, no more
+than 24 hours old. Scan error SHALL be `tool_failed`, never an empty inventory.
+
+#### Scenario: Source changes after consumer scanning
+- **WHEN** the repository tree, scanner, rules or scope differs from the inventory reference used by activation
+- **THEN** the attempt is refused as stale and a fresh complete inventory is required
+
+#### Scenario: Individual checks pass without one evidence manifest
+- **WHEN** wheel, CLI and import logs exist but are not bound into one valid `MigrationEvidenceRef`
+- **THEN** module authority remains unchanged because uncorrelated command success is not activation evidence
 
 ### Requirement: Every migration slice SHALL be independently reversible
 
@@ -116,6 +149,19 @@ Each slice SHALL name its prior authority, target authority, activation
 condition, rollback trigger, rollback selector, retained compatibility path and
 post-rollback validation. Python package, ASGI/backend, frontend build and
 native adapter generations SHALL be independently selectable.
+
+Each slice SHALL publish an immutable `LayoutActivationPlanV1` with the exact
+selector mechanism and precedence, expected current generation, target and
+rollback generations, activation and rollback commands, evidence reference,
+operator, deadline and post-action checks. Activation SHALL use compare-and-set
+semantics on the expected generation and SHALL reject moving package
+specifiers, unverified `latest` paths and one global selector for all scopes.
+
+The Python and ASGI selectors SHALL be an immutable virtualenv or container
+generation while retaining `trade_web:create_app`; the Web selector precedence
+SHALL remain `--web-dist`, then `TRADE_WEB_DIST`, then a reviewed default
+generation; native selection SHALL be bound to the owning adapter and the exact
+artifact in the selected Python generation.
 
 Rollback SHALL not require database migration, artifact deletion, provider
 access or reversal of previously completed semantic owner migrations.
@@ -127,6 +173,31 @@ access or reversal of previously completed semantic owner migrations.
 #### Scenario: Rollback validation fails
 - **WHEN** reinstalling or selecting the prior generation does not restore its recorded imports/contracts
 - **THEN** rollout halts, the bridge remains installed and the failure is P0 until the prior authority is recoverable
+
+#### Scenario: Another operator changed the active generation
+- **WHEN** activation observes a current generation different from the plan's expected generation
+- **THEN** it performs no switch and requires a newly reviewed plan rather than overwriting the concurrent decision
+
+### Requirement: Layout status SHALL be read-only, typed and actionable
+
+The additive `./trade dev layout-status [--json]` command SHALL read only
+selected deployment evidence and source manifests. It SHALL not access a
+provider, business DB, parquet, repair, build, activate or roll back. Its
+versioned JSON SHALL expose generation and selector identities, evidence and
+inventory refs, bridge coverage, orthogonal state fields, exit code, partial
+evidence and operator action without credentials, user data or stack traces.
+
+Exit `0` SHALL mean a complete internally consistent report, exit `1` a valid
+report with failed/stopped/unknown/non-retireable state, and exit `2` an invalid
+or unavailable report/tool.
+
+#### Scenario: An operator inspects a failed cutover
+- **WHEN** layout status reads a valid evidence manifest with a timeout and successful rollback
+- **THEN** it reports the timeout and rollback independently, names the active prior generation and returns exit 1 with a bounded operator action
+
+#### Scenario: Status evidence is malformed
+- **WHEN** a selector or digest does not match the evidence schema
+- **THEN** the command performs no repair, returns exit 2 and identifies the invalid evidence class without leaking raw payloads
 
 ### Requirement: Package and layout operations SHALL not access real business data
 
