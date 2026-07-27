@@ -2,7 +2,7 @@
 
 ### Requirement: Public contract serialization SHALL be deterministic, exact and bounded
 
-Each public wire DTO SHALL declare schema name and positive integer schema
+Each public JSON wire DTO SHALL declare schema name and positive integer schema
 version. Canonical JSON SHALL use UTF-8, sorted keys, compact separators,
 finite values, explicit enum strings and UTC instants in the sole form
 `YYYY-MM-DDTHH:MM:SS.ffffffZ`. The instant form SHALL use a four-digit year
@@ -30,6 +30,10 @@ codec. That projection SHALL contain the complete `EnvelopeMeta`, complete
 the framing defined by `kernel-primitives`; it SHALL contain no `ActorContext`,
 `Deadline`, remaining time or attempt state. Decoding it SHALL yield an inert
 projection and SHALL create neither executable authority nor a local budget.
+It is the explicit non-JSON exception to this requirement: its fixed domain
+plus projection version identify the schema, it has no per-object
+`schema_name`, and the exact framed binary encoding is its sole public/durable
+representation. No second JSON projection codec is permitted.
 
 Any `ActorContext` encoded inside an operation, control or shutdown receipt
 SHALL have `assurance=unverified` and SHALL be attribution only. Encoding a

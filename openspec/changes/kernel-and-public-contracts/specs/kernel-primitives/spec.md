@@ -152,6 +152,19 @@ resolution SHALL use binary search over the immutable registry-key-sorted
 descriptor tuple, with at most 13 key comparisons, and SHALL NOT linearly scan
 all descriptors. Increasing the v1 capacity SHALL require a reviewed contract
 change rather than runtime configuration.
+Each retained descriptor identity and its executable owner codec SHALL remain
+resolvable for at least the full retention horizon of every durable projection,
+replay key and receipt that depends on it. Retained historical entries SHALL
+count toward 4,096. Retirement SHALL require owner proof that no retained
+durable identity references the codec; Bootstrap readiness SHALL fail when
+retention and the capacity bound cannot both be satisfied.
+The immutable local registry entry SHALL be a non-wire
+`RegisteredOwnerCodecV1` pairing exactly one descriptor with one typed
+`OwnerPayloadCodec[T]` encode/decode capability validated against that
+descriptor. Binary lookup SHALL resolve that binding rather than a descriptor
+without executable validation. The capability object, callback and
+implementation identity SHALL NOT enter a public DTO, projection, digest or
+diagnostic.
 Kernel supplies only envelope composition and SHALL NOT own the descriptor or
 registry. A codec validates wire shape only and SHALL NOT confer authority,
 rights, publication, quality or PIT proof. The immutable-ref-only rule applies
@@ -164,12 +177,19 @@ reference.
 Platform `CommandEnvelope` and `QueryEnvelope` SHALL be admission-local,
 non-wire and non-durable composites containing current verified authority and a
 process-local `Deadline`. They SHALL have no whole-object encoder or decoder.
+The owner codec SHALL be the sole source of `canonical_payload`; construction
+SHALL prove byte-for-byte equality with `owner_codec.encode(typed_payload)`
+before fingerprinting, projection or execution.
 Their only durable/transport identity SHALL be the inert
 `DurableEnvelopeProjectionV1`, which contains exactly projection version 1,
 every `EnvelopeMeta` field, the complete `OwnerCodecDescriptor` identity and
 policy fields, and the exact owner canonical payload bytes. It SHALL exclude
 `ActorContext`, `Deadline`, remaining time, raw idempotency keys, keyed
 fingerprints, attempt counters, transport headers and framework state.
+`trade.platform.contracts.messages` SHALL own that projection value, its sole
+exact binary encoder/decoder and
+`derive_durable_envelope_digest_v1`. Kernel SHALL remain limited to envelope
+metadata composition.
 
 Projection bytes SHALL start with ASCII
 `trade.durable-envelope-projection.v1`, one NUL byte, then these exact ordered
@@ -186,15 +206,38 @@ SHALL be validated before allocation. A descriptor's
 `max_canonical_bytes` SHALL remain a standalone payload ceiling; projection
 construction SHALL still reject framing plus metadata plus payload above
 65,536 bytes.
+The projection SHALL NOT have a canonical JSON representation or per-object
+`schema_name`; its fixed domain plus projection version identify its schema,
+and the framed bytes above SHALL be its only public/durable codec. Its digest
+SHALL equal
+`ContentDigest.from_bytes(encode_durable_envelope_projection_v1(projection))`.
+Payload-only, JSON, legacy-envelope and adapter-specific digests SHALL fail
+identity verification.
 
 Projection decoding SHALL yield only an authority-free
 `DurableEnvelopeProjectionV1`. It SHALL NOT construct a command/query envelope,
 verified actor or local `Deadline`. Execution after decode SHALL require exact
 descriptor resolution against the current frozen registry, owner-codec payload
 revalidation, separately verified current authority and a newly admitted local
-deadline. Changing only current authority or that fresh deadline SHALL NOT
-change projection bytes; changing projected metadata, descriptor identity or
+deadline. For an existing operation/process identity, the attempt deadline
+SHALL be capped by the authoritative owner's remaining deadline and SHALL NOT
+extend its immutable UTC expiry; an expired owner SHALL be rejected. A new
+owner deadline SHALL require a new causally linked owner identity. Changing
+only current authority or that fresh bounded deadline SHALL NOT change
+projection bytes; changing projected metadata, descriptor identity or
 canonical payload SHALL change the projection or fail validation.
+
+Projection and registry failure identity SHALL be the closed
+`MessageContractFailureCodeV1` set:
+`DURABLE_PROJECTION_MALFORMED`, `DURABLE_PROJECTION_TOO_LARGE`,
+`OWNER_CODEC_NOT_FOUND`, `OWNER_CODEC_IDENTITY_MISMATCH`,
+`OWNER_PAYLOAD_INVALID`, `CODEC_REGISTRY_DUPLICATE_KEY` and
+`CODEC_REGISTRY_CAPACITY_EXCEEDED`. The first five SHALL be request-scoped
+admission failures and produce no authority, deadline, operation or dispatch.
+Only code plus bounded owner/schema/version/purpose identity MAY cross an
+interface; payload, actor evidence, paths and codec internals SHALL be absent.
+The final two SHALL be Bootstrap-readiness failures that block ingress. Their
+bounded readiness product SHALL contain only code and descriptor count.
 
 #### Scenario: An EventBus event is mapped
 - **WHEN** compatibility code maps a durable legacy event
@@ -203,6 +246,22 @@ canonical payload SHALL change the projection or fail validation.
 #### Scenario: A caller supplies an arbitrary mapping payload
 - **WHEN** no registered owner codec exists for that mapping
 - **THEN** canonical envelope construction fails rather than accepting `dict[str, Any]` as a public contract
+
+#### Scenario: Typed payload and supplied bytes disagree
+- **WHEN** an envelope caller supplies canonical bytes that differ from the owner codec's exact encoding of the typed DTO
+- **THEN** construction fails before fingerprinting, projection or execution
+
+#### Scenario: A durable projection digest is derived
+- **WHEN** replay binds a historical durable envelope
+- **THEN** it hashes the sole exact framed projection bytes and every projected component affects the digest while actor and local deadline do not
+
+#### Scenario: A retained descriptor is proposed for retirement
+- **WHEN** any retained projection, replay key or resolvable receipt still depends on its executable codec
+- **THEN** retirement is refused and the retained entry continues to count toward the registry capacity
+
+#### Scenario: Registry assembly cannot become ready
+- **WHEN** Bootstrap sees a duplicate key, 4,097 entries or cannot retain a required historical codec
+- **THEN** ingress remains blocked with one closed readiness code and no descriptor or payload dump
 
 #### Scenario: A child command is emitted from a verified parent event
 - **WHEN** a handler creates a new command from an admitted parent envelope

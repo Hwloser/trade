@@ -55,6 +55,18 @@ reported as successful cancellation.
   owner/schema/purpose shape but grant no authority or external-content rights;
   cross-Context provider/news/L2/stream content must first become a
   Capture-owned immutable artifact reference.
+- Make admission envelopes explicitly local-only and give
+  `trade.platform.contracts.messages` one authority-free binary
+  `DurableEnvelopeProjectionV1` identity. Replay hashes those exact framed
+  bytes; the owner codec proves typed DTO/byte equality, retained descriptors
+  share the durable replay horizon, and projection/registry failures use a
+  closed safe diagnostic taxonomy.
+- Freeze the exact public DTO field correction: receipt actors become unverified
+  attribution; only ControlReceipt, ShutdownReceipt and ProcessView retain UTC
+  deadline evidence; OperationReceipt remains deadline-free and uses an
+  internal immutable Platform admission-deadline contract. ShutdownReceipt can
+  link only an exact accepted shutdown control and reports linkage corruption
+  explicitly.
 - Make Platform command ingress the sole future owner of command-admission
   idempotency claims, operation identity and the complete `OperationReceipt`
   lifecycle. Processes separately owns `ProcessStartKeyV1`/inbox claims,

@@ -491,7 +491,11 @@ They are admission-local, non-wire and non-durable composites. No generic or
 owner codec may encode or decode either whole object. Current authority and the
 local monotonic budget therefore cannot be transported, persisted, hashed or
 reconstructed from historical bytes. Business command/query DTOs are not
-defined here; arbitrary `dict[str, Any]` payload admission is forbidden.
+defined here; arbitrary `dict[str, Any]` payload admission is forbidden. The
+owner codec is the sole source of `canonical_payload`: envelope construction
+must prove byte-for-byte equality with `owner_codec.encode(payload)` before
+fingerprinting, projection or execution. Callers cannot supply a typed DTO and
+unrelated bytes as two independent facts.
 
 When an admitted logical message must be persisted, transported, retried or
 replayed, its only canonical identity is an inert, authority-free
@@ -538,13 +542,65 @@ not a promise that a 65,536-byte payload fits an envelope; projection
 construction fails when framing plus metadata plus payload exceeds the total
 budget.
 
+`trade.platform.contracts.messages` owns `DurableEnvelopeProjectionV1`, its
+exact encoder/decoder and
+`derive_durable_envelope_digest_v1(projection)`. Kernel remains limited to
+`EnvelopeMeta` composition. The projection is deliberately not a canonical
+JSON DTO: its ASCII domain plus projection version identify its schema, and
+the binary framing above is its sole public/durable codec. Its digest is
+exactly `ContentDigest.from_bytes(encode_durable_envelope_projection_v1(
+projection))`; no payload-only, JSON, legacy-envelope or adapter-specific
+digest is conforming.
+
 Decoding these bytes yields only a `DurableEnvelopeProjectionV1`; it does not
 yield a `CommandEnvelope`, `QueryEnvelope`, verified authority or execution
-budget. Before execution, trusted ingress resolves the exact descriptor
-against the current frozen registry, revalidates canonical payload with that
-owner codec, establishes current actor authority from trusted adapter
-evidence, admits a fresh local `Deadline`, and only then constructs an
-admission-local composite. Any failure is closed.
+budget. Before execution, trusted ingress resolves the exact descriptor and
+executable codec against the current frozen registry, revalidates canonical
+payload with that owner codec, establishes current actor authority from trusted
+adapter evidence, admits a fresh local `Deadline`, and only then constructs an
+admission-local composite. For an existing operation/process identity, that
+attempt deadline must be capped by the authoritative owner's remaining
+deadline and cannot extend its declared UTC expiry; an expired owner is
+rejected. A genuinely new owner deadline requires a new causally linked owner
+identity. A decoded view or projection alone is never a trusted source from
+which to recreate a budget.
+
+Projection/registry failures use the closed
+`MessageContractFailureCodeV1` taxonomy:
+
+```text
+DURABLE_PROJECTION_MALFORMED
+DURABLE_PROJECTION_TOO_LARGE
+OWNER_CODEC_NOT_FOUND
+OWNER_CODEC_IDENTITY_MISMATCH
+OWNER_PAYLOAD_INVALID
+CODEC_REGISTRY_DUPLICATE_KEY
+CODEC_REGISTRY_CAPACITY_EXCEEDED
+```
+
+The first five are request-scoped admission failures: they produce no
+authority, budget, operation or dispatch, and any future interface mapping may
+expose only the code plus bounded owner/schema/version/purpose identity, never
+payload bytes, actor evidence, paths or codec internals. The final two are
+Bootstrap-readiness failures that block ingress. A bounded readiness
+projection exposes only reason code and descriptor count, with no raw
+descriptor dump. The future Platform foundation owns runtime health delivery;
+this child owns the pure typed error/result and readiness DTO contracts.
+
+A descriptor key, descriptor identity and executable owner codec remain
+available for at least the full retention horizon of every durable projection,
+replay key and resolvable receipt that depends on them. Retained historical
+entries count toward the 4,096-entry bound. Retirement is permitted only after
+the owner proves no retained durable identity can reference that codec; a
+missing retired codec is reported as `OWNER_CODEC_NOT_FOUND`, never silently
+decoded by a newer version. The future Bootstrap/persistence foundation owns
+that retention proof and must fail readiness when it cannot satisfy the bound.
+The frozen registry therefore contains local non-wire
+`RegisteredOwnerCodecV1` bindings, each pairing one immutable descriptor with
+one `OwnerPayloadCodec[T]` capability whose `encode`/`decode` product is
+validated against that descriptor. Binary lookup returns the binding, not just
+an unexecutable descriptor. Capability objects, implementation names and
+callbacks never enter canonical bytes, logs or public DTOs.
 
 Envelope causality is closed rather than adapter-defined:
 
@@ -653,18 +709,25 @@ accepted_at: UtcInstant
 
 That fact is atomically created with the command-admission claim, operation
 identity and initial receipt. Its operation/request/accepted-at values exactly
-match that receipt, `deadline >= accepted_at`, and a command-equivalent
-duplicate resolves the original fact without changing the deadline. It is not
-a public receipt or cross-Context query product. It is retained for at least
-the complete retention horizon of the operation claim and resolvable
+match that receipt, and `deadline` exactly copies the trusted admitted
+`CommandEnvelope.deadline.wall_clock_expires_at` without resampling or clock
+reinterpretation; it must also satisfy `deadline >= accepted_at`. A
+command-equivalent duplicate resolves the original fact without changing the
+deadline. It is not a public receipt or cross-Context query product. This child
+owns the internal, non-package-re-exported
+`OperationAdmissionDeadlineV1` value and pure matching/resolution port in
+`trade.platform.contracts.operations`. It is retained for at least the
+complete retention horizon of the operation claim and resolvable
 `OperationReceipt`; neither member may expire while the other can still be
 replayed or inspected. An operation `deadline_exceeded` transition must resolve
 this fact and the required worker-exit or durable-write-fence evidence. A
 caller observation deadline, envelope creation time or newly attached retry
-deadline cannot replace or mutate it. The
+deadline cannot replace or mutate it, and a fresh attempt for the same
+operation cannot end after it. The
 `platform-persistence-events-and-bootstrap-foundation` child must implement and
-uniquely constrain this record before any durable operation writer is adopted;
-this contract child defines only its invariant and test-double boundary.
+uniquely constrain its repository, atomic write and retention before any
+durable operation writer is adopted; this contract child defines only its
+value invariants and fake-port boundary.
 
 This split follows the parent normative `platform-foundation` requirement and
 task 2.3, which assign command ingress and `OperationReceipt` to Platform, while
@@ -818,6 +881,9 @@ creation time. V1 has no in-place process deadline renewal product: work
 requiring another owner deadline creates a new causally linked process identity
 under its owner contract. The owner retains any local monotonic execution
 budget outside `ProcessView`; a view decoder cannot construct or rebind one.
+Every retry/redelivery for the same process identity is capped by the trusted
+owner record's remaining deadline and cannot use the public view alone as
+authority or extend the immutable UTC expiry.
 
 `reason_code` is required for `blocked`, `retry_scheduled`, `failed`,
 `cancelled` and `deadline_exceeded`; optional for `compensation_pending`; and
@@ -1167,6 +1233,13 @@ equals the direct parent in both records for a child control. The direct
 attribution copy keeps shutdown audit attribution available without a second
 read, while the linked accepted control receipt proves that durable shutdown
 intent/outbox admission actually occurred.
+Link corruption has the exact safe reason
+`SHUTDOWN_CONTROL_LINK_CORRUPT`; a composed query reports unavailable/failed,
+never completed, missing or healthy, and makes at most one bounded integrity
+signal attempt. That signal may contain only safe owner, control, request and
+fence-generation identities and must exclude credentials, raw actor evidence
+and payloads. The future Platform foundation owns delivery and recovery
+projection; this child owns the pure validation outcome.
 The optional Platform `process_id` remains a non-semantic `OpaqueId` and does
 not import Processes contracts.
 

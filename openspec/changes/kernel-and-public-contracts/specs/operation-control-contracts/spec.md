@@ -81,6 +81,13 @@ subject rules. Before opening a replay transaction or reading/disclosing an
 operation or claim, the adapter SHALL verify those bindings, the digest and
 complete historical identity tuple and authorize the current initiator, subject
 and policy.
+The historical-envelope digest SHALL be exactly
+`ContentDigest.from_bytes(encode_durable_envelope_projection_v1(projection))`
+for the authoritative retained `DurableEnvelopeProjectionV1`. Verification
+SHALL recompute that value before the transaction or any existence disclosure.
+Every projected metadata, descriptor/policy/codec-identity and payload
+component SHALL affect it; actor authority, local deadline and attempt metadata
+SHALL remain absent.
 
 Direct redispatch SHALL be resolve-only and consume one monotonic remaining
 deadline. One admission SHALL start at most one Platform owner-local replay
@@ -413,8 +420,10 @@ repository, containing exactly schema version 1, `operation_id`,
 `request_message_id`, `deadline: UtcInstant` and `accepted_at: UtcInstant`.
 It SHALL be created atomically with the command-admission claim, operation
 identity and initial receipt. Its operation/request/accepted-at values SHALL
-equal the receipt, its deadline SHALL NOT precede accepted-at, and a
-command-equivalent duplicate SHALL resolve the original unchanged record.
+equal the receipt. Its deadline SHALL exactly copy the trusted admitted
+`CommandEnvelope.deadline.wall_clock_expires_at` without resampling or clock
+reinterpretation, SHALL NOT precede accepted-at, and a command-equivalent
+duplicate SHALL resolve the original unchanged record.
 It SHALL be retained for at least the common retention horizon of the operation
 claim and resolvable receipt; no member SHALL expire while another can still be
 replayed or inspected.
@@ -423,9 +432,17 @@ An operation `deadline_exceeded` transition SHALL resolve that immutable
 admission record plus worker-exit or durable-write-fence evidence. A caller
 observation deadline, envelope creation time, fresh retry deadline or
 ProcessView deadline SHALL NOT replace or mutate operation admission evidence.
+Every fresh attempt for the same operation SHALL be capped by its trusted
+remaining owner deadline and SHALL NOT extend the immutable UTC expiry. An
+expired operation SHALL be rejected; a genuinely new owner deadline SHALL use
+a new causally linked operation identity.
+This child SHALL own the internal, non-package-re-exported
+`OperationAdmissionDeadlineV1` value plus a pure matching/resolution port in
+`trade.platform.contracts.operations`.
 The `platform-persistence-events-and-bootstrap-foundation` child SHALL
-implement and uniquely constrain the record before any durable operation
-writer is adopted. This child defines no repository or public query for it.
+implement and uniquely constrain the repository, atomic write and common
+retention before any durable operation writer is adopted. This child defines
+no repository or public query for it.
 
 Before a Platform or Processes child creates a repository, the parent
 architecture ownership matrix SHALL be governedly clarified to split Platform
@@ -501,6 +518,9 @@ the same way as process type, triggering operation identity, causal tuple and
 creation time. V1 SHALL have no in-place deadline renewal. Work that needs a
 different owner deadline SHALL use a new causally linked process identity under
 an owner contract rather than silently changing a historical view.
+Every retry/redelivery for the same process identity SHALL be capped by the
+trusted owner's remaining deadline and SHALL NOT use the public view alone to
+authorize work or extend its immutable UTC expiry.
 
 The top-level reason code SHALL be required for `blocked`, `retry_scheduled`,
 `failed`, `cancelled` and `deadline_exceeded`; optional for
@@ -844,7 +864,14 @@ to an immutable actor-bearing `ControlReceipt` whose `control_kind` is
 same control ID, operation/process target links, request message, initiator,
 correlation, causation, requested time and UTC deadline, and shutdown
 `finished_at` SHALL be no earlier than control `finished_at`. Any non-accepted
-disposition or mismatch SHALL be corruption. The
+disposition or mismatch SHALL be corruption. The pure link validator SHALL
+return the exact safe reason `SHUTDOWN_CONTROL_LINK_CORRUPT`. A composed owner
+query SHALL map that outcome to unavailable/failed and SHALL NOT present the
+shutdown as completed, missing or healthy. It MAY make at most one bounded
+integrity-signal attempt containing only safe owner, control, request and
+fence-generation identities; credentials, raw actor evidence, payloads and
+paths SHALL be absent. Runtime signal delivery and recovery projection remain
+owned by the future Platform foundation. The
 causation field SHALL be absent in both records for a root control and equal the
 direct parent in both records for a child control. The
 optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require
@@ -910,7 +937,7 @@ bounded public API SHALL NOT perform an unbounded join after its deadline.
 
 #### Scenario: Shutdown linkage differs from accepted control
 - **WHEN** any control ID, target link, request identity, causal identity, initiator attribution, requested time or UTC deadline differs, or shutdown finishes before control admission
-- **THEN** link validation rejects the pair as corruption
+- **THEN** link validation returns `SHUTDOWN_CONTROL_LINK_CORRUPT`, the composed query is unavailable/failed rather than completed, missing or healthy, and at most one redacted integrity signal is attempted
 
 #### Scenario: A stale owner writes after takeover
 - **WHEN** generation N+1 has durably taken over and generation N attempts a state or terminal-audit write
