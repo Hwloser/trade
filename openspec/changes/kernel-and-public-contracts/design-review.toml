@@ -4,7 +4,7 @@ policy_digest = "sha256:660a9aa5c48c3279081976600db135faa09987635b112529a55fc6d0
 artifact_digest_algorithm = "sha256-path-content-v1"
 artifact_digest = "sha256:149dca13d723ac8f3f3a591c5e59a0762b382e388487740e50c42a0197d44837"
 reviewed_commit = "36d58dd4df14a61c48520510ca27d464c89b6c59"
-reviewed_at = "2026-07-26"
+reviewed_at = "2026-07-27"
 status = "approved"
 bootstrap = false
 
