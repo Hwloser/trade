@@ -165,6 +165,33 @@ descriptor. Binary lookup SHALL resolve that binding rather than a descriptor
 without executable validation. The capability object, callback and
 implementation identity SHALL NOT enter a public DTO, projection, digest or
 diagnostic.
+`OwnerPayloadCodec[T]` SHALL expose exactly immutable `descriptor`,
+`manifest`, `encode(payload: T) -> bytes` and
+`decode(canonical_payload: bytes) -> T`. Its `OwnerCodecManifestV1` SHALL contain
+exactly manifest schema version 1, the descriptor registry-key fields,
+`max_canonical_bytes`, `content_policy`, a reviewed canonical-schema
+`ContentDigest` and a 1-96 character ASCII lower-case codec revision token.
+Manifest bytes SHALL use ASCII domain `trade.owner-payload-codec-manifest.v1`,
+one NUL and the same unsigned four-byte big-endian component framing as the
+durable projection. The exact ordered components SHALL be: manifest schema
+version; owner namespace; schema name; schema version; payload purpose;
+maximum canonical bytes; content policy; canonical-schema digest algorithm;
+canonical-schema digest value; codec revision. Integers and tokens SHALL use
+the same canonical encoding rules as the projection. The descriptor fields
+SHALL equal the manifest fields and
+`descriptor.codec_identity` SHALL equal
+`ContentDigest.from_bytes(exact_manifest_bytes)`.
+
+Registry freeze SHALL reject a descriptor/capability/manifest mismatch before
+ingress. For every accepted canonical byte sequence, `decode` SHALL return the
+typed owner value and exactly one subsequent `encode` SHALL reproduce identical
+bytes; otherwise the product is `OWNER_PAYLOAD_INVALID`. Fresh typed admission
+SHALL create a non-wire immutable `ValidatedOwnerPayloadV1[T]` by one `encode`;
+durable bytes SHALL create it by one `decode` plus one canonical re-encode.
+Envelope construction SHALL consume that validated product without invoking
+the codec again. A codec exception, non-`bytes` result, over-limit output,
+noncanonical round trip or descriptor mismatch SHALL fail closed and SHALL NOT
+produce a partial validated payload.
 Kernel supplies only envelope composition and SHALL NOT own the descriptor or
 registry. A codec validates wire shape only and SHALL NOT confer authority,
 rights, publication, quality or PIT proof. The immutable-ref-only rule applies
@@ -177,9 +204,15 @@ reference.
 Platform `CommandEnvelope` and `QueryEnvelope` SHALL be admission-local,
 non-wire and non-durable composites containing current verified authority and a
 process-local `Deadline`. They SHALL have no whole-object encoder or decoder.
-The owner codec SHALL be the sole source of `canonical_payload`; construction
-SHALL prove byte-for-byte equality with `owner_codec.encode(typed_payload)`
-before fingerprinting, projection or execution.
+The owner codec SHALL be the sole source of `canonical_payload`; one envelope
+construction SHALL call `owner_codec.encode(typed_payload)` exactly once and
+SHALL prove the returned immutable bytes are byte-for-byte equal to any supplied
+canonical bytes before fingerprinting, projection or execution. The same
+returned bytes object SHALL be retained as the envelope and projection
+`canonical_payload`; projection construction SHALL NOT decode, re-encode or
+stage a second payload-sized copy. The projection encoder SHALL use one bounded
+destination buffer, and digest derivation SHALL consume that exact immutable
+projection encoding rather than encoding the owner payload or projection again.
 Their only durable/transport identity SHALL be the inert
 `DurableEnvelopeProjectionV1`, which contains exactly projection version 1,
 every `EnvelopeMeta` field, the complete `OwnerCodecDescriptor` identity and
@@ -188,8 +221,10 @@ policy fields, and the exact owner canonical payload bytes. It SHALL exclude
 fingerprints, attempt counters, transport headers and framework state.
 `trade.platform.contracts.messages` SHALL own that projection value, its sole
 exact binary encoder/decoder and
-`derive_durable_envelope_digest_v1`. Kernel SHALL remain limited to envelope
-metadata composition.
+`derive_durable_envelope_digest_v1(encoded_projection: bytes)`. Kernel SHALL
+remain limited to envelope metadata composition. One projection operation
+SHALL call `encode_durable_envelope_projection_v1` once; the digest function
+SHALL consume that exact returned byte sequence without encoding again.
 
 Projection bytes SHALL start with ASCII
 `trade.durable-envelope-projection.v1`, one NUL byte, then these exact ordered
@@ -210,34 +245,73 @@ The projection SHALL NOT have a canonical JSON representation or per-object
 `schema_name`; its fixed domain plus projection version identify its schema,
 and the framed bytes above SHALL be its only public/durable codec. Its digest
 SHALL equal
-`ContentDigest.from_bytes(encode_durable_envelope_projection_v1(projection))`.
-Payload-only, JSON, legacy-envelope and adapter-specific digests SHALL fail
-identity verification.
+`ContentDigest.from_bytes(encoded_projection)`, where `encoded_projection` is
+the exact single result of `encode_durable_envelope_projection_v1(projection)`.
+Payload-only, re-encoded, JSON, legacy-envelope and adapter-specific digests
+SHALL fail identity verification.
 
 Projection decoding SHALL yield only an authority-free
 `DurableEnvelopeProjectionV1`. It SHALL NOT construct a command/query envelope,
 verified actor or local `Deadline`. Execution after decode SHALL require exact
 descriptor resolution against the current frozen registry, owner-codec payload
-revalidation, separately verified current authority and a newly admitted local
-deadline. For an existing operation/process identity, the attempt deadline
-SHALL be capped by the authoritative owner's remaining deadline and SHALL NOT
-extend its immutable UTC expiry; an expired owner SHALL be rejected. A new
-owner deadline SHALL require a new causally linked owner identity. Changing
-only current authority or that fresh bounded deadline SHALL NOT change
-projection bytes; changing projected metadata, descriptor identity or
-canonical payload SHALL change the projection or fail validation.
+revalidation and separately verified current authority. A new owner identity
+SHALL receive a newly admitted local deadline. An existing operation/process
+identity SHALL instead require its authoritative immutable deadline fact plus
+matching live monotonic-clock-domain binding and SHALL be capped by that
+binding's remaining time without extending immutable UTC evidence. An expired
+owner SHALL be rejected; restart, transfer or loss of the binding SHALL fail
+closed rather than deriving time from UTC. A new owner deadline SHALL require a
+new causally linked owner identity. Changing only current authority, a matching
+live binding or the newly admitted deadline for that new owner identity SHALL
+NOT change projection bytes; changing projected metadata, descriptor identity
+or canonical payload SHALL change the projection or fail validation.
 
 Projection and registry failure identity SHALL be the closed
 `MessageContractFailureCodeV1` set:
 `DURABLE_PROJECTION_MALFORMED`, `DURABLE_PROJECTION_TOO_LARGE`,
 `OWNER_CODEC_NOT_FOUND`, `OWNER_CODEC_IDENTITY_MISMATCH`,
-`OWNER_PAYLOAD_INVALID`, `CODEC_REGISTRY_DUPLICATE_KEY` and
-`CODEC_REGISTRY_CAPACITY_EXCEEDED`. The first five SHALL be request-scoped
-admission failures and produce no authority, deadline, operation or dispatch.
-Only code plus bounded owner/schema/version/purpose identity MAY cross an
-interface; payload, actor evidence, paths and codec internals SHALL be absent.
-The final two SHALL be Bootstrap-readiness failures that block ingress. Their
-bounded readiness product SHALL contain only code and descriptor count.
+`OWNER_PAYLOAD_INVALID`, `CODEC_REGISTRY_DUPLICATE_KEY`,
+`CODEC_REGISTRY_CAPACITY_EXCEEDED`,
+`CODEC_REGISTRY_BINDING_MISMATCH` and
+`CODEC_REGISTRY_REQUIRED_CODEC_UNAVAILABLE`. The first five SHALL be
+request-scoped admission failures and produce no authority, deadline, operation
+or dispatch. Only code plus bounded owner/schema/version/purpose identity MAY
+cross an interface; payload, actor evidence, paths and codec internals SHALL be
+absent. The final four SHALL be Bootstrap-readiness failures that block
+ingress. Duplicate and capacity products SHALL contain only code and descriptor
+count. Binding-mismatch SHALL contain only its code and descriptor count.
+Required-codec-unavailable SHALL contain only its code, descriptor count and
+required-manifest entry count; neither product SHALL expose a descriptor,
+dependent identity, payload, path or codec implementation.
+
+The future Platform persistence owner SHALL maintain a complete bounded
+`RequiredOwnerCodecManifestV1` instead of proving retention by scanning durable
+projections, replay keys or receipts at startup. It SHALL contain a generation
+and at most 4,096 immutable entries sorted by exact registry key. Each
+`RequiredOwnerCodecManifestEntryV1` SHALL contain only owner namespace, schema
+name/version, payload purpose, exact codec identity, retained-reference count
+from 1 through 9,223,372,036,854,775,807 and latest required retention
+`UtcInstant`. A durable dependent identity SHALL increment or create its entry
+in the same owner-local transaction that makes the identity visible; final
+retirement SHALL decrement or remove it only in the transaction that makes the
+last dependent identity permanently unresolvable and only after its retention
+horizon. Duplicate keys, zero counts, incomplete generations or more than 4,096
+entries SHALL be corruption.
+
+Bootstrap SHALL read one complete manifest generation through a bounded
+Platform persistence port under one finite local `Deadline`. It SHALL compare
+at most 4,096 entries to the frozen registry, using at most 13 registry-key
+comparisons per entry. It SHALL NOT enumerate or scan durable projection,
+replay, receipt or audit rows. A missing manifest generation, timeout,
+incomplete/corrupt manifest, missing required registry key, descriptor/capability
+identity mismatch, or inability to satisfy both retention and the 4,096-entry
+registry limit SHALL block ingress with
+`CODEC_REGISTRY_REQUIRED_CODEC_UNAVAILABLE`. Request-time lookup of an
+unregistered non-required identity SHALL remain `OWNER_CODEC_NOT_FOUND`.
+Descriptor/capability/manifest mismatch while freezing a proposed static
+registry entry SHALL instead block ingress with
+`CODEC_REGISTRY_BINDING_MISMATCH`, whether or not a historical manifest
+currently requires that key.
 
 #### Scenario: An EventBus event is mapped
 - **WHEN** compatibility code maps a durable legacy event
@@ -263,6 +337,18 @@ bounded readiness product SHALL contain only code and descriptor count.
 - **WHEN** Bootstrap sees a duplicate key, 4,097 entries or cannot retain a required historical codec
 - **THEN** ingress remains blocked with one closed readiness code and no descriptor or payload dump
 
+#### Scenario: Bootstrap validates retained codec requirements
+- **WHEN** a complete required-codec manifest generation contains no more than 4,096 entries
+- **THEN** Bootstrap validates it under one finite deadline with at most 13 registry comparisons per entry and without scanning dependent durable rows
+
+#### Scenario: A required historical codec is unavailable
+- **WHEN** the bounded manifest is absent, incomplete or corrupt, or any required key cannot resolve the exact executable codec identity
+- **THEN** Bootstrap returns `CODEC_REGISTRY_REQUIRED_CODEC_UNAVAILABLE`, blocks ingress and exposes only descriptor and manifest counts
+
+#### Scenario: One typed payload becomes a durable projection
+- **WHEN** an envelope is constructed, projected and digested
+- **THEN** the owner codec encodes exactly once, the same immutable payload bytes are reused, one bounded projection encoding is digested, and no second payload-sized staging copy is created
+
 #### Scenario: A child command is emitted from a verified parent event
 - **WHEN** a handler creates a new command from an admitted parent envelope
 - **THEN** the command gets a new message identity, inherits the parent's correlation identity and names the parent message as its direct causation
@@ -277,11 +363,19 @@ bounded readiness product SHALL contain only code and descriptor count.
 
 #### Scenario: A durable projection is decoded for execution
 - **WHEN** a historical durable projection is decoded in another attempt or process
-- **THEN** it produces neither authority nor a remaining-time budget and cannot execute until trusted ingress attaches separately verified current authority and a fresh local deadline
+- **THEN** it produces neither authority nor a remaining-time budget and cannot execute until trusted ingress attaches separately verified current authority plus either a matching live owner binding or a new causally linked owner identity with a newly admitted deadline
 
 #### Scenario: Two codecs claim one wire identity
 - **WHEN** Bootstrap receives duplicate owner/schema/version/purpose descriptors or a codec identity is not deterministic
 - **THEN** registry assembly fails before command or event ingress starts
+
+#### Scenario: A capability does not match its descriptor
+- **WHEN** manifest fields or manifest digest differ from the registered descriptor
+- **THEN** registry freeze returns `CODEC_REGISTRY_BINDING_MISMATCH` before ingress and no descriptor, callback or implementation detail enters the diagnostic
+
+#### Scenario: Durable payload bytes are not canonical
+- **WHEN** one codec decode followed by one encode does not reproduce the exact input bytes
+- **THEN** validation returns `OWNER_PAYLOAD_INVALID` without constructing an executable envelope
 
 #### Scenario: The codec registry exceeds its capacity
 - **WHEN** Bootstrap attempts to freeze 4,097 descriptors

@@ -58,15 +58,22 @@ reported as successful cancellation.
 - Make admission envelopes explicitly local-only and give
   `trade.platform.contracts.messages` one authority-free binary
   `DurableEnvelopeProjectionV1` identity. Replay hashes those exact framed
-  bytes; the owner codec proves typed DTO/byte equality, retained descriptors
-  share the durable replay horizon, and projection/registry failures use a
-  closed safe diagnostic taxonomy.
+  bytes; one owner-codec encode yields the typed DTO/byte equality product,
+  retained descriptors are proven by a bounded generation-consistent manifest
+  rather than startup row scans, and projection/registry failures use a closed
+  safe request/readiness diagnostic taxonomy.
 - Freeze the exact public DTO field correction: receipt actors become unverified
   attribution; only ControlReceipt, ShutdownReceipt and ProcessView retain UTC
   deadline evidence; OperationReceipt remains deadline-free and uses an
   internal immutable Platform admission-deadline contract. ShutdownReceipt can
   link only an exact accepted shutdown control and reports linkage corruption
-  explicitly.
+  through one unavailable query product plus an idempotent one-attempt
+  integrity observation.
+- Define owner-local operation and process admission-deadline facts plus
+  process-local monotonic-clock-domain bindings. A live same-domain retry uses
+  the original budget; restart or binding loss fails closed and cannot rebuild
+  time from UTC evidence. Recovery must fence/terminalize the old owner or
+  create a new causally linked identity.
 - Make Platform command ingress the sole future owner of command-admission
   idempotency claims, operation identity and the complete `OperationReceipt`
   lifecycle. Processes separately owns `ProcessStartKeyV1`/inbox claims,

@@ -121,9 +121,10 @@ and `occurred_at: UtcInstant`. For a new key, the Platform owner SHALL sample
 `occurred_at` exactly once after the operation/claim resolves successfully and
 immediately before constructing the audit fact to commit. Clock failure SHALL
 return `REPLAY_AUDIT_CLOCK_UNAVAILABLE`, commit no replay-audit fact and return
-no receipt. That exact error SHALL be the sole `ErrorEnvelope` v1 product for
-which `occurred_at` is absent; it SHALL NOT fabricate a wall time from the
-historical envelope, monotonic clock or a fallback source. The value on a
+no receipt. That exact error SHALL be the only replay-audit product for which
+`occurred_at` is absent and one of the two globally permitted trusted-clock
+failure products; it SHALL NOT fabricate a wall time from the historical
+envelope, monotonic clock or a fallback source. The value on a
 committed audit SHALL mean only the Platform owner's first replay-audit
 observation time; it SHALL NOT be interpreted as historical event,
 provider/source, publication, received, available, PIT, deadline,
@@ -371,9 +372,9 @@ shared transaction or cross-owner write is permitted.
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object
 - **THEN** contract validation or the architecture guard rejects it before serialization
 
-#### Scenario: Current authority or a fresh deadline changes
-- **WHEN** the same durable projection is re-admitted with separately verified current authority or a newly admitted local deadline
-- **THEN** the durable canonical bytes remain unchanged while execution still uses only the current authority and fresh deadline
+#### Scenario: Current authority or an owner deadline binding changes
+- **WHEN** the same durable projection is re-admitted with separately verified current authority, a matching live deadline binding for the same owner, or a newly admitted deadline for a new causally linked owner identity
+- **THEN** the durable canonical bytes remain unchanged while execution uses only current authority and the owner-valid deadline product
 
 #### Scenario: A durable projection is decoded directly
 - **WHEN** a consumer decodes historical metadata, codec identity and canonical payload bytes
@@ -439,6 +440,30 @@ a new causally linked operation identity.
 This child SHALL own the internal, non-package-re-exported
 `OperationAdmissionDeadlineV1` value plus a pure matching/resolution port in
 `trade.platform.contracts.operations`.
+The admitted runtime SHALL also retain a process-local, non-wire
+`OperationDeadlineRuntimeBindingV1` containing the operation identity, owner
+instance identity, an opaque monotonic-clock-domain identity and the original
+`Deadline`. A same-owner retry SHALL resolve both records, require equal owner
+and UTC-expiry evidence, and consume only the original binding's monotonic
+remaining time. It SHALL NOT resample wall time or subtract current UTC from the
+durable expiry.
+
+Restart, process transfer or loss of that exact runtime binding SHALL return the
+closed `OwnerDeadlineAdmissionResultV1` with no deadline and non-retryable code
+`OWNER_DEADLINE_CLOCK_DOMAIN_LOST` for the original operation and SHALL execute
+no work. A failed monotonic read SHALL return no deadline and retryable
+`OWNER_DEADLINE_CLOCK_UNAVAILABLE`; an exhausted binding SHALL return no
+deadline and non-retryable `OWNER_DEADLINE_EXPIRED`; mismatched durable/local
+evidence SHALL return no deadline and non-retryable
+`OWNER_DEADLINE_EVIDENCE_MISMATCH`. The success branch SHALL contain only the
+original `Deadline` and no failure code. Every failure branch SHALL contain only
+the code, operation/process identity and owner instance identity; it SHALL
+expose no monotonic value, UTC subtraction, credential or path. Wall-clock
+rollback, forward jump or
+unavailability SHALL neither change those results nor recreate a local budget.
+Recovery MAY terminalize or fence the old owner under its owning contract, or
+create a new causally linked operation with newly admitted authority and
+deadline; it SHALL NOT resume the same identity under a reconstructed budget.
 The `platform-persistence-events-and-bootstrap-foundation` child SHALL
 implement and uniquely constrain the repository, atomic write and common
 retention before any durable operation writer is adopted. This child defines
@@ -522,6 +547,37 @@ Every retry/redelivery for the same process identity SHALL be capped by the
 trusted owner's remaining deadline and SHALL NOT use the public view alone to
 authorize work or extend its immutable UTC expiry.
 
+The Processes owner SHALL persist an internal immutable
+`ProcessAdmissionDeadlineV1` containing exactly schema version 1, `process_id`,
+`triggering_operation_id`, `request_message_id`, `deadline: UtcInstant` and
+`accepted_at: UtcInstant`. It SHALL be created atomically with
+`ProcessStartKeyV1`, inbox acceptance and the initial `ProcessView`; its
+deadline SHALL exactly copy the trusted handoff's admitted local
+`Deadline.wall_clock_expires_at`, its identifiers and accepted time SHALL match
+the initial view/handoff, and its public-view projection SHALL be the sole
+source of `ProcessView.deadline`. Processes SHALL retain the fact through the
+complete process-start claim, inbox and resolvable ProcessView horizon. This
+child SHALL own the internal, non-package-re-exported value and a pure
+matching/resolution port in `trade.processes.contracts`; the later Processes
+repository child SHALL own its unique constraint, atomic write and retention.
+
+The live Process Manager SHALL pair that fact with a process-local, non-wire
+`ProcessDeadlineRuntimeBindingV1` holding the same process identity, current owner
+instance, opaque monotonic-clock-domain identity and original `Deadline`.
+Same-process retry/redelivery SHALL require the matching binding and consume
+only its monotonic remaining time, without wall-clock subtraction. Restart,
+cross-process transfer or a missing/mismatched clock-domain binding SHALL return
+the same no-deadline `OwnerDeadlineAdmissionResultV1` with
+`OWNER_DEADLINE_CLOCK_DOMAIN_LOST` and execute no process step. A failed
+monotonic read SHALL return `OWNER_DEADLINE_CLOCK_UNAVAILABLE`, an exhausted
+binding SHALL return `OWNER_DEADLINE_EXPIRED`, and mismatched durable/local
+identity or UTC-expiry evidence SHALL return
+`OWNER_DEADLINE_EVIDENCE_MISMATCH`. Wall-clock rollback, forward jump or
+unavailability SHALL not select another outcome or recreate a budget.
+Processes recovery MAY fence/terminalize the original identity or create a new
+causally linked process with a newly admitted deadline, but SHALL NOT silently
+resume the same identity or mutate its public deadline.
+
 The top-level reason code SHALL be required for `blocked`, `retry_scheduled`,
 `failed`, `cancelled` and `deadline_exceeded`; optional for
 `compensation_pending`; and forbidden for `requested`, `running`, `waiting`,
@@ -564,6 +620,18 @@ neither authorize nor execute its action.
 - **WHEN** a later ProcessView for the same process identity has a different deadline
 - **THEN** transition validation rejects it rather than silently extending or shortening owner-deadline history
 
+#### Scenario: A live owner retries within one clock domain
+- **WHEN** the durable admission fact and original runtime binding match and monotonic time remains
+- **THEN** the retry uses only that binding's remaining budget and does not sample wall time or extend the UTC expiry
+
+#### Scenario: A process restarts before retry
+- **WHEN** the original monotonic-clock-domain binding no longer exists
+- **THEN** the same process identity returns `OWNER_DEADLINE_CLOCK_DOMAIN_LOST`, executes no step and requires owner recovery or a new causally linked process identity
+
+#### Scenario: Wall time changes around owner recovery
+- **WHEN** wall time rolls backward, jumps forward or becomes unavailable after admission
+- **THEN** the owner neither subtracts it from durable UTC evidence nor recreates a local budget; live same-domain monotonic expiry or closed clock-domain failure remains authoritative
+
 ### Requirement: Status families SHALL remain orthogonal and closed
 
 The system SHALL represent admission, operation, process, observation,
@@ -601,10 +669,12 @@ rejected.
 closed category and observation state, retryability and optional bounded
 retry-after, `request_message_id`, correlation/optional causation and
 operation/process links, `occurred_at: UtcInstant | None`, safe message and safe
-recovery hint. `occurred_at` SHALL be present for every v1 product except
-`REPLAY_AUDIT_CLOCK_UNAVAILABLE`, where it SHALL be absent because the trusted
-wall clock itself failed. Historical envelope time, audit deadline, monotonic
-time and any fallback clock SHALL NOT fill that absence.
+recovery hint. `occurred_at` SHALL be present for every v1 product except the
+two trusted-clock-failure products `REPLAY_AUDIT_CLOCK_UNAVAILABLE` and
+`SHUTDOWN_LINK_INTEGRITY_CLOCK_UNAVAILABLE`, where it SHALL be absent because
+the owning trusted wall clock itself failed. Historical envelope/receipt time,
+audit deadline, monotonic time and any fallback clock SHALL NOT fill either
+absence. No other v1 reason may omit `occurred_at`.
 For an error caused while handling a specific admitted or rejected envelope,
 `request_message_id` SHALL equal that envelope's message identity,
 `correlation_id` SHALL equal its correlation identity, and `causation_id` SHALL
@@ -640,6 +710,18 @@ it absent. Every unlisted field combination SHALL be rejected:
   causation, required absent `occurred_at`, no operation/process ID, and a safe
   hint to inspect the Platform trusted wall-clock source and retry the same
   replay request after recovery.
+- `SHUTDOWN_LINK_INTEGRITY_CLOCK_UNAVAILABLE`: category `unavailable`,
+  observation `unavailable`, `retryable=true`, required `retry_after_ms` in
+  1-1,000, required current shutdown-link query request/correlation and
+  root-absent or child-present causation, required absent `occurred_at`, only
+  safely validated operation/process links, and a safe hint to inspect the
+  Platform trusted wall-clock source before retrying the integrity query.
+- `SHUTDOWN_LINK_INTEGRITY_AUDIT_UNAVAILABLE`: category `unavailable`,
+  observation `unavailable`, `retryable=true`, required `retry_after_ms` in
+  1-1,000, required current shutdown-link query request/correlation and
+  root-absent or child-present causation, required present `occurred_at`, only
+  safely validated operation/process links, and a safe hint to inspect Platform
+  integrity-observation persistence before retrying the query.
 - `REPLAY_AUDIT_UNAVAILABLE`: category `unavailable`, observation `unavailable`,
   `retryable=true`, required `retry_after_ms` in 1-1,000, required current
   replay request/correlation and root-absent or child-present causation, no
@@ -866,12 +948,48 @@ correlation, causation, requested time and UTC deadline, and shutdown
 `finished_at` SHALL be no earlier than control `finished_at`. Any non-accepted
 disposition or mismatch SHALL be corruption. The pure link validator SHALL
 return the exact safe reason `SHUTDOWN_CONTROL_LINK_CORRUPT`. A composed owner
-query SHALL map that outcome to unavailable/failed and SHALL NOT present the
-shutdown as completed, missing or healthy. It MAY make at most one bounded
-integrity-signal attempt containing only safe owner, control, request and
-fence-generation identities; credentials, raw actor evidence, payloads and
-paths SHALL be absent. Runtime signal delivery and recovery projection remain
-owned by the future Platform foundation. The
+query SHALL return exactly `ShutdownLinkQueryResultV1(status, receipt,
+integrity_signal)`. For corruption, `receipt` SHALL be absent and `status`
+SHALL be `QueryStatus(observation_state=unavailable, condition=None)` with a
+non-retryable `ErrorEnvelope` whose category and observation are both
+`unavailable`, reason is `SHUTDOWN_CONTROL_LINK_CORRUPT`, retry-after is absent,
+request/correlation/optional causation equal the current query envelope and
+operation/process links equal only the safely validated target links. The safe
+message SHALL be `shutdown control linkage is corrupt` and the recovery hint
+SHALL be `inspect the owner integrity observation`; no synthesized
+`ShutdownReceipt` or shutdown state SHALL be returned as completed, failed,
+missing or healthy.
+
+The first durable observation of one corruption identity SHALL atomically
+create one `ShutdownLinkIntegrityObservationV1` and one outbox signal under an
+idempotency key derived from the exact safe owner namespace, owner instance,
+fence generation, control ID and request message ID. The bounded observation
+SHALL expose only that identity, reason, `attempt_count` and signal disposition
+`pending`, `delivered` or `delivery_failed`. It SHALL contain no credential,
+raw actor evidence, payload, path or mismatch field value. The signal handler
+SHALL make exactly one bounded delivery attempt, set `attempt_count=1`, and
+terminalize the disposition as `delivered` or `delivery_failed` with no retry
+or background continuation. Repeated or concurrent reads SHALL resolve the same
+observation/outbox and SHALL NOT create or attempt another signal. Delivery
+failure SHALL remain visible in this projection and in the Platform operator
+health query; it SHALL NOT alter the corruption QueryStatus or become success.
+The first observation transaction SHALL sample one trusted `UtcInstant` after
+the corrupt link resolves and use it for both the observation and
+`ErrorEnvelope.occurred_at`; repeated reads reuse that committed value. If the
+trusted wall clock is unavailable, the composed query SHALL return the exact
+clockless `SHUTDOWN_LINK_INTEGRITY_CLOCK_UNAVAILABLE` product, create no
+integrity observation/outbox and SHALL NOT substitute envelope, receipt,
+monotonic or fallback time. If the observation/outbox transaction cannot
+commit, it SHALL return retryable unavailable
+`SHUTDOWN_LINK_INTEGRITY_AUDIT_UNAVAILABLE` with ordinary required
+`occurred_at`, no shutdown receipt or integrity observation, and SHALL NOT
+report the corruption signal as admitted. These failures SHALL not make a
+corrupt shutdown completed, failed, missing or healthy.
+The future Platform foundation owns persistence, outbox delivery and operator
+health projection; this child owns the immutable values, idempotency-key
+derivation and pure composed-query/link-validation result. Runtime adoption
+SHALL remain blocked until those exactly-once-admission, one-attempt and
+delivery-failure fixtures pass. The
 causation field SHALL be absent in both records for a root control and equal the
 direct parent in both records for a child control. The
 optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require
@@ -937,7 +1055,15 @@ bounded public API SHALL NOT perform an unbounded join after its deadline.
 
 #### Scenario: Shutdown linkage differs from accepted control
 - **WHEN** any control ID, target link, request identity, causal identity, initiator attribution, requested time or UTC deadline differs, or shutdown finishes before control admission
-- **THEN** link validation returns `SHUTDOWN_CONTROL_LINK_CORRUPT`, the composed query is unavailable/failed rather than completed, missing or healthy, and at most one redacted integrity signal is attempted
+- **THEN** link validation returns `SHUTDOWN_CONTROL_LINK_CORRUPT`, the composed query returns the exact unavailable QueryStatus with no receipt, and the owner atomically resolves one redacted integrity observation/outbox
+
+#### Scenario: Shutdown-link corruption is read repeatedly
+- **WHEN** concurrent or later queries observe the same corruption identity
+- **THEN** they return the same unavailable product and signal disposition without admitting or attempting a second integrity signal
+
+#### Scenario: Shutdown-link integrity delivery fails
+- **WHEN** the sole bounded signal attempt cannot deliver
+- **THEN** the observation terminalizes as `delivery_failed` with `attempt_count=1`, remains operator-visible and does not retry, continue in the background or make the corrupt shutdown healthy
 
 #### Scenario: A stale owner writes after takeover
 - **WHEN** generation N+1 has durably taken over and generation N attempts a state or terminal-audit write
