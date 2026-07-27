@@ -1,0 +1,215 @@
+schema_version = 1
+policy_version = "v1"
+
+[[impacts]]
+id = "public_contract"
+applies = true
+reason = "The child governs the installed distribution and import namespaces, root and console entrypoints, ASGI/reload/child module strings, HTTP/Web asset contracts, SDK/notebook import surface and optional native module identity while requiring compatibility through staged authority transfer."
+
+[[impacts]]
+id = "persistent_write"
+applies = false
+reason = "Package builds, wheel manifests, Web builds and validation reports are developer or CI artifacts only; the child introduces no runtime database, parquet, manifest, catalog, pointer, outbox, cache or business-artifact writer and all tests use temporary roots."
+
+[[impacts]]
+id = "schema_migration"
+applies = false
+reason = "No database table, column, index, migration version, parquet layout, runtime manifest or public business payload schema changes; existing destructive scripts remain inert and blocked until their owning migration changes."
+
+[[impacts]]
+id = "point_in_time"
+applies = false
+reason = "Notebook and SDK checks preserve existing immutable snapshot identity and explicit knowledge policy but do not define or alter clock, revision, PIT resolution, eligibility, release or restatement semantics."
+
+[[impacts]]
+id = "predictive_model"
+applies = false
+reason = "No feature, label, model, forecast, recommendation, ranking, calibration, StudyResult, promotion or decision-support behavior is trained, changed, served or reinterpreted."
+
+[[impacts]]
+id = "external_event_data"
+applies = false
+reason = "No provider, news, social, macro, on-chain or third-party event interaction, source policy, payload, correction, replay, licensing, quota or network behavior changes; source audit and tests are offline."
+
+[[impacts]]
+id = "runtime_concurrency"
+applies = true
+reason = "ASGI reload and runtime child modules are imported in independent processes, Web resources and force-exit behavior must retain one shutdown owner, and build/install/import/native/browser validation must use bounded terminable process groups without leaving residual workers."
+
+[evidence.contract]
+contract = "The governed contract keeps distribution `trade-py`, existing `trade_py` imports, root `./trade`, installed `trade-py`, `trade_web:create_app`, reviewed backend imports, HTTP route/OpenAPI/payload/error/SSE/capability behavior, Web asset and proxy semantics, installed SDK/notebook behavior and optional native capability while adding `trade` and `_trade_native` only through explicit versioned migration generations."
+consumers = "Repository developers, installed CLI users, Uvicorn factory/reload workers, runtime command child processes, FastAPI/React clients, SDK and notebook users, scheduler/event/import adapters, package/build tooling, CMake/native adapters, pytest/Vitest/Playwright/ctest and deployment documentation consume these names or paths."
+compatibility = "Every existing public command, import, ASGI string, URL, method, parameter, status, header, payload, SSE frame, capability mode, Web route, asset URL and component test runner remains compatible until its owning child explicitly versions it. Legacy paths forward only to one target authority; target code never depends on legacy implementation."
+migration = "First prove source/editable/clean-wheel dual discovery and authority guards; then isolate `_trade_native`; then migrate only owner-ready bounded Python slices; then installed SDK/notebook, owner-ready ASGI/BFF/Bootstrap and the Vite workspace. Each slice keeps the old path and independent rollback selector for at least the compatibility window."
+rollback = "Select and reinstall the immediately preceding package, ASGI, Web-build or native generation, restore the prior authority/forwarding state, rerun its contract matrix and retain every database and immutable business artifact. A failed slice never requires reverting earlier semantic Context migrations."
+
+[evidence.concurrency]
+ownership = "Package validation owns only its spawned build/install/import/console processes and temporary environments; Uvicorn owns server worker/reload processes; Bootstrap remains the sole target runtime composition owner; WebResourceContainer remains the current command/EventBus/DB shutdown owner until its approved Bootstrap migration; each Context native adapter owns its optional `_trade_native` call behind a Port."
+bound = "One module-authority slice is capped at 50 production modules and 500 consumer records. Paths are sorted and never sampled or silently truncated. At most two isolated install environments run concurrently. Default reviewed subprocess budgets are five minutes per package smoke, ten minutes per native build smoke and fifteen minutes per Web build/test smoke, with smaller task-specific deadlines where measured baselines permit."
+ordering = "Freeze the tracked consumer inventory and prerequisite SHAs, prove the target build in shadow mode, verify source/editable/wheel or old/new Web/native parity, install an explicit legacy-to-target forwarder, activate one target authority, observe the compatibility window, and only then hand retirement to cleanup. Runtime shutdown continues to close command and EventBus admission before draining work and closing the DB."
+atomicity = "A migration generation is admitted only when all required build, import, contract and rollback evidence for that slice passes. No partial wheel, target source copy, incomplete Web build or native artifact changes authority. Exactly one implementation and one runtime lifecycle owner are visible per logical module/generation."
+timeout_cancellation = "Every build, install, import, console, ASGI, browser and native check runs with a finite monotonic deadline in an owned process group. Timeout terminates graceful then forced process-tree cleanup, records `timeout` separately from test or tool failure, retains completed evidence and never advances authority. Layout movement preserves current Web shared-deadline and force-exit behavior."
+backpressure = "Inventory and consumer caps reject oversized slices and require deterministic subdivision. Validation uses no unbounded work queue; at most two install environments are active and one migration generation per logical module may be under activation."
+partial_failure = "A failed package member/origin check, duplicate module owner, route/SSE/asset mismatch, reload/child import failure, native differential mismatch, notebook prohibition, unknown consumer or incomplete cleanup leaves the prior generation authoritative. Tool failure, unavailable prerequisite, timeout and contract mismatch remain distinct report states."
+capacity_validation = "Fixtures exercise exact 50/500 limits and one-over refusal, deterministic ordering, source/editable/clean-wheel isolation, import-order and concurrent import identity, duplicate registry/resource detection, two-install concurrency, hung process-tree cleanup, ASGI reload/child import, blocked Web shutdown, manifest asset completeness and optional native absent/present behavior. Ten-times-current candidate input must fail closed into smaller slices rather than truncate."
+
+[[obligations]]
+id = "layout.package"
+owner = "Python package/build configuration and architecture package-authority guard"
+paths = [
+  "pyproject.toml",
+  "src/trade/",
+  "trade_py/",
+  "trade",
+  "architecture-baseline.toml",
+  "trade_py/devtools/architecture_guard.py",
+  "tests/architecture/",
+  "tests/contract/",
+]
+contracts = [
+  "distribution trade-py and installed trade_py compatibility",
+  "installed trade target namespace",
+  "root ./trade and trade-py console parity",
+  "one implementation authority per logical module",
+  "source, editable and clean-wheel member/origin evidence",
+  "measured compatibility bridge retirement",
+]
+failure_states = [
+  "target package missing from wheel",
+  "checkout path hides installation failure",
+  "unexpected wheel member",
+  "duplicate module or import-time side effect",
+  "target-to-legacy implementation dependency",
+  "stale or over-budget consumer inventory",
+  "unclassified private consumer",
+  "CLI or lazy-import regression",
+  "premature bridge retirement",
+]
+spec_requirements = [
+  "python-package-transition:The distribution SHALL expose legacy and target packages through one deterministic build",
+  "python-package-transition:Each migrated logical module SHALL have exactly one implementation authority",
+  "python-package-transition:Physical movement SHALL follow implemented semantic ownership",
+  "python-package-transition:Root and installed CLI contracts SHALL remain compatible",
+  "python-package-transition:Compatibility bridges SHALL have measured retirement criteria",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.2", "2.3", "2.4", "4.1", "4.2", "4.3", "8.1", "8.2", "8.3"]
+
+[[obligations]]
+id = "layout.web"
+owner = "Interfaces HTTP compatibility, Bootstrap composition and Web workspace build"
+paths = [
+  "trade_web/",
+  "trade_py/cli/web.py",
+  "src/trade/interfaces/http/",
+  "src/trade/bootstrap/",
+  "web/",
+  "tests/contract/http/",
+  "tests/golden/",
+  "tests/e2e/",
+]
+contracts = [
+  "trade_web:create_app ASGI factory and backend compatibility imports",
+  "Uvicorn factory/reload and runtime child process imports",
+  "complete HTTP route, OpenAPI, payload, error, SSE and capability baseline",
+  "single startup and shutdown owner",
+  "Vite commands, proxies, manifest, assets and SPA deep links",
+  "independent backend and frontend rollback generations",
+]
+failure_states = [
+  "ASGI factory or reload import unavailable",
+  "runtime child module unavailable",
+  "duplicate resource or shutdown owner",
+  "route, OpenAPI, payload, error, SSE or capability mismatch",
+  "Web manifest or asset incomplete",
+  "dev proxy or SPA deep-link regression",
+  "explicit web-dist override ignored",
+  "backend and frontend rollback coupled",
+]
+spec_requirements = [
+  "web-layout-transition:The legacy ASGI import SHALL remain a thin compatibility contract",
+  "web-layout-transition:Runtime module strings and lifecycle SHALL remain process-safe",
+  "web-layout-transition:Frontend workspace movement SHALL preserve build and served assets",
+  "web-layout-transition:Web product and BFF contracts SHALL not change through layout movement",
+  "web-layout-transition:Backend and frontend cutovers SHALL be independently reversible",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "6.1", "6.2", "6.3", "8.1", "8.2", "8.3"]
+
+[[obligations]]
+id = "layout.native"
+owner = "engine build plus Context-owned native adapters"
+paths = [
+  "engine/cmake/python_bindings.cmake",
+  "engine/python/",
+  "src/trade/*/adapters/native/",
+  "tests/contract/native/",
+  "engine/tests/",
+]
+contracts = [
+  "_trade_native target, initializer, artifact and wheel identity",
+  "optional native capability absent and present states",
+  "Context Port and adapter-only native imports",
+  "owner-defined C++ and Python differential semantics",
+  "side-effect-free legacy capability probe",
+]
+failure_states = [
+  "binding source absent or unproven",
+  "target, initializer and artifact name mismatch",
+  "unsupported Python ABI or platform",
+  "native imported by domain, use case or compatibility module",
+  "native and Python semantic mismatch",
+  "runtime native failure silently changes implementation",
+  "legacy self-import mistaken for native availability",
+]
+spec_requirements = [
+  "native-module-boundary:The optional native extension SHALL use the distinct `_trade_native` module name",
+  "native-module-boundary:Native code SHALL be consumed only by Context-owned adapters behind Ports",
+  "native-module-boundary:Native selection SHALL preserve semantics and expose availability",
+  "native-module-boundary:Legacy native probing SHALL retire only after clean import proof",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "3.1", "3.2", "3.3", "8.1", "8.2", "8.3"]
+
+[[obligations]]
+id = "layout.governance"
+owner = "architecture migration governance with each semantic path owner"
+paths = [
+  "openspec/changes/python-package-and-web-layout/",
+  "trade_py/",
+  "trade_web/",
+  "scripts/",
+  "research/",
+  "_bmad-output/",
+  "tests/",
+  "tools/",
+  "examples/",
+]
+contracts = [
+  "source-evidenced per-path disposition",
+  "installed SDK and repository-independent notebook",
+  "root script operational ownership",
+  "component-owned test collection preservation",
+  "bounded deterministic process-clean migration validation",
+  "independent generation rollback",
+  "no real business data access",
+]
+failure_states = [
+  "directory name treated as semantic owner",
+  "mixed-owner file copied whole",
+  "notebook sys.path or repository scan",
+  "migration script installed or executed accidentally",
+  "historical decision removed without provenance",
+  "test dropped, duplicated or silently deselected",
+  "validation timeout leaves process tree",
+  "oversized slice truncates evidence",
+  "rollback generation unrecoverable",
+  "package or layout test opens real data",
+]
+spec_requirements = [
+  "layout-migration-governance:Every current path SHALL have a source-evidenced disposition before movement or retirement",
+  "layout-migration-governance:Notebook and SDK consumers SHALL use installed public contracts",
+  "layout-migration-governance:Root scripts SHALL be classified by operational ownership",
+  "layout-migration-governance:Test layout migration SHALL preserve component ownership and collection evidence",
+  "layout-migration-governance:Migration validation SHALL be bounded, deterministic and process-clean",
+  "layout-migration-governance:Every migration slice SHALL be independently reversible",
+  "layout-migration-governance:Package and layout operations SHALL not access real business data",
+]
+validation_tasks = ["1.1", "1.2", "1.3", "2.1", "2.3", "2.4", "4.1", "4.2", "4.3", "5.1", "5.2", "5.3", "6.1", "6.2", "6.3", "7.1", "7.2", "8.1", "8.2", "8.3"]
