@@ -146,4 +146,4 @@ rebuilding frontend assets.
 
 #### Scenario: The target ASGI factory fails
 - **WHEN** route, reload, child-process or lifecycle parity fails
-- **THEN** `trade_web:create_app` returns to the prior backend authority while either valid Web build remains selectable through its independent configuration
+- **THEN** the shared Python deployment executes its reviewed forward-revision rollback: it selects the exact predecessor only when no later accepted slice exists, otherwise it selects a verified compensating successor from the current composition that preserves every later slice; `trade_web:create_app` remains the compatibility factory and either valid Web build remains independently selectable

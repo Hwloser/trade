@@ -80,11 +80,12 @@ focused matrix.
 
 One authority slice is limited to 50 production modules and 500 consumer
 records, reuses one sorted tree index per content digest, never randomly
-samples or silently truncates, and enforces finite global workers, heavy jobs,
-RSS, disk and admission wait. Cold/warm startup records p50/p95, RSS and module
-count; Web caches bind one selected root; current and synthetic ten-times scans
-have explicit wall/RSS gates. Package, native and Web checks retain finite
-deadlines and verified process-tree cleanup.
+samples or silently truncates, and enforces finite process-tree workers, heavy
+jobs, RSS, disk and admission wait. It does not claim cross-invocation
+admission without a reviewed shared lease. Cold/warm startup records p50/p95,
+RSS and module count; Web caches bind one selected root; current and synthetic
+ten-times scans have explicit wall/RSS gates. Package, native and Web checks
+retain finite deadlines and verified process-tree cleanup.
 
 ### Observability and operations
 
@@ -516,8 +517,9 @@ reconciliation_state:
     fenced_teardown | required | failed
 
 operator_action:
-    none | retry | repair_prerequisite | narrow_slice |
-    restore_previous | investigate
+    none | wait | continue_validation | resume_reconciliation |
+    retry_identical_invocation | repair_prerequisite | narrow_slice |
+    execute_reviewed_rollback | investigate
 ```
 
 Each report also carries the tool exit code when one exists, bounded failure
@@ -533,15 +535,19 @@ the selector or service manager:
 | State | Required immutable evidence | Allowed reconciliation failure/action | Exit contribution |
 |---|---|---|---|
 | `not_required` | no unresolved phase/process/selector contradiction | no additional constraint; independent axes determine failure/action | none |
-| `pending` | one internally consistent unfinished operation whose next recovery decision has not been recorded | `failure_class=none`, `operator_action=retry` | `1` |
+| `pending` | one internally consistent unfinished operation whose next recovery decision has not been recorded | `failure_class=none`, derived action `resume_reconciliation` | `1` |
 | `adopted` | exactly one live deployment unit matches the durable intent, invocation token, generation, revision and fence | `failure_class=none`; reconciliation adds no operator action | none |
-| `absence_proved` | a bounded service-manager receipt proves no matching deployment unit or descendant remains | `failure_class=none`, `operator_action=retry` for the identical invocation token | `1` |
-| `fenced_teardown` | a teardown receipt binds the stale unit/fence, TERM/KILL outcome and zero residual process/thread counts | `failure_class=none`, `operator_action=restore_previous` | `1` |
+| `absence_proved` | a bounded service-manager receipt proves no matching deployment unit or descendant remains; any historical `process_started` is causally superseded by a terminal receipt for the same operation, token, generation, revision and fence | `failure_class=none`, derived action `retry_identical_invocation` | `1` |
+| `fenced_teardown` | a teardown receipt binds the stale unit/fence, TERM/KILL outcome and zero residual process/thread counts | `failure_class=none`, `rollback_state=ready`, derived action `execute_reviewed_rollback` | `1` |
 | `required` | valid evidence identifies a selector/process/fence contradiction, missed recovery deadline or ambiguous external result without claiming a recovery outcome | `failure_class` is `unavailable_prerequisite`, `timeout`, `contract_mismatch`, `tool_failure` or `process_cleanup_incomplete`; action is `repair_prerequisite` only for an unavailable prerequisite and otherwise `investigate` | `1` |
 | `failed` | an immutable reconciliation-attempt receipt records a terminal unsuccessful outcome | the same non-`none` failure classes as `required`; action is `repair_prerequisite` only for an unavailable prerequisite and otherwise `investigate` | `1` |
 
 `adopted` requires a matching `process_started` or `verified` phase receipt.
-`absence_proved` cannot coexist with a matching live/process-start receipt.
+`absence_proved` rejects a matching live process and an unsuperseded
+`process_started` receipt. It accepts a historical `process_started` only when
+a causally later bounded terminal stop/absence receipt binds the exact same
+operation, deployment unit, invocation token, generation, revision and fence
+and proves zero live descendants.
 `fenced_teardown` requires `startup_state=stopped`, a complete shutdown
 receipt and zero residue; an incomplete cleanup is `required` or `failed`
 instead. `required` and `failed` cannot be reported as `passed`,
@@ -553,17 +559,84 @@ no action, the independent execution, failure and rollback axes still select
 their bounded action; contradictory action requirements are invalid rather
 than resolved by undocumented precedence.
 
+`LayoutStatusConstraintsV1` is the versioned, dependency-free legality and
+derivation oracle. Every declared value is classified before aggregation:
+
+| Axis | `healthy` values | `valid_attention` values |
+|---|---|---|
+| `migration_state` | `retireable` | `inventoried`, `prepared`, `shadow_verified`, `legacy_forwarding`, `target_authoritative` |
+| `execution_state` | `passed` | `not_run`, `running`, `failed`, `stopped` |
+| `failure_class` | `none` | every other declared failure class |
+| `rollback_state` | `not_required`, `succeeded` | `ready`, `requested`, `running`, `failed`, `unknown` |
+| `startup_state` | `started_healthy` | `not_started`, `starting`, `started_degraded`, `failed`, `stopped` |
+| `reconciliation_state` | `not_required`, `adopted` | `pending`, `absence_proved`, `fenced_teardown`, `required`, `failed` |
+
+An unknown value or a failed receipt/cross-axis predicate is `invalid`, not
+attention. Reconciliation-specific allowed products are:
+
+| Reconciliation | Allowed migration | Allowed execution | Allowed rollback | Allowed startup |
+|---|---|---|---|---|
+| `not_required` | any declared value subject to generic predicates | any declared value subject to generic predicates | any declared value subject to generic predicates | any declared value subject to generic predicates |
+| `pending` | `inventoried`, `prepared`, `shadow_verified` | `not_run`, `running`, `stopped` | `not_required` | `not_started`, `starting`, `started_healthy`, `started_degraded`, `stopped` |
+| `adopted` | `prepared`, `shadow_verified`, `legacy_forwarding`, `target_authoritative` | `running`, `passed` | `not_required` | `started_healthy`, `started_degraded` |
+| `absence_proved` | `inventoried`, `prepared`, `shadow_verified` | `not_run`, `stopped` | `not_required` | `not_started`, `stopped` |
+| `fenced_teardown` | `prepared`, `shadow_verified` | `stopped` | `ready` | `stopped` |
+| `required`, `failed` | `inventoried`, `prepared`, `shadow_verified` | `failed`, `stopped` | `not_required`, `ready`, `requested`, `running`, `failed`, `unknown` | any declared value |
+
+`pending`, `adopted`, `absence_proved` and `fenced_teardown` require
+`failure_class=none`; `required` and `failed` require one of their listed
+non-`none` failure classes. Generic predicates additionally require
+`execution_state=passed` to use `failure_class=none`; a non-`none` failure
+cannot coexist with `passed`; and `target_authoritative` or `retireable`
+requires `execution_state=passed`, `failure_class=none`,
+`rollback_state=not_required` and reconciliation `not_required` or `adopted`.
+The oracle validates receipt predicates before classifying axes. A product of
+declared values that satisfies these generic predicates and the row for its
+reconciliation state is valid; the oracle has no additional implementation-
+local allow/deny rules.
+
+Exit aggregation is total and order-independent: any `invalid` result returns
+`2`; otherwise any `valid_attention` value returns `1`; otherwise all values
+are `healthy` and the result is `0`. `operator_action` is derived, never chosen
+freely. The first matching row in this explicit priority table is the only
+legal action:
+
+1. reconciliation `required`/`failed`: `repair_prerequisite` for
+   `unavailable_prerequisite`, otherwise `investigate`;
+2. `fenced_teardown`: `execute_reviewed_rollback`;
+3. `absence_proved`: `retry_identical_invocation`;
+4. `pending`: `resume_reconciliation`;
+5. `failure_class=unavailable_prerequisite`: `repair_prerequisite`;
+6. `failure_class=capacity_refusal`: `narrow_slice`;
+7. any other non-`none` failure, rollback `failed`/`unknown`, or startup
+   `started_degraded`/`failed`/`stopped`: `investigate`;
+8. rollback `ready`: `execute_reviewed_rollback`;
+9. rollback `requested`/`running`, execution `running` or startup `starting`:
+   `wait`;
+10. any remaining attention value: `continue_validation`;
+11. all-healthy: `none`.
+
+A supplied action that differs from this derivation is invalid. The rollback
+action refers only to the scope-specific reviewed `LayoutActivationPlanV1`;
+it never means “select a historical generation.” For `python_deployment` with
+later accepted slices, the reviewed rollback target must be a newly verified
+current-composition successor. A historical predecessor target in that case
+is an invalid product and returns `2`.
+
 ### Activation and selector contract
 
 Every slice produces an immutable `LayoutActivationPlanV1` before cutover. It
 names the logical migration slice, current and target deployment generation,
 closed selector scope, exact selector mechanism, precedence, owner-adapter
-activation and rollback command identities, evidence ref, operator, deadline
-and post-action checks. The plan also binds an `operation_id`, expected
-selector revision, expected generation, current composition-manifest digest,
-desired slice delta and the digest of every command argv; it never embeds a
-shell string. Logical module and ASGI slices are not independent runtime
-selectors. The closed selector scopes and mechanisms are:
+activation and rollback command identities, immutable input refs, operator,
+deadline and post-action checks. The plan also binds an `operation_id`,
+expected selector revision, expected generation, current
+composition-manifest digest, desired slice delta and the digest of every
+command argv; it never embeds a shell string. After the plan digest is known,
+`PreparedEvidenceRef` binds that plan, operation, inputs and intended target;
+it is not embedded back into the plan and is not the final
+`MigrationEvidenceRef`. Logical module and ASGI slices are not independent
+runtime selectors. The closed selector scopes and mechanisms are:
 
 | Scope | Selector and precedence | Atomic activation and rollback |
 |---|---|---|
@@ -587,7 +660,7 @@ CAS(
     target_generation,
     operation_id,
     plan_digest,
-    evidence_ref,
+    prepared_evidence_ref,
 ) -> SelectorRef(new_revision)
 ```
 
@@ -647,8 +720,9 @@ layout-control/v1/
 
 `selectors/<scope>.json` is the sole current-selector authority and binds
 scope, generation, monotonic revision/fence, operation ID, plan digest,
-evidence ref and canonical payload digest. `plan.json`, phase receipts,
-process receipts and final evidence are immutable and content/digest checked.
+`PreparedEvidenceRef` and canonical payload digest. `plan.json`, phase
+receipts, process receipts and final evidence are immutable and content/digest
+checked.
 Only the policy-free deployment layout controller writes selectors and
 operation receipts; a typed service-manager adapter writes a bounded
 start-intent/process-start/stop receipt for its own instance; `layout-status`
@@ -840,6 +914,21 @@ Dataset or Study references.
 - `ConsumerInventoryRef`;
 - activation-plan digest.
 
+`PreparedEvidenceRef` identifies one immutable pre-cutover attempt:
+
+- schema version, migration/slice/attempt and idempotent operation identities;
+- source commit/tree, policy and approved OpenSpec artifact digests;
+- activation-plan digest, current composition digest, immutable input refs and
+  intended target generation;
+- expected selector generation/revision/fence, stable deployment-unit
+  identity, invocation token and exact owner-adapter command digests;
+- preparation observation and canonical record digest.
+
+It contains no selector-commit, process-start, verification or terminal
+outcome that does not yet exist. The selector and operation phases retain this
+ref or the operation identity; they never contain a placeholder for a future
+final digest.
+
 `MigrationEvidenceRef` identifies one complete activation or rollback proof:
 
 - schema version, migration ID, slice ID, attempt ID and idempotent operation
@@ -849,6 +938,7 @@ Dataset or Study references.
   `PackageGenerationRef`/`WebBuildRef`/native artifact refs;
 - activation-plan digest and selector generations/revisions/fences observed
   before and after;
+- the exact `PreparedEvidenceRef` from which the attempt began;
 - ordered `prepared`, `selector_committed`, `start_intent_recorded`,
   `process_started` and `verified` receipts, with stable deployment-unit and
   invocation-token identity plus reconciliation outcome;
@@ -863,7 +953,9 @@ Authority may advance only from one `passed` evidence manifest whose observed
 post-selector equals the plan target. A rollback produces a new
 `MigrationEvidenceRef` linked to the failed attempt, current composition and
 compensation or independent prior target; it does not rewrite the failed
-evidence.
+evidence. The final ref is written only after `verified` or a terminal
+failure/rollback outcome and is then linked by the authority record; no
+selector, plan or earlier receipt is overwritten to insert it.
 
 `BridgeUseCoverageRef` identifies:
 
@@ -884,7 +976,7 @@ These references are test/deployment evidence. They contain no mutable
 - store schema and scope;
 - immutable selected generation;
 - monotonic revision/fence;
-- operation ID, plan digest and evidence ref;
+- operation ID, plan digest and `PreparedEvidenceRef`;
 - predecessor generation/revision;
 - canonical selector payload digest.
 
@@ -1279,8 +1371,9 @@ bounded:
 - allow at most two isolated install environments concurrently;
 - schedule at most two heavy build/browser/native jobs and
   `min(4, max(1, floor(available_cpu / 2)))` ordinary validation workers
-  globally; refuse after a two-minute queue deadline instead of
-  oversubscribing;
+  within one validation process tree; refuse after a two-minute queue deadline
+  instead of oversubscribing. Cross-invocation/host-global admission requires
+  a separately reviewed shared lease and is not claimed by this parent;
 - cap aggregate validation RSS at the lower of 75% of detected runner memory
   and 8 GiB, and temporary output at 10 GiB; capacity refusal retains partial
   evidence and runs cleanup;
@@ -1361,6 +1454,14 @@ the selected deployment evidence files and source manifests. It performs no
 provider, DB, parquet, repair, build, activation or rollback operation. Human
 and JSON output expose:
 
+- at most 32 explicitly referenced regular records, with reference depth at
+  most eight, each canonical JSON record at most 256 KiB and aggregate input
+  at most 4 MiB;
+- a five-second monotonic read/validation deadline. The command never walks a
+  directory, scans repository history, enumerates `/proc`/service-manager
+  state, follows symlinks or probes live processes. Any limit breach is an
+  invalid/unavailable tool result with exit `2`;
+
 - package generation, wheel digest and member count;
 - legacy/target module origins and selected authority;
 - source commit/tree, inventory scanner/rules identities, completeness and age;
@@ -1381,17 +1482,14 @@ and JSON output expose:
 - tool exit code, operator action and partial-evidence ref;
 - whether validation or rollout stopped early and why.
 
-JSON uses a versioned schema and stable exit semantics: `0` means a complete,
-internally consistent report with no state-axis exit contribution; `1` means a
-valid report with failed, stopped, non-retireable, `pending`,
-`absence_proved`, `fenced_teardown`, `required` or `failed` reconciliation
-state; and `2` means the report/tool is invalid or unavailable, including an
-unknown enum or forbidden state product. `adopted` can return `0` only when
-every other axis is successful and internally consistent. Human and JSON
-output carry the same enum values, selected action and exit result. Human
-output maps every nonzero valid condition to one operator action; incompatible
-action requirements are invalid and return `2`. Empty inventory is success
-only when a complete report binds an explicitly empty expected set.
+JSON uses `LayoutStatusConstraintsV1` and stable exit semantics: unknown
+values, forbidden state products, failed receipt predicates, a mismatched
+derived action or unavailable/over-budget input return `2`; otherwise any
+`valid_attention` value returns `1`; otherwise every value is `healthy` and
+the report returns `0`. `adopted` can therefore return `0` only when every
+other axis is healthy and internally consistent. Human and JSON output carry
+the same enum values, uniquely derived action and exit result. Empty inventory
+is success only when a complete report binds an explicitly empty expected set.
 
 ## Validation Strategy
 
@@ -1721,12 +1819,13 @@ reviewed typed native capability selectors remain independent. Logical
 Python/ASGI slices are independently reversible through a new compensating
 deployment generation, not by pretending they have independent runtime
 selectors. Deployment first creates `LayoutActivationPlanV1` and a `prepared`
-receipt, verifies a canary/temporary immutable generation, confirms expected
-selector generation and revision, commits one revision-fenced CAS, records a
-durable start intent and matching process start, verifies
-`MigrationEvidenceRef`, then observes compatibility and only later permits
-cleanup. A crash resumes by operation ID and deployment-unit identity before
-another mutation is admitted.
+evidence ref in that acyclic order, verifies a canary/temporary immutable
+generation, confirms expected selector generation and revision, commits one
+revision-fenced CAS, records a durable start intent and matching process start,
+verifies the post-start contracts, then creates the terminal
+`MigrationEvidenceRef`, observes compatibility and only later permits cleanup.
+A crash resumes by operation ID and deployment-unit identity before another
+mutation is admitted.
 
 The old root remains installed and importable for at least 30 days after target
 authority for that contract, unless a later reviewed public-contract policy

@@ -126,8 +126,10 @@ tool failure and unavailable prerequisite SHALL be reported as distinct
 states. Reaching a deadline SHALL terminate the process tree and retain partial
 reports without advancing authority.
 
-The complete validation scheduler SHALL enforce the reviewed global worker,
-heavy-job, RSS, temporary-disk and queue-deadline bounds. Startup/import
+The complete validation scheduler SHALL enforce the reviewed per-validation-
+process-tree worker, heavy-job, RSS, temporary-disk and queue-deadline bounds.
+It SHALL NOT claim cross-invocation or host-global admission without a
+separately reviewed shared lease. Startup/import
 benchmarks SHALL bind runner image, toolchain and dependency lock and SHALL
 enforce reviewed p50/p95, RSS and imported-module thresholds. Current and
 synthetic ten-times source indexes SHALL enforce the reviewed scan-count,
@@ -135,8 +137,9 @@ wall-time and RSS bounds. Resource or performance overflow SHALL fail as
 `capacity_refusal`; it SHALL NOT drop checks or samples.
 
 Reports SHALL model `migration_state`, `execution_state`, `startup_state`,
-`failure_class`, `rollback_state` and `operator_action` as separate closed
-fields. `startup_state` SHALL be one of `not_started`, `starting`,
+`failure_class`, `rollback_state`, `reconciliation_state` and
+`operator_action` as separate closed fields. `startup_state` SHALL be one of
+`not_started`, `starting`,
 `started_healthy`, `started_degraded`, `failed` or `stopped`, with bounded
 reason codes and degraded component identities. Reports SHALL include a tool
 exit code when one exists, a bounded failure detail, `partial_evidence_ref`,
@@ -152,28 +155,39 @@ overwrite or imply an execution, failure or rollback result.
 - **THEN** validation refuses the slice and requires a narrower deterministic grouping rather than taking the first 500 or sampling
 
 #### Scenario: A rollback succeeds after validation failed
-- **WHEN** the prior generation is restored after a contract mismatch
+- **WHEN** the reviewed exact-predecessor or current-composition compensation target is selected after a contract mismatch
 - **THEN** the report retains `failure_class=contract_mismatch`, records `rollback_state=succeeded` independently and does not relabel the failed validation as passed
 
 #### Scenario: Startup remains available after automation failure
 - **WHEN** core resources start but a compatible startup automation component fails
 - **THEN** the report uses `startup_state=started_degraded`, names the bounded component/reason, remains running and reports neither `started_healthy` nor fatal startup
 
-#### Scenario: Global validation capacity is exhausted
+#### Scenario: Validation process-tree capacity is exhausted
 - **WHEN** worker, heavy-job, RSS, temporary-disk or queue-deadline admission would exceed its reviewed bound
 - **THEN** no additional child starts, admitted process groups are cleaned, partial evidence is retained and the attempt reports `capacity_refusal` rather than silently omitting validation
 
 ### Requirement: Migration evidence SHALL bind inventory, activation and outcomes
 
-Each authority attempt SHALL produce one immutable, digest-bound
-`MigrationEvidenceRef`. It SHALL bind the source commit/tree, policy and
+Before cutover, each authority attempt SHALL produce one immutable,
+digest-bound `PreparedEvidenceRef`. It SHALL bind the operation and attempt
+identities, activation-plan digest, immutable inputs and intended target,
+expected generation/revision/fence, stable deployment-unit identity,
+invocation token and owner-adapter command digests. It SHALL NOT contain a
+placeholder for selector, process, verification or terminal outcomes that do
+not yet exist. Selector and phase records SHALL retain the prepared ref or
+operation identity.
+
+After `verified` or a terminal failure/rollback outcome, each completed
+attempt SHALL produce one immutable, digest-bound `MigrationEvidenceRef`. It
+SHALL bind the exact `PreparedEvidenceRef`, source commit/tree, policy and
 approved design digest, complete `ConsumerInventoryRef`, authority and
 package/Web/native generation refs, activation-plan digest, selectors observed
 before and after including generation/revision/fence, operation ID, ordered
 activation-phase and process receipts, toolchain and ordered command
 identities, monotonic deadline policy, per-check typed outcomes,
 shutdown/escalation/residual-process receipt, partial-evidence refs and final
-report digest.
+report digest. The authority record MAY link the final ref; no plan, selector
+or earlier immutable receipt SHALL be overwritten to insert it.
 
 `ConsumerInventoryRef` SHALL bind scanner version/source digest, included roots,
 explicit exclusions, selection-rules digest, UTC generation time, counts,
@@ -203,8 +217,10 @@ Each slice SHALL publish an immutable `LayoutActivationPlanV1` with the exact
 selector mechanism and precedence, expected current generation, target and
 rollback or compensation target, current composition-manifest digest, desired
 slice delta, expected selector revision, idempotent operation ID, owner-adapter
-activation and rollback argv digests, evidence reference, operator, deadline
-and post-action checks. Activation SHALL use linearizable compare-and-set
+activation and rollback argv digests, immutable input refs, operator, deadline
+and post-action checks. After the plan digest is known, the attempt SHALL
+create `PreparedEvidenceRef` binding the plan and operation; the plan SHALL NOT
+embed that prepared ref. Activation SHALL use linearizable compare-and-set
 semantics on both expected generation and revision, allocate exactly the next
 monotonic revision/fence, and SHALL reject moving package
 specifiers, unverified `latest` paths, arbitrary selector scopes and one global
@@ -339,31 +355,109 @@ provider, business DB, parquet, repair, build, activate or roll back. Its
 versioned JSON SHALL expose generation and selector identities, evidence and
 inventory refs, bridge coverage, orthogonal state fields, exit code, partial
 evidence and operator action without credentials, user data or stack traces.
+One invocation SHALL read at most 32 explicitly referenced regular records,
+follow at most eight reference levels, admit at most 256 KiB per canonical
+JSON record and 4 MiB in aggregate, and finish read/validation within a
+five-second monotonic deadline. It SHALL NOT walk directories, scan repository
+history, enumerate `/proc` or service-manager state, follow symlinks or probe
+live processes. A limit breach SHALL return exit `2`.
 
 `reconciliation_state` SHALL be the closed enum `not_required`, `pending`,
 `adopted`, `absence_proved`, `fenced_teardown`, `required` or `failed`.
 `pending` SHALL bind one consistent unfinished operation. `adopted` SHALL bind
 exactly one live instance to the durable intent, token, generation, revision
-and fence. `absence_proved` SHALL bind bounded proof that no matching instance
-or descendant remains. `fenced_teardown` SHALL bind the stale fence, complete
+and fence. `absence_proved` SHALL reject a live instance or unsuperseded
+`process_started`; it MAY include a historical `process_started` only when a
+causally later terminal receipt binds the same operation, deployment unit,
+token, generation, revision and fence and proves no live descendant remains.
+`fenced_teardown` SHALL bind the stale fence, complete
 shutdown receipt and zero residue. `required` SHALL identify a contradiction,
 deadline miss or ambiguous external result without claiming recovery.
 `failed` SHALL bind a terminal unsuccessful reconciliation attempt. The parent
 diagnostic SHALL only validate and report these immutable outcomes; it SHALL
 not perform adoption, retry, teardown, repair or selector mutation.
 
-Exit `0` SHALL mean a complete internally consistent report with no state-axis
-exit contribution. Exit `1` SHALL mean a valid report with a failed, stopped,
-non-retireable, `pending`, `absence_proved`, `fenced_teardown`, `required` or
-`failed` state. Exit `2` SHALL mean an invalid or unavailable report/tool,
-including an unknown reconciliation enum, missing required receipt, forbidden
-state product or contradictory operator-action requirement. `adopted` MAY
-return exit `0` only when every independent axis is successful and consistent.
-Human and JSON output SHALL expose identical enum, action and exit semantics.
+`LayoutStatusConstraintsV1` SHALL be the versioned, dependency-free legality
+and derivation oracle. It SHALL classify every declared value of every state
+axis as `healthy` or `valid_attention`, validate the complete
+reconciliation-to-migration/execution/failure/rollback/startup constraint
+table and its receipt predicates, and classify unknown values or failed
+cross-axis predicates as `invalid`. `operator_action` SHALL be uniquely
+derived by the versioned priority table; it SHALL distinguish
+`resume_reconciliation`, `retry_identical_invocation` and
+`execute_reviewed_rollback`. A supplied action that differs from the derived
+one SHALL be invalid.
+
+The per-axis classification SHALL be:
+
+- migration: `retireable` is healthy; every other declared migration value is
+  attention;
+- execution: `passed` is healthy; `not_run`, `running`, `failed` and `stopped`
+  are attention;
+- failure: `none` is healthy; every other declared failure class is attention;
+- rollback: `not_required` and `succeeded` are healthy; `ready`, `requested`,
+  `running`, `failed` and `unknown` are attention;
+- startup: `started_healthy` is healthy; `not_started`, `starting`,
+  `started_degraded`, `failed` and `stopped` are attention;
+- reconciliation: `not_required` and `adopted` are healthy; `pending`,
+  `absence_proved`, `fenced_teardown`, `required` and `failed` are attention.
+
+The reconciliation constraint sets SHALL be:
+
+- `pending`: migration `inventoried|prepared|shadow_verified`, execution
+  `not_run|running|stopped`, rollback `not_required`, startup
+  `not_started|starting|started_healthy|started_degraded|stopped`;
+- `adopted`: migration
+  `prepared|shadow_verified|legacy_forwarding|target_authoritative`, execution
+  `running|passed`, rollback `not_required`, startup
+  `started_healthy|started_degraded`;
+- `absence_proved`: migration `inventoried|prepared|shadow_verified`,
+  execution `not_run|stopped`, rollback `not_required`, startup
+  `not_started|stopped`;
+- `fenced_teardown`: migration `prepared|shadow_verified`, execution
+  `stopped`, rollback `ready`, startup `stopped`;
+- `required|failed`: migration `inventoried|prepared|shadow_verified`,
+  execution `failed|stopped`, any declared rollback value and any declared
+  startup value;
+- `not_required`: any declared value that satisfies the generic predicates.
+
+`pending`, `adopted`, `absence_proved` and `fenced_teardown` SHALL require
+`failure_class=none`; `required|failed` SHALL require their declared non-none
+reconciliation failure classes. `execution_state=passed` SHALL require
+`failure_class=none`, and a non-none failure SHALL NOT coexist with `passed`.
+`target_authoritative|retireable` SHALL require execution `passed`, failure
+`none`, rollback `not_required` and reconciliation `not_required|adopted`.
+Every product of declared values satisfying these generic predicates and its
+reconciliation constraint set SHALL be valid; implementations SHALL NOT add
+unversioned local allow/deny rules.
+
+`operator_action` SHALL be one of `none`, `wait`, `continue_validation`,
+`resume_reconciliation`, `retry_identical_invocation`,
+`repair_prerequisite`, `narrow_slice`, `execute_reviewed_rollback` or
+`investigate`. The first matching rule SHALL derive it: reconciliation
+`required|failed` maps unavailable prerequisite to `repair_prerequisite` and
+all other allowed failures to `investigate`; then `fenced_teardown` maps to
+`execute_reviewed_rollback`; `absence_proved` to
+`retry_identical_invocation`; `pending` to `resume_reconciliation`; remaining
+unavailable prerequisite to `repair_prerequisite`; capacity refusal to
+`narrow_slice`; any other failure, rollback `failed|unknown` or startup
+`started_degraded|failed|stopped` to `investigate`; rollback `ready` to
+`execute_reviewed_rollback`; rollback `requested|running`, execution `running`
+or startup `starting` to `wait`; any remaining attention value to
+`continue_validation`; and an all-healthy report to `none`.
+
+Exit aggregation SHALL be total and order-independent: any `invalid` result
+returns `2`; otherwise any `valid_attention` value returns `1`; otherwise all
+values are `healthy` and the report returns `0`. Human and JSON output SHALL
+expose identical enum, uniquely derived action and exit semantics. The
+rollback action SHALL reference only the scope-specific reviewed plan. For a
+`python_deployment` with later accepted slices, a historical predecessor
+target SHALL be invalid; the plan SHALL name a newly verified successor from
+the current composition.
 
 #### Scenario: An operator inspects a failed cutover
 - **WHEN** layout status reads a valid evidence manifest with a timeout and successful rollback
-- **THEN** it reports the timeout and rollback independently, names the active prior generation and returns exit 1 with a bounded operator action
+- **THEN** it reports the timeout and rollback independently, names the active reviewed rollback target plus predecessor lineage and returns exit 1 with the uniquely derived operator action
 
 #### Scenario: Status evidence is malformed
 - **WHEN** a selector or digest does not match the evidence schema
@@ -378,8 +472,16 @@ Human and JSON output SHALL expose identical enum, action and exit semantics.
 - **THEN** human and JSON output preserve those values, return exit 1 and perform no repair or mutation
 
 #### Scenario: A reconciliation state product is forbidden
-- **WHEN** evidence uses an unknown reconciliation enum, claims `adopted` without one matching process receipt, combines `absence_proved` with a live matching process, claims `fenced_teardown` with residue, or combines `required` or `failed` with passed/authoritative/retireable state
+- **WHEN** evidence uses an unknown reconciliation enum, claims `adopted` without one matching process receipt, combines `absence_proved` with a live or unsuperseded matching process-start receipt, claims `fenced_teardown` with residue, combines `required` or `failed` with passed/authoritative/retireable state, supplies a non-derived action, or targets a historical Python predecessor that would remove a later accepted slice
 - **THEN** validation rejects the report, returns exit 2 and does not reinterpret the record as a valid operator-recoverable state
+
+#### Scenario: A historical process start is superseded by absence proof
+- **WHEN** one historical `process_started` receipt is followed by a bounded terminal receipt with the exact same operation, deployment unit, invocation token, generation, revision and fence and zero live descendants
+- **THEN** `absence_proved` is a valid attention state with action `retry_identical_invocation`; a missing, mismatched or nonterminal superseding receipt is invalid
+
+#### Scenario: Finite state products are exhaustively classified
+- **WHEN** the pure legality oracle enumerates every declared state-axis value product
+- **THEN** each product has exactly one healthy, attention or invalid classification, one derived action and one exit result independent of evaluation order; representative human and JSON goldens match the oracle
 
 ### Requirement: Package and layout operations SHALL not access real business data
 
