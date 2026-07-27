@@ -149,19 +149,63 @@ def test_process_timeout_terminates_descendant_group(tmp_path: Path) -> None:
         "time.sleep(30)"
     )
 
-    outcome = run_process(
-        (sys.executable, "-c", script),
-        cwd=tmp_path,
-        timeout_seconds=0.2,
-    )
+    with pytest.raises(PerformanceProcessError) as raised:
+        run_process(
+            (sys.executable, "-c", script),
+            cwd=tmp_path,
+            timeout_seconds=0.2,
+        )
 
-    assert outcome.timed_out
-    assert outcome.cleanup_survivors == 0
+    assert raised.value.code == "layout.performance.process_timeout"
     child_pid = int(pid_file.read_text())
     deadline = time.monotonic() + 2
     while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert not Path(f"/proc/{child_pid}").exists()
+
+
+def test_process_timeout_terminates_detached_descendant_and_honors_deadline(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "detached.pid"
+    script = (
+        "import pathlib,subprocess,sys,time;"
+        "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "start_new_session=True);"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid));"
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(PerformanceProcessError) as raised:
+        run_process(
+            (sys.executable, "-c", script),
+            cwd=tmp_path,
+            timeout_seconds=0.2,
+        )
+
+    assert raised.value.code == "layout.performance.process_timeout"
+    assert time.monotonic() - started < 2
+    child_pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 2
+    while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not Path(f"/proc/{child_pid}").exists()
+
+
+def test_process_timeout_never_returns_shape_valid_partial_output(tmp_path: Path) -> None:
+    with pytest.raises(PerformanceProcessError) as raised:
+        run_process(
+            (
+                sys.executable,
+                "-c",
+                "import sys,time;sys.stdout.write('1'*40);sys.stdout.flush();time.sleep(30)",
+            ),
+            cwd=tmp_path,
+            timeout_seconds=0.1,
+        )
+
+    assert raised.value.code == "layout.performance.process_timeout"
 
 
 def test_process_refuses_output_explosion_and_cleans_group(tmp_path: Path) -> None:
@@ -452,6 +496,33 @@ def test_cli_classifies_capture_failure_and_preserves_completed_stages(
     assert payload["completed_stages"] == ["runner_identity", "startup_probes"]
     assert payload["partial_evidence"]["source_commit"] == "1" * 40
     assert not (tmp_path / "baseline.json").exists()
+
+
+def test_process_failure_does_not_expose_child_output_or_inherited_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "sk-review-secret-123"
+    monkeypatch.setenv("TRADE_REVIEW_TOKEN", secret)
+
+    with pytest.raises(PerformanceProcessError) as raised:
+        run_process(
+            (
+                sys.executable,
+                "-c",
+                (
+                    "import os,sys;"
+                    "sys.stderr.write(os.environ.get('TRADE_REVIEW_TOKEN','not-inherited'));"
+                    "raise SystemExit(9)"
+                ),
+            ),
+            cwd=tmp_path,
+            timeout_seconds=2,
+        )
+
+    assert raised.value.code == "layout.performance.process_exit"
+    assert secret not in raised.value.detail
+    assert "not-inherited" not in raised.value.detail
 
 
 def test_top_level_route_uses_frozen_no_sync(tmp_path: Path) -> None:

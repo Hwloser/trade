@@ -2,13 +2,44 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
-import selectors
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+_SUPERVISOR_GRACE_SECONDS = 5.0
+_SAFE_ENVIRONMENT_NAMES = frozenset(
+    {
+        "CI",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "NO_COLOR",
+        "NO_UPDATE_NOTIFIER",
+        "PATH",
+        "PIP_NO_INDEX",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONHASHSEED",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        "SOURCE_DATE_EPOCH",
+        "TERM",
+        "TMP",
+        "TEMP",
+        "TMPDIR",
+        "TRADE_DATA_ROOT",
+        "UV_FROZEN",
+        "UV_NO_SYNC",
+        "UV_OFFLINE",
+    }
+)
+_SAFE_ENVIRONMENT_PREFIXES = ("NPM_CONFIG_",)
 
 
 @dataclass(frozen=True)
@@ -19,6 +50,8 @@ class ProcessOutcome:
     duration_ms: float
     timed_out: bool
     cleanup_survivors: int
+    peak_process_tree_rss_bytes: int = 0
+    peak_temp_bytes: int = 0
 
 
 class PerformanceProcessError(RuntimeError):
@@ -36,16 +69,39 @@ def run_process(
     output_limit_bytes: int = 1024 * 1024,
     allowed_returncodes: frozenset[int] = frozenset({0}),
     env: dict[str, str] | None = None,
+    allow_timeout: bool = False,
+    rss_limit_bytes: int = 0,
+    temp_limit_bytes: int = 0,
+    temp_root: Path | None = None,
 ) -> ProcessOutcome:
-    if not argv or timeout_seconds <= 0:
+    if (
+        not argv
+        or timeout_seconds <= 0
+        or output_limit_bytes < 1
+        or rss_limit_bytes < 0
+        or temp_limit_bytes < 0
+    ):
         raise ValueError("process argv and timeout must be finite")
-    started = time.monotonic()
+    config = json.dumps(
+        {
+            "argv": list(argv),
+            "cwd": str(cwd.resolve()),
+            "output_limit_bytes": output_limit_bytes,
+            "rss_limit_bytes": rss_limit_bytes,
+            "temp_limit_bytes": temp_limit_bytes,
+            "temp_root": str(temp_root.resolve()) if temp_root is not None else None,
+            "timeout_seconds": timeout_seconds,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    supervisor = Path(__file__).with_name("process_supervisor.py")
     try:
         process = subprocess.Popen(
-            argv,
+            (sys.executable, str(supervisor)),
             cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
+            env=_sanitized_environment(env),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -53,113 +109,70 @@ def run_process(
     except OSError as exc:
         raise PerformanceProcessError(
             "layout.performance.process_spawn",
-            f"cannot start {argv[0]}: {exc}",
+            f"cannot start validation supervisor for {Path(argv[0]).name}",
         ) from exc
-    timed_out = False
     try:
-        stdout, stderr, timed_out = _read_bounded(
-            process,
-            deadline=time.monotonic() + timeout_seconds,
-            output_limit_bytes=output_limit_bytes,
+        stdout, _stderr = process.communicate(
+            config,
+            timeout=timeout_seconds + _SUPERVISOR_GRACE_SECONDS,
         )
-        if not timed_out and _group_exists(process.pid):
-            _terminate_group(process)
-            raise PerformanceProcessError(
-                "layout.performance.process_survivor",
-                f"{argv[0]} left a descendant process after exit",
-            )
-        survivors = 1 if _group_exists(process.pid) else 0
-        returncode = process.returncode
-        if returncode is None:
-            raise PerformanceProcessError(
-                "layout.performance.process_state",
-                f"{argv[0]} did not report an exit code",
-            )
-        if not timed_out and returncode not in allowed_returncodes:
-            detail = (stderr or stdout).decode("utf-8", "replace")[-2048:].strip()
-            raise PerformanceProcessError(
-                "layout.performance.process_exit",
-                f"{argv[0]} exited with {returncode}: {detail}",
-            )
-        return ProcessOutcome(
-            stdout=stdout,
-            stderr=stderr,
-            returncode=returncode,
-            duration_ms=(time.monotonic() - started) * 1000,
-            timed_out=timed_out,
-            cleanup_survivors=survivors,
-        )
-    except BaseException:
-        if process.poll() is None or _group_exists(process.pid):
-            _terminate_group(process)
-        raise
-
-
-def _read_bounded(
-    process: subprocess.Popen[bytes],
-    *,
-    deadline: float,
-    output_limit_bytes: int,
-) -> tuple[bytes, bytes, bool]:
-    if process.stdout is None or process.stderr is None:
+    except subprocess.TimeoutExpired as exc:
+        _terminate_group(process)
         raise PerformanceProcessError(
-            "layout.performance.process_state",
-            "captured process pipes are unavailable",
+            "layout.performance.supervisor_timeout",
+            "validation supervisor exceeded its cleanup deadline",
+        ) from exc
+    if process.returncode != 0 or len(stdout) > output_limit_bytes * 3 + 64 * 1024:
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            "validation supervisor did not return bounded evidence",
         )
-    streams = {
-        process.stdout.fileno(): ("stdout", bytearray()),
-        process.stderr.fileno(): ("stderr", bytearray()),
-    }
-    selector = selectors.DefaultSelector()
-    try:
-        for descriptor in streams:
-            os.set_blocking(descriptor, False)
-            selector.register(descriptor, selectors.EVENT_READ)
-        timed_out = False
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                _terminate_group(process)
-                remaining = 0.1
-            events = selector.select(timeout=min(max(remaining, 0.01), 0.1))
-            parent_returncode = process.poll()
-            if parent_returncode is not None and _group_exists(process.pid):
-                _terminate_group(process)
-                raise PerformanceProcessError(
-                    "layout.performance.process_survivor",
-                    "parent exited while a descendant retained the process group",
-                )
-            if not events and parent_returncode is not None:
-                events = tuple((key, selectors.EVENT_READ) for key in selector.get_map().values())
-            for key, _mask in events:
-                descriptor = int(key.fd)
-                try:
-                    chunk = os.read(descriptor, 64 * 1024)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    selector.unregister(descriptor)
-                    continue
-                name, output = streams[descriptor]
-                output.extend(chunk)
-                if len(output) > output_limit_bytes:
-                    _terminate_group(process)
-                    raise PerformanceProcessError(
-                        "layout.performance.process_output",
-                        f"{name} exceeded the {output_limit_bytes}-byte output limit",
-                    )
-            if timed_out and process.poll() is not None and not selector.get_map():
-                break
-        if process.poll() is None:
-            process.wait(timeout=1)
-        return (
-            bytes(streams[process.stdout.fileno()][1]),
-            bytes(streams[process.stderr.fileno()][1]),
-            timed_out,
+    payload = _supervisor_payload(stdout)
+    failure_code = payload.get("failure_code")
+    if failure_code == "layout.performance.supervisor_unavailable":
+        raise PerformanceProcessError(
+            "layout.performance.unavailable_prerequisite",
+            "complete validation-process containment is unavailable",
         )
-    finally:
-        selector.close()
+    timed_out = _boolean(payload, "timed_out")
+    survivors = _integer(payload, "cleanup_survivors")
+    returncode = _integer(payload, "returncode", allow_negative=True)
+    outcome = ProcessOutcome(
+        stdout=_decoded_output(payload, "stdout", output_limit_bytes),
+        stderr=_decoded_output(payload, "stderr", output_limit_bytes),
+        returncode=returncode,
+        duration_ms=_number(payload, "duration_ms"),
+        timed_out=timed_out,
+        cleanup_survivors=survivors,
+        peak_process_tree_rss_bytes=_integer(payload, "peak_process_tree_rss_bytes"),
+        peak_temp_bytes=_integer(payload, "peak_temp_bytes"),
+    )
+    command = Path(argv[0]).name
+    if survivors:
+        raise PerformanceProcessError(
+            "layout.performance.process_cleanup",
+            f"{command} left validation descendants after cleanup",
+        )
+    if timed_out and not allow_timeout:
+        raise PerformanceProcessError(
+            "layout.performance.process_timeout",
+            f"{command} exceeded its bounded deadline",
+        )
+    if isinstance(failure_code, str) and not timed_out:
+        if failure_code.startswith("layout.performance.capacity_"):
+            raise PerformanceProcessError(failure_code, "validation resource limit exceeded")
+        if failure_code.startswith("layout.performance.process_output_"):
+            raise PerformanceProcessError(
+                "layout.performance.process_output",
+                f"{command} exceeded its bounded output limit",
+            )
+        raise PerformanceProcessError(failure_code, f"{command} did not complete cleanly")
+    if not timed_out and returncode not in allowed_returncodes:
+        raise PerformanceProcessError(
+            "layout.performance.process_exit",
+            f"{command} exited with status {returncode}",
+        )
+    return outcome
 
 
 def _terminate_group(process: subprocess.Popen[bytes]) -> None:
@@ -202,6 +215,92 @@ def _group_exists(process_group: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _sanitized_environment(environment: dict[str, str] | None) -> dict[str, str]:
+    source = os.environ if environment is None else environment
+    selected = {
+        name: value
+        for name, value in source.items()
+        if name in _SAFE_ENVIRONMENT_NAMES
+        or any(name.startswith(prefix) for prefix in _SAFE_ENVIRONMENT_PREFIXES)
+    }
+    selected.setdefault("PATH", os.defpath)
+    selected["PYTHONDONTWRITEBYTECODE"] = "1"
+    return selected
+
+
+def _supervisor_payload(raw: bytes) -> dict[str, object]:
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            "validation supervisor returned invalid evidence",
+        ) from exc
+    if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            "validation supervisor evidence must be an object",
+        )
+    return payload
+
+
+def _decoded_output(payload: dict[str, object], key: str, limit: int) -> bytes:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            "validation supervisor omitted captured output",
+        )
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except ValueError as exc:
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            "validation supervisor output encoding is invalid",
+        ) from exc
+    if len(decoded) > limit:
+        raise PerformanceProcessError(
+            "layout.performance.process_output",
+            f"{key} exceeded its bounded output limit",
+        )
+    return decoded
+
+
+def _integer(
+    payload: dict[str, object],
+    key: str,
+    *,
+    allow_negative: bool = False,
+) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or (not allow_negative and value < 0):
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            f"validation supervisor field {key} is invalid",
+        )
+    return value
+
+
+def _number(payload: dict[str, object], key: str) -> float:
+    value = payload.get(key)
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            f"validation supervisor field {key} is invalid",
+        )
+    return float(value)
+
+
+def _boolean(payload: dict[str, object], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise PerformanceProcessError(
+            "layout.performance.supervisor_failure",
+            f"validation supervisor field {key} is invalid",
+        )
+    return value
 
 
 __all__ = [

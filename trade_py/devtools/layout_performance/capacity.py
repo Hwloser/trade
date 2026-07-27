@@ -132,6 +132,7 @@ def prove_capacity_policy(capacity: ValidationCapacity | None = None) -> Capacit
         ),
         cwd=Path.cwd(),
         timeout_seconds=0.05,
+        allow_timeout=True,
     )
     return CapacityEvidence(
         available_cpu_count=capacity.available_cpu_count,
