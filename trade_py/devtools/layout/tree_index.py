@@ -52,6 +52,13 @@ class TreeIndexLimits:
 
 
 DEFAULT_LIMITS = TreeIndexLimits()
+_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
+_DIRECTORY_FLAGS = _OPEN_FLAGS | getattr(os, "O_DIRECTORY", 0)
 
 
 @dataclass(frozen=True)
@@ -124,17 +131,25 @@ def scan_repository(
     rules_digest: str,
     candidate_paths: Iterable[str] = (),
     limits: TreeIndexLimits = DEFAULT_LIMITS,
+    deadline_at: float | None = None,
 ) -> TreeIndex:
     """Build one immutable index from the current Git-indexed source tree."""
 
+    deadline = (
+        float(deadline_at)
+        if deadline_at is not None
+        else time.monotonic() + limits.deadline_seconds
+    )
+    _check_deadline(deadline)
     root = repo_root.resolve()
     roots = tuple(sorted({_normalized_root(value) for value in included_roots}))
     if not roots:
         raise TreeIndexError("layout.index.roots_empty", "at least one source root is required")
-    raw = _git_index_output(root, roots, limits)
+    raw = _git_index_output(root, roots, limits, deadline_at=deadline)
     records = _parse_records(raw, roots, limits)
     seen = {path for _mode, path in records}
     for candidate in sorted(set(candidate_paths)):
+        _check_deadline(deadline)
         normalized = _normalized_path(candidate)
         if normalized in seen or not _is_selected_source(normalized, roots):
             continue
@@ -151,7 +166,13 @@ def scan_repository(
     entries: list[TreeEntry] = []
     source_bytes = 0
     for mode, path in records:
-        content = read_regular_relative(root, path, max_bytes=limits.max_file_bytes)
+        _check_deadline(deadline)
+        content = read_regular_relative(
+            root,
+            path,
+            max_bytes=limits.max_file_bytes,
+            deadline_at=deadline,
+        )
         source_bytes += len(content)
         if source_bytes > limits.max_source_bytes:
             raise TreeIndexError(
@@ -166,8 +187,16 @@ def scan_repository(
                 source_digest=_sha256(content),
             )
         )
+    _check_deadline(deadline)
     entries.sort(key=lambda item: item.path)
-    scanner_source_digest = _sha256(Path(__file__).read_bytes())
+    scanner_source_digest = _sha256(
+        read_regular_relative(
+            Path(__file__).parent,
+            Path(__file__).name,
+            max_bytes=limits.max_file_bytes,
+            deadline_at=deadline,
+        )
+    )
     tree_digest = _digest_rows(
         f"{entry.mode}\0{entry.path}\0{entry.source_bytes}\0{entry.source_digest}"
         for entry in entries
@@ -184,22 +213,27 @@ def scan_repository(
     )
 
 
-def read_regular_relative(root: Path, relative: str, *, max_bytes: int) -> bytes:
+def read_regular_relative(
+    root: Path,
+    relative: str,
+    *,
+    max_bytes: int,
+    deadline_at: float | None = None,
+) -> bytes:
     """Read one repository-relative regular file without following symlinks."""
 
+    _check_deadline(deadline_at)
     path = _normalized_path(relative)
     parts = PurePosixPath(path).parts
-    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    descriptor = os.open(root, _DIRECTORY_FLAGS)
     try:
         for part in parts[:-1]:
-            next_descriptor = os.open(
-                part,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=descriptor,
-            )
+            _check_deadline(deadline_at)
+            next_descriptor = os.open(part, _DIRECTORY_FLAGS, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = next_descriptor
-        file_descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
+        _check_deadline(deadline_at)
+        file_descriptor = os.open(parts[-1], _OPEN_FLAGS, dir_fd=descriptor)
         try:
             before = os.fstat(file_descriptor)
             if not stat.S_ISREG(before.st_mode):
@@ -212,7 +246,11 @@ def read_regular_relative(root: Path, relative: str, *, max_bytes: int) -> bytes
                     "layout.index.file_budget",
                     f"source exceeds {max_bytes} bytes: {path}",
                 )
-            content = _read_exact(file_descriptor, before.st_size)
+            content = _read_exact(
+                file_descriptor,
+                before.st_size,
+                deadline_at=deadline_at,
+            )
             after = os.fstat(file_descriptor)
             signature_before = (
                 before.st_dev,
@@ -249,6 +287,8 @@ def _git_index_output(
     root: Path,
     roots: tuple[str, ...],
     limits: TreeIndexLimits,
+    *,
+    deadline_at: float,
 ) -> bytes:
     environment = os.environ.copy()
     for name in (
@@ -279,10 +319,9 @@ def _git_index_output(
     streams.register(process.stderr, selectors.EVENT_READ, "stderr")
     output = bytearray()
     error = bytearray()
-    deadline = time.monotonic() + limits.deadline_seconds
     try:
         while streams.get_map():
-            remaining = deadline - time.monotonic()
+            remaining = deadline_at - time.monotonic()
             if remaining <= 0:
                 raise TreeIndexError(
                     "layout.index.timeout",
@@ -306,7 +345,7 @@ def _git_index_output(
                         "layout.index.output_budget",
                         f"Git {key.data} exceeded {limit} bytes",
                     )
-        remaining = deadline - time.monotonic()
+        remaining = deadline_at - time.monotonic()
         if remaining <= 0:
             raise TreeIndexError("layout.index.timeout", "Git index scan exceeded its deadline")
         return_code = process.wait(timeout=remaining)
@@ -474,10 +513,16 @@ def _is_under(path: str, root: str) -> bool:
     return path == root or path.startswith(f"{root}/")
 
 
-def _read_exact(descriptor: int, size: int) -> bytes:
+def _read_exact(
+    descriptor: int,
+    size: int,
+    *,
+    deadline_at: float | None,
+) -> bytes:
     chunks: list[bytes] = []
     remaining = size
     while remaining:
+        _check_deadline(deadline_at)
         chunk = os.read(descriptor, min(remaining, 65_536))
         if not chunk:
             break
@@ -487,6 +532,14 @@ def _read_exact(descriptor: int, size: int) -> bytes:
     if len(content) != size:
         raise TreeIndexError("layout.index.short_read", "source ended before its recorded size")
     return content
+
+
+def _check_deadline(deadline_at: float | None) -> None:
+    if deadline_at is not None and time.monotonic() >= deadline_at:
+        raise TreeIndexError(
+            "layout.index.timeout",
+            "Source index validation exceeded its monotonic deadline",
+        )
 
 
 def _sha256(value: bytes) -> str:

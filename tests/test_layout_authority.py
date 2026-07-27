@@ -21,6 +21,7 @@ from trade_py.devtools.layout.tree_index import (
     TreeIndexError,
     TreeIndexLimits,
     TreeIndexSession,
+    read_regular_relative,
     scan_repository,
 )
 from trade_py.devtools.quality.config import QualityConfig
@@ -764,6 +765,57 @@ def test_source_path_and_file_budgets_fail_closed(tmp_path: Path) -> None:
 
     assert path_error.value.code == "layout.index.path_budget"
     assert file_error.value.code == "layout.index.file_budget"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO fixture requires POSIX")
+def test_source_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    source = repo / "trade_py" / "__init__.py"
+    source.unlink()
+    os.mkfifo(source)
+
+    started = time.monotonic()
+    with pytest.raises(TreeIndexError) as blocked:
+        read_regular_relative(
+            repo,
+            "trade_py/__init__.py",
+            max_bytes=1024,
+            deadline_at=time.monotonic() + 1,
+        )
+    elapsed = time.monotonic() - started
+
+    assert blocked.value.code == "layout.index.unsafe_source"
+    assert elapsed < 1.0
+
+
+def test_many_authorities_share_one_source_commit_coverage_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(repo, "trade_py/sample.py", "VALUE = 1\n")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo)
+    _commit_authorities(repo, [row for _index in range(authority.MAX_AUTHORITIES)])
+    real_run = subprocess.run
+    calls: list[tuple[str, ...]] = []
+
+    def recording_run(command: list[str], *args: Any, **kwargs: Any):
+        calls.append(tuple(command))
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "trade_py.devtools.layout.inventory.subprocess.run",
+        recording_run,
+    )
+
+    report = validate_authority_manifest(repo, observed_at=NOW + timedelta(hours=1))
+
+    assert len(calls) == 2
+    assert [command[3] for command in calls] == ["merge-base", "diff"]
+    assert "layout.authority.inventory_commit_stale" not in {item.code for item in report.findings}
 
 
 def test_layout_contributor_runs_only_for_check_and_relevant_scope(tmp_path: Path) -> None:

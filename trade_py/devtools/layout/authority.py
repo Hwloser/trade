@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ from trade_py.devtools.layout.inventory import (
     canonical_digest,
     parse_inventory,
     parse_utc,
+    scanner_source_digest,
     source_commit_covers_current_sources,
 )
 from trade_py.devtools.layout.models import (
@@ -38,6 +40,7 @@ from trade_py.devtools.layout.models import (
     ModuleAuthorityRef,
 )
 from trade_py.devtools.layout.tree_index import (
+    DEFAULT_LIMITS,
     SOURCE_EXCLUDED_NAME_PATTERNS,
     SOURCE_EXCLUDED_SEGMENTS,
     SOURCE_SUFFIXES,
@@ -119,14 +122,17 @@ def validate_authority_manifest(
 
     findings: list[AuthorityFinding] = []
     root = repo_root.resolve()
+    deadline = time.monotonic() + DEFAULT_LIMITS.deadline_seconds
     try:
-        manifest = _load_manifest(root, manifest_name)
+        manifest = _load_manifest(root, manifest_name, deadline_at=deadline)
         index = scan_repository(
             root,
             included_roots=manifest.included_roots,
             rules_digest=manifest.rules_digest,
             candidate_paths=candidate_paths,
+            deadline_at=deadline,
         )
+        scanner_digest = scanner_source_digest(deadline_at=deadline)
     except (TreeIndexError, ValueError, tomllib.TOMLDecodeError) as exc:
         code = exc.code if isinstance(exc, TreeIndexError) else "layout.authority.manifest_invalid"
         return AuthorityReport(
@@ -157,7 +163,13 @@ def validate_authority_manifest(
     trees: dict[str, ast.Module] = {}
     for module, entry in sorted(entries_by_module.items()):
         try:
-            source = read_regular_relative(root, entry.path, max_bytes=entry.source_bytes)
+            _check_deadline(deadline)
+            source = read_regular_relative(
+                root,
+                entry.path,
+                max_bytes=entry.source_bytes,
+                deadline_at=deadline,
+            )
             tree = ast.parse(source, filename=entry.path)
         except (SyntaxError, UnicodeDecodeError, TreeIndexError) as exc:
             findings.append(
@@ -199,20 +211,41 @@ def validate_authority_manifest(
             import_edges=tuple(import_edges),
         )
     rows = manifest.authorities if len(manifest.authorities) <= MAX_AUTHORITIES else ()
-    for row in rows:
-        authority, row_findings = _validate_authority_row(
-            row,
+    try:
+        commit_coverage = _inventory_commit_coverage(
+            rows,
             repo_root=root,
-            manifest=manifest,
-            index=index,
-            entries_by_module=entries_by_module,
-            import_edges=import_edges,
-            observed_at=now,
+            included_roots=manifest.included_roots,
             manifest_name=manifest_name,
+            deadline_at=deadline,
+            findings=findings,
         )
-        findings.extend(row_findings)
-        if authority is not None:
-            authorities.append(authority)
+        for row in rows:
+            _check_deadline(deadline)
+            authority, row_findings = _validate_authority_row(
+                row,
+                repo_root=root,
+                manifest=manifest,
+                index=index,
+                entries_by_module=entries_by_module,
+                import_edges=import_edges,
+                observed_at=now,
+                manifest_name=manifest_name,
+                scanner_digest=scanner_digest,
+                commit_coverage=commit_coverage,
+            )
+            findings.extend(row_findings)
+            if authority is not None:
+                authorities.append(authority)
+    except TreeIndexError as exc:
+        findings.append(
+            AuthorityFinding(
+                exc.code,
+                manifest_name,
+                None,
+                exc.detail,
+            )
+        )
 
     findings.extend(
         _cross_authority_findings(
@@ -237,8 +270,18 @@ def validate_authority_manifest(
     )
 
 
-def _load_manifest(root: Path, manifest_name: str) -> _Manifest:
-    content = read_regular_relative(root, manifest_name, max_bytes=MAX_MANIFEST_BYTES)
+def _load_manifest(
+    root: Path,
+    manifest_name: str,
+    *,
+    deadline_at: float,
+) -> _Manifest:
+    content = read_regular_relative(
+        root,
+        manifest_name,
+        max_bytes=MAX_MANIFEST_BYTES,
+        deadline_at=deadline_at,
+    )
     payload = tomllib.loads(content.decode("utf-8"))
     unknown = sorted(set(payload) - _MANIFEST_FIELDS)
     if unknown:
@@ -284,6 +327,8 @@ def _validate_authority_row(
     import_edges: Iterable[ImportEdge],
     observed_at: datetime,
     manifest_name: str,
+    scanner_digest: str,
+    commit_coverage: Mapping[str, bool],
 ) -> tuple[ModuleAuthorityRef | None, list[AuthorityFinding]]:
     findings: list[AuthorityFinding] = []
     unknown = sorted(set(row) - _AUTHORITY_FIELDS)
@@ -423,6 +468,8 @@ def _validate_authority_row(
         generated_at=generated_at,
         completeness_state=inventory.completeness_state,
         unclassified_consumer_count=inventory.unclassified_consumer_count,
+        source_commit_value=inventory.source_commit,
+        scanner_source_digest_value=scanner_digest,
     )
     expected_payload = {
         key: value for key, value in expected.__dict__.items() if key != "report_digest"
@@ -482,11 +529,7 @@ def _validate_authority_row(
                 ),
             )
         )
-    if not source_commit_covers_current_sources(
-        repo_root,
-        inventory.source_commit,
-        manifest.included_roots,
-    ):
+    if not commit_coverage.get(inventory.source_commit, False):
         findings.append(
             AuthorityFinding(
                 "layout.authority.inventory_commit_stale",
@@ -517,6 +560,52 @@ def _validate_authority_row(
         ),
         findings,
     )
+
+
+def _inventory_commit_coverage(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    repo_root: Path,
+    included_roots: tuple[str, ...],
+    manifest_name: str,
+    deadline_at: float,
+    findings: list[AuthorityFinding],
+) -> Mapping[str, bool]:
+    commits = {
+        source_commit_value
+        for row in rows
+        if isinstance((inventory := row.get("consumer_inventory")), dict)
+        and isinstance((source_commit_value := inventory.get("source_commit")), str)
+    }
+    if len(commits) > 1:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.inventory_commit_conflict",
+                manifest_name,
+                None,
+                "all authority inventories in one manifest must bind one source commit",
+            )
+        )
+        return {commit: False for commit in commits}
+    if not commits:
+        return {}
+    commit = next(iter(commits))
+    return {
+        commit: source_commit_covers_current_sources(
+            repo_root,
+            commit,
+            included_roots,
+            deadline_at=deadline_at,
+        )
+    }
+
+
+def _check_deadline(deadline_at: float) -> None:
+    if time.monotonic() >= deadline_at:
+        raise TreeIndexError(
+            "layout.index.timeout",
+            "Module authority validation exceeded its monotonic deadline",
+        )
 
 
 def _cross_authority_findings(

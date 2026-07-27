@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import time
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from trade_py.devtools.layout.tree_index import (
     SOURCE_EXCLUDED_SEGMENTS,
     TreeIndex,
     TreeIndexError,
+    read_regular_relative,
 )
 
 MAX_AUTHORITIES = 50
@@ -67,6 +69,8 @@ def build_consumer_inventory(
     generated_at: datetime,
     completeness_state: str = "complete",
     unclassified_consumer_count: int = 0,
+    source_commit_value: str | None = None,
+    scanner_source_digest_value: str | None = None,
 ) -> ConsumerInventoryRef:
     """Build a content-bound inventory reference for a prospective authority slice."""
 
@@ -89,11 +93,11 @@ def build_consumer_inventory(
     entry_digest = digest_rows(rows)
     payload: dict[str, Any] = {
         "schema_version": 1,
-        "source_commit": source_commit(repo_root),
+        "source_commit": source_commit_value or source_commit(repo_root),
         "tree_digest": index.tree_digest,
         "scanner_name": index.scanner_name,
         "scanner_version": index.scanner_version,
-        "scanner_source_digest": scanner_source_digest(),
+        "scanner_source_digest": scanner_source_digest_value or scanner_source_digest(),
         "included_roots": tuple(sorted(set(included_roots))),
         "explicit_exclusions": explicit_exclusions(),
         "rules_digest": rules_digest,
@@ -181,10 +185,15 @@ def source_commit_covers_current_sources(
     repo_root: Path,
     source_commit_value: str,
     included_roots: tuple[str, ...],
+    *,
+    deadline_at: float | None = None,
 ) -> bool:
     if len(source_commit_value) != 40 or any(
         character not in "0123456789abcdef" for character in source_commit_value
     ):
+        return False
+    timeout = _remaining_timeout(deadline_at)
+    if timeout is None:
         return False
     try:
         ancestor = subprocess.run(
@@ -198,9 +207,12 @@ def source_commit_covers_current_sources(
                 "HEAD",
             ],
             capture_output=True,
-            timeout=3,
+            timeout=timeout,
         )
         if ancestor.returncode != 0:
+            return False
+        timeout = _remaining_timeout(deadline_at)
+        if timeout is None:
             return False
         difference = subprocess.run(
             [
@@ -214,9 +226,19 @@ def source_commit_covers_current_sources(
                 *included_roots,
             ],
             capture_output=True,
-            timeout=3,
+            timeout=timeout,
         )
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired as exc:
+        raise TreeIndexError(
+            "layout.index.timeout",
+            "source commit coverage check exceeded its monotonic deadline",
+        ) from exc
+    except OSError as exc:
+        raise TreeIndexError(
+            "layout.authority.commit_unavailable",
+            f"cannot validate inventory source commit: {exc}",
+        ) from exc
+    except subprocess.SubprocessError:
         return False
     return difference.returncode == 0
 
@@ -234,13 +256,20 @@ def canonical_digest(payload: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def scanner_source_digest() -> str:
+def scanner_source_digest(*, deadline_at: float | None = None) -> str:
     source_root = Path(__file__).parent
     digest = hashlib.sha256()
     for name in _SCANNER_SOURCE_FILES:
         digest.update(name.encode("utf-8"))
         digest.update(b"\0")
-        digest.update((source_root / name).read_bytes())
+        digest.update(
+            read_regular_relative(
+                source_root,
+                name,
+                max_bytes=1024 * 1024,
+                deadline_at=deadline_at,
+            )
+        )
         digest.update(b"\0")
     return f"sha256:{digest.hexdigest()}"
 
@@ -272,6 +301,15 @@ def source_commit(repo_root: Path) -> str:
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise TreeIndexError("layout.authority.commit_invalid", "source commit is not a full SHA")
     return commit
+
+
+def _remaining_timeout(deadline_at: float | None) -> float | None:
+    if deadline_at is None:
+        return 3.0
+    remaining = deadline_at - time.monotonic()
+    if remaining <= 0:
+        return None
+    return min(3.0, remaining)
 
 
 def digest_rows(rows: Iterable[str]) -> str:
