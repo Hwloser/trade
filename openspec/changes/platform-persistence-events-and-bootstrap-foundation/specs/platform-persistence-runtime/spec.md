@@ -40,7 +40,10 @@ MAY commit only:
 2. its own immutable transition receipt or audit record;
 3. a consumer inbox receipt and ordered-consumer head when it is consuming a
    message; and
-4. zero or more Platform outbox records emitted by that same transition.
+4. zero or more Platform outbox records emitted by that same transition; and
+5. at most one Platform codec-retention shard mutation when the same transition
+   makes one codec-dependent durable identity visible or permanently
+   unresolvable.
 
 The transaction SHALL carry owner namespace, transaction identity, operation,
 correlation and causation identities, writer fence generation, finite monotonic

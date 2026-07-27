@@ -279,10 +279,11 @@ module except Bootstrap to the legacy schema bridge.
 
 One local owner transaction has exactly one owner namespace and one current
 writer fence. It may update that owner's records plus Platform-owned inbox,
-outbox and immutable receipt rows because those are technical participants in
-the same physical SQLite transaction. This is a narrow protocol exception, not
-shared business ownership: Platform defines the technical row API and the
-owner repository supplies the business transition.
+outbox, immutable receipt rows and at most one codec-retention shard row for the
+same durable identity because those are technical participants in the same
+physical SQLite transaction. This is a narrow protocol exception, not shared
+business ownership: Platform defines the technical row API and the owner
+repository supplies the business transition.
 
 The primitive cannot span files/databases. If a future Context moves to another
 physical database, it must colocate an outbox there and deliver to Platform
