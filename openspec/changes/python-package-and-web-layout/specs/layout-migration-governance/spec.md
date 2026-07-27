@@ -340,9 +340,26 @@ versioned JSON SHALL expose generation and selector identities, evidence and
 inventory refs, bridge coverage, orthogonal state fields, exit code, partial
 evidence and operator action without credentials, user data or stack traces.
 
-Exit `0` SHALL mean a complete internally consistent report, exit `1` a valid
-report with failed/stopped/unknown/non-retireable state, and exit `2` an invalid
-or unavailable report/tool.
+`reconciliation_state` SHALL be the closed enum `not_required`, `pending`,
+`adopted`, `absence_proved`, `fenced_teardown`, `required` or `failed`.
+`pending` SHALL bind one consistent unfinished operation. `adopted` SHALL bind
+exactly one live instance to the durable intent, token, generation, revision
+and fence. `absence_proved` SHALL bind bounded proof that no matching instance
+or descendant remains. `fenced_teardown` SHALL bind the stale fence, complete
+shutdown receipt and zero residue. `required` SHALL identify a contradiction,
+deadline miss or ambiguous external result without claiming recovery.
+`failed` SHALL bind a terminal unsuccessful reconciliation attempt. The parent
+diagnostic SHALL only validate and report these immutable outcomes; it SHALL
+not perform adoption, retry, teardown, repair or selector mutation.
+
+Exit `0` SHALL mean a complete internally consistent report with no state-axis
+exit contribution. Exit `1` SHALL mean a valid report with a failed, stopped,
+non-retireable, `pending`, `absence_proved`, `fenced_teardown`, `required` or
+`failed` state. Exit `2` SHALL mean an invalid or unavailable report/tool,
+including an unknown reconciliation enum, missing required receipt, forbidden
+state product or contradictory operator-action requirement. `adopted` MAY
+return exit `0` only when every independent axis is successful and consistent.
+Human and JSON output SHALL expose identical enum, action and exit semantics.
 
 #### Scenario: An operator inspects a failed cutover
 - **WHEN** layout status reads a valid evidence manifest with a timeout and successful rollback
@@ -351,6 +368,18 @@ or unavailable report/tool.
 #### Scenario: Status evidence is malformed
 - **WHEN** a selector or digest does not match the evidence schema
 - **THEN** the command performs no repair, returns exit 2 and identifies the invalid evidence class without leaking raw payloads
+
+#### Scenario: A lost spawn response is reconciled by adoption
+- **WHEN** immutable evidence contains exactly one process matching the durable intent, invocation token, generation, revision and fence and records `reconciliation_state=adopted`
+- **THEN** layout status reports adoption without starting or stopping a process, and it returns exit 0 only when every other independent state is successful
+
+#### Scenario: Reconciliation needs operator investigation
+- **WHEN** valid evidence records a selector/process fence contradiction as `reconciliation_state=required`, a non-none reconciliation failure class and `operator_action=investigate`
+- **THEN** human and JSON output preserve those values, return exit 1 and perform no repair or mutation
+
+#### Scenario: A reconciliation state product is forbidden
+- **WHEN** evidence uses an unknown reconciliation enum, claims `adopted` without one matching process receipt, combines `absence_proved` with a live matching process, claims `fenced_teardown` with residue, or combines `required` or `failed` with passed/authoritative/retireable state
+- **THEN** validation rejects the report, returns exit 2 and does not reinterpret the record as a valid operator-recoverable state
 
 ### Requirement: Package and layout operations SHALL not access real business data
 

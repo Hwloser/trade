@@ -140,6 +140,7 @@ contracts = [
   "policy-free finite-scope store with typed owner activation adapters",
   "stale process and controller refusal",
   "crash reconciliation before new mutation",
+  "closed reconciliation_state enum and valid state/failure/action/exit products",
   "immutable evidence retention and read-only status",
   "forward-revision rollback",
 ]
@@ -155,6 +156,8 @@ failure_states = [
   "stale process receipt",
   "corrupt, symlinked, oversized or ambiguous predecessor",
   "reconciliation required",
+  "unknown or forbidden reconciliation state product",
+  "reconciliation receipt or operator action contradiction",
   "rollback process or verification failure",
   "historical generation rollback removes a later accepted slice",
   "premature evidence collection",

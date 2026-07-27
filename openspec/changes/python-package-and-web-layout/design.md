@@ -511,6 +511,10 @@ startup_state:
     not_started | starting | started_healthy | started_degraded |
     failed | stopped
 
+reconciliation_state:
+    not_required | pending | adopted | absence_proved |
+    fenced_teardown | required | failed
+
 operator_action:
     none | retry | repair_prerequisite | narrow_slice |
     restore_previous | investigate
@@ -521,9 +525,33 @@ detail, `partial_evidence_ref`, active/prior generation identities, bounded
 startup reason codes and degraded component identities. `retireable` is only a
 migration state; `rolled_back` is represented by
 `rollback_state=succeeded`; `started_degraded` means the process remains
-available but is never reported healthy or fatal. None of these can mask
-timeout, tool failure or contract mismatch. Unknown or malformed combinations
-fail validation.
+available but is never reported healthy or fatal.
+
+`reconciliation_state` is a closed read model, not an instruction to mutate
+the selector or service manager:
+
+| State | Required immutable evidence | Allowed reconciliation failure/action | Exit contribution |
+|---|---|---|---|
+| `not_required` | no unresolved phase/process/selector contradiction | no additional constraint; independent axes determine failure/action | none |
+| `pending` | one internally consistent unfinished operation whose next recovery decision has not been recorded | `failure_class=none`, `operator_action=retry` | `1` |
+| `adopted` | exactly one live deployment unit matches the durable intent, invocation token, generation, revision and fence | `failure_class=none`; reconciliation adds no operator action | none |
+| `absence_proved` | a bounded service-manager receipt proves no matching deployment unit or descendant remains | `failure_class=none`, `operator_action=retry` for the identical invocation token | `1` |
+| `fenced_teardown` | a teardown receipt binds the stale unit/fence, TERM/KILL outcome and zero residual process/thread counts | `failure_class=none`, `operator_action=restore_previous` | `1` |
+| `required` | valid evidence identifies a selector/process/fence contradiction, missed recovery deadline or ambiguous external result without claiming a recovery outcome | `failure_class` is `unavailable_prerequisite`, `timeout`, `contract_mismatch`, `tool_failure` or `process_cleanup_incomplete`; action is `repair_prerequisite` only for an unavailable prerequisite and otherwise `investigate` | `1` |
+| `failed` | an immutable reconciliation-attempt receipt records a terminal unsuccessful outcome | the same non-`none` failure classes as `required`; action is `repair_prerequisite` only for an unavailable prerequisite and otherwise `investigate` | `1` |
+
+`adopted` requires a matching `process_started` or `verified` phase receipt.
+`absence_proved` cannot coexist with a matching live/process-start receipt.
+`fenced_teardown` requires `startup_state=stopped`, a complete shutdown
+receipt and zero residue; an incomplete cleanup is `required` or `failed`
+instead. `required` and `failed` cannot be reported as `passed`,
+`target_authoritative` or `retireable`. An invalid record, unknown enum,
+missing required receipt or forbidden state product is not converted to
+`required`: validation fails and `layout-status` exits `2`. None of the axes
+can mask timeout, tool failure or contract mismatch. When reconciliation adds
+no action, the independent execution, failure and rollback axes still select
+their bounded action; contradictory action requirements are invalid rather
+than resolved by undocumented precedence.
 
 ### Activation and selector contract
 
@@ -686,7 +714,11 @@ operation for that scope. Concurrent activation, activation-versus-rollback,
 delayed-controller, lost-selector-response, crash immediately before spawn,
 spawn-success/response-loss, crash after receipt persistence and
 crash-at-every-phase fixtures must prove one selector winner, one live runtime
-owner, monotonic revisions and no stale verified process.
+owner, monotonic revisions and no stale verified process. The mutable
+`layout-selector-control-plane` child owns those transitions. This parent only
+validates and reports the resulting closed `reconciliation_state`; reading
+`pending`, `required` or `failed` never adopts, retries, tears down, repairs or
+rewrites state.
 
 ### Package discovery and installation model
 
@@ -1350,11 +1382,16 @@ and JSON output expose:
 - whether validation or rollout stopped early and why.
 
 JSON uses a versioned schema and stable exit semantics: `0` means a complete,
-internally consistent report, `1` means a valid report with failed, stopped,
-unknown or non-retireable state, and `2` means the report or tool is invalid or
-unavailable. Human output maps every nonzero condition to one operator action.
-Empty inventory is success only when a complete report binds an explicitly
-empty expected set.
+internally consistent report with no state-axis exit contribution; `1` means a
+valid report with failed, stopped, non-retireable, `pending`,
+`absence_proved`, `fenced_teardown`, `required` or `failed` reconciliation
+state; and `2` means the report/tool is invalid or unavailable, including an
+unknown enum or forbidden state product. `adopted` can return `0` only when
+every other axis is successful and internally consistent. Human and JSON
+output carry the same enum values, selected action and exit result. Human
+output maps every nonzero valid condition to one operator action; incompatible
+action requirements are invalid and return `2`. Empty inventory is success
+only when a complete report binds an explicitly empty expected set.
 
 ## Validation Strategy
 
