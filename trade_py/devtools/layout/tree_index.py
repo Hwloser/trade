@@ -47,7 +47,7 @@ class TreeIndexLimits:
     max_paths: int = 8_192
     max_path_bytes: int = 1_024
     max_file_bytes: int = 1 * 1024 * 1024
-    max_source_bytes: int = 32 * 1024 * 1024
+    max_source_bytes: int = 64 * 1024 * 1024
     deadline_seconds: float = 30.0
 
 

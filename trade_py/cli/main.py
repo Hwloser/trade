@@ -108,7 +108,10 @@ def main(argv: list[str] | None = None) -> int:
 
     input_argv = list(argv) if argv is not None else sys.argv[1:]
     explicit_argv, explicit_verbose, explicit_quiet = _extract_global_flags(input_argv)
-    if explicit_argv[:2] == ["dev", "layout-status"]:
+    if explicit_argv[:2] in (
+        ["dev", "layout-status"],
+        ["dev", "layout-performance"],
+    ):
         _setup_logging(verbose=explicit_verbose, quiet=explicit_quiet)
         return _import_domain("dev").main(explicit_argv[1:])
 
