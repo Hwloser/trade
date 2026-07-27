@@ -27,10 +27,12 @@ The change succeeds only when source, editable and clean-wheel environments
 resolve the declared legacy and target imports from reviewed origins; each
 migrated logical module has one implementation authority; root/console, ASGI,
 HTTP/SSE/capability, Web asset, SDK/notebook and native contracts pass their
-focused matrices; and every slice restores its preceding generation without
-database or business-artifact rollback. A green checkout-only import is not
-acceptance, and no requirement authorizes movement before its semantic owner
-child is implemented.
+focused matrices; and every slice can be reversed without undoing later
+unrelated slices or rolling back database or business artifacts. Python/ASGI
+reversal uses a newly verified compensating immutable deployment generation
+when the historical predecessor does not contain later accepted slices. A
+green checkout-only import is not acceptance, and no requirement authorizes
+movement before its semantic owner child is implemented.
 
 ### Ownership and boundaries
 
@@ -68,8 +70,11 @@ native differential mismatch, notebook prohibited access or residual process
 cannot advance module authority. Finite validation deadlines terminate owned
 process groups and report timeout separately from assertion, contract, cleanup
 and tool failures. Durable activation phases reconcile crashes before or after
-selector commit; rollback selects the prior package, ASGI, Web or native
-generation through a new forward revision and reruns its focused matrix.
+selector commit and service spawn. Python/ASGI rollback publishes a new
+compensating generation derived from the current accepted generation when
+necessary; Web and an independently owned native capability may select their
+retained prior reference through a new forward revision. Every path reruns its
+focused matrix.
 
 ### Performance and capacity
 
@@ -89,9 +94,9 @@ child status, route/OpenAPI/SSE/capability parity, Web manifest/assets, native
 availability/differential state, notebook clean-run state, bridge age/use and
 early-stop reason. Selector generation/revision, activation phase,
 reconciliation, shutdown escalation and residual counts are visible without
-arguments or payloads. Migration, execution, failure, rollback and operator
-action remain orthogonal; absent or overflowed bridge telemetry blocks
-retirement.
+arguments or payloads. Migration, execution, startup health, failure, rollback
+and operator action remain orthogonal; absent or overflowed bridge telemetry
+blocks retirement.
 
 ### Validation strategy
 
@@ -111,10 +116,13 @@ receipts, while Contexts, interfaces, bridges and status are read-only. A
 per-scope lock and expected generation/revision CAS publish canonical selector
 JSON using same-directory stage, fsync, atomic replace and directory fsync.
 Operation ID makes lost responses idempotent, revisions never decrease, and
-`prepared`, `selector_committed`, `process_started` and `verified` receipts
-support crash reconciliation. Corrupt or ambiguous state is retained and
-blocks mutation; rollback writes a higher revision selecting the prior
-generation, and referenced evidence is not collected.
+`prepared`, `selector_committed`, `start_intent_recorded`, `process_started`
+and `verified` receipts support crash reconciliation. A stable
+deployment-unit identity and invocation token make lost spawn responses
+adoptable or safely tear-downable. Corrupt or ambiguous state is retained and
+blocks mutation; rollback writes a higher revision selecting a verified
+compensating or independent prior generation, and referenced evidence is not
+collected.
 
 ### Alternatives and trade-offs
 
@@ -122,8 +130,10 @@ An atomic rename is shorter but couples 1,531 import bindings, dynamic patch
 strings, wheel membership, ASGI reload, child processes, Web output and native
 ABI into one rollback. Permanent legacy roots preserve mixed ownership, while
 mirrored trees create duplicate modules and side effects. Staged authority
-transfer adds temporary bridge maintenance but is the only option that follows
-semantic owners, proves installed behavior and permits independent rollback.
+transfer adds temporary bridge maintenance and may require a new forward-built
+deployment generation for non-LIFO reversal. It is the only option that
+follows semantic owners, proves installed behavior and reverses one logical
+slice without silently undoing later accepted slices.
 
 ### Rollout and rollback
 
@@ -132,9 +142,10 @@ packaging proof, source authority/index guards, schemas and read-only status.
 A mandatory selector-control child precedes activation, and every native,
 owner-module, SDK/notebook, ASGI, frontend-default and test-topology transfer
 has its own frozen manifest and strict approval. No global switch activates all
-roots. Each slice keeps the old path and prior generation selectable; cleanup
-waits at least 30 days, requires known zero supported use, and belongs to
-`tests-and-legacy-cleanup`.
+roots. Each slice keeps the old implementation material available for a
+compensating generation; independently selected Web and native capability
+references retain their prior generation. Cleanup waits at least 30 days,
+requires known zero supported use, and belongs to `tests-and-legacy-cleanup`.
 
 ## Current-State Audit
 
@@ -496,36 +507,47 @@ rollback_state:
     not_required | ready | requested | running | succeeded |
     failed | unknown
 
+startup_state:
+    not_started | starting | started_healthy | started_degraded |
+    failed | stopped
+
 operator_action:
     none | retry | repair_prerequisite | narrow_slice |
     restore_previous | investigate
 ```
 
 Each report also carries the tool exit code when one exists, bounded failure
-detail, `partial_evidence_ref`, and the active/prior generation identities.
-`retireable` is only a migration state; `rolled_back` is represented by
-`rollback_state=succeeded`; neither can mask timeout, tool failure or contract
-mismatch. Unknown or malformed combinations fail validation.
+detail, `partial_evidence_ref`, active/prior generation identities, bounded
+startup reason codes and degraded component identities. `retireable` is only a
+migration state; `rolled_back` is represented by
+`rollback_state=succeeded`; `started_degraded` means the process remains
+available but is never reported healthy or fatal. None of these can mask
+timeout, tool failure or contract mismatch. Unknown or malformed combinations
+fail validation.
 
 ### Activation and selector contract
 
 Every slice produces an immutable `LayoutActivationPlanV1` before cutover. It
-names the current and target generation, authority scope, exact selector
-mechanism, precedence, activation command, rollback command, evidence ref,
-operator, deadline and post-action checks. The plan also binds an
-`operation_id`, expected selector revision, expected generation and the digest
-of every command argv; it never embeds a shell string. The allowed mechanisms
-are:
+names the logical migration slice, current and target deployment generation,
+closed selector scope, exact selector mechanism, precedence, owner-adapter
+activation and rollback command identities, evidence ref, operator, deadline
+and post-action checks. The plan also binds an `operation_id`, expected
+selector revision, expected generation, current composition-manifest digest,
+desired slice delta and the digest of every command argv; it never embeds a
+shell string. Logical module and ASGI slices are not independent runtime
+selectors. The closed selector scopes and mechanisms are:
 
 | Scope | Selector and precedence | Atomic activation and rollback |
 |---|---|---|
-| Python/module | exact immutable virtualenv or container generation containing the reviewed wheel and authority manifest; no moving package specifier | build a fresh generation, verify it, atomically switch the deployment service target, then restart; switch back to the retained prior generation |
-| ASGI/backend | stable external module string `trade_web:create_app`; its implementation generation is the selected Python deployment generation | switch the Python deployment generation; never edit the Uvicorn string during rollback |
+| `python_deployment` | exact immutable virtualenv or container generation containing the reviewed wheel, module-authority manifest and ASGI factory; no moving package specifier | build and verify a fresh generation, atomically switch and restart; rollback may select the exact predecessor only when no later accepted delta exists, otherwise it builds a fresh compensating generation from the current composition with only the failed module/ASGI delta reversed |
 | Web assets | `--web-dist` > `TRADE_WEB_DIST` > reviewed generation default | select an immutable `WebBuildRef` directory before process start; rollback selects the retained prior directory and restarts without changing backend generation |
-| Native | Context adapter capability policy plus exact `_trade_native` artifact in the selected Python generation | activate only the reviewed adapter/artifact pair; rollback selects the prior Python generation or disables that owner adapter without changing domain code |
+| typed native capability | only a finite Bootstrap-owned Context adapter capability selector with an exact `_trade_native` artifact; otherwise native is part of `python_deployment` | activate only the reviewed adapter/artifact pair; an independent capability may select its prior value, while a bundled artifact rollback uses a compensating Python generation |
 
-In-place package replacement, a `latest` path, mutable symlink without a
-generation compare-and-swap, and one flag switching all scopes are forbidden.
+`python_deployment`, `web_build` and an explicitly reviewed finite
+`native_capability:<owner>` are the only scope classes; arbitrary strings are
+rejected. In-place package replacement, a `latest` path, mutable symlink
+without a generation compare-and-swap, and one flag switching all scopes are
+forbidden.
 An operator confirms the scope, expected current generation and expected
 revision. The only mutating selector API is:
 
@@ -541,15 +563,18 @@ CAS(
 ) -> SelectorRef(new_revision)
 ```
 
-The operation is linearizable for one scope and allocates exactly
+The operation is linearizable for one closed scope and allocates exactly
 `new_revision = expected_revision + 1`. A stale generation or revision fails
 without mutation. Repeating the same `operation_id` and input digest returns
 the previously committed `SelectorRef`; reusing an operation ID with different
 inputs is a conflict. Revisions never decrease or repeat. Rollback is a new
-forward revision selecting the retained prior generation, not restoration of
-an old revision. Every service-manager/startup reader receives generation and
-revision together and refuses to publish a start or verification receipt when
-its fence is older than the current selector.
+forward revision. For a non-LIFO Python/ASGI reversal it selects a newly built
+compensating generation whose manifest proves that every later accepted slice
+is unchanged and only the failed delta is reversed; selecting an arbitrary
+historical full generation is forbidden. Every service-manager/startup reader
+receives generation, revision, deployment-unit identity and invocation token
+together and refuses to publish a start or verification receipt when its fence
+is older than the current selector.
 
 The post-action diagnostic must observe the requested generation, revision,
 process receipt and evidence digest before the slice advances. These selector
@@ -562,15 +587,22 @@ uses that mutable local build path as `WebBuildRef` evidence.
 ### Deployment layout control store
 
 The mutable selector is deployment control state, not a CI report. A mandatory
-implementation child owns a `LayoutSelectorStore` port and the first POSIX
-adapter under `tools/layout_control/`; application Contexts and compatibility
-modules cannot write it. Mutation requires an explicitly configured absolute
-deployment-state root outside the repository, business-data root and package
-generation. There is no guessed production default. The POSIX adapter is
-admissible only when every controller and service manager for that scope uses
-the same filesystem with documented linearizable `flock` and atomic-rename
-semantics; otherwise a later deployment-specific adapter must provide the same
-contract.
+implementation child owns a policy-free `LayoutSelectorStore` port and the
+first POSIX adapter under `tools/layout_control/`; application Contexts and
+compatibility modules cannot write it. The store accepts only closed scope
+identities and opaque generation/plan/evidence digests. It owns persistence,
+journaling, CAS and retention mechanics only; it cannot import application
+packages or interpret module, ASGI, Web, native or business policy.
+Slice-specific planning, activation, verification and compensation belong to
+typed owner adapters in deployment/package generation, Bootstrap/ASGI, Web
+build deployment or the owning Context native adapter, and those adapters
+depend on the store port, never the reverse. Mutation requires an explicitly
+configured absolute deployment-state root outside the repository,
+business-data root and package generation. There is no guessed production
+default. The POSIX adapter is admissible only when every controller and service
+manager for that scope uses the same filesystem with documented linearizable
+`flock` and atomic-rename semantics; otherwise a later deployment-specific
+adapter must provide the same contract.
 
 The root contains bounded, versioned state:
 
@@ -589,9 +621,10 @@ layout-control/v1/
 scope, generation, monotonic revision/fence, operation ID, plan digest,
 evidence ref and canonical payload digest. `plan.json`, phase receipts,
 process receipts and final evidence are immutable and content/digest checked.
-Only the deployment layout controller writes selectors and operation receipts;
-the service manager writes a bounded process-start/stop receipt for its own
-instance; `layout-status` is read-only. Root/directories are owner-only
+Only the policy-free deployment layout controller writes selectors and
+operation receipts; a typed service-manager adapter writes a bounded
+start-intent/process-start/stop receipt for its own instance; `layout-status`
+is read-only. Root/directories are owner-only
 (`0700`), records are `0600`, symlinks/non-regular files and path traversal are
 rejected, and IDs and JSON size are bounded before path construction.
 
@@ -615,23 +648,31 @@ audited operation; it never advances or repairs a selector.
 Each operation appends exactly ordered durable receipts:
 
 ```text
-prepared -> selector_committed -> process_started -> verified
+prepared -> selector_committed -> start_intent_recorded ->
+process_started -> verified
 ```
 
 `prepared` proves the target artifact and immutable plan. `selector_committed`
-binds the returned revision. `process_started` binds an admitted service
-instance to that same generation/revision. `verified` binds post-start
-contract evidence. A failure or rollback appends a typed receipt; it never
-rewrites an earlier phase. Only `verified` may advance module/root authority.
+binds the returned revision. Before invoking a service manager,
+`start_intent_recorded` durably binds one stable deployment-unit identity and
+invocation token to operation, generation, revision/fence and exact owner
+adapter command digest. `process_started` binds the admitted OS/service
+instance to that identity. `verified` binds post-start contract evidence. A
+failure or rollback appends a typed receipt; it never rewrites an earlier
+phase. Only `verified` may advance module/root authority.
 
 Recovery is idempotent by `operation_id`:
 
 - a crash before selector CAS leaves `prepared` and may retry the same CAS;
 - a lost CAS response returns the already committed revision for the same
   operation and digest;
-- a crash after CAS but before restart observes `selector_committed` and no
-  matching process receipt, then resumes the exact plan command while within
-  deadline or starts a new rollback operation;
+- a crash after CAS but before intent records the stable intent before any
+  service-manager call;
+- a lost service-manager response reconciles the stable unit identity and
+  invocation token: it adopts one matching live instance, proves absence
+  before retrying the identical invocation, or performs verified fenced
+  teardown before rollback; it never starts a second owner from receipt
+  absence alone;
 - a crash after process start revalidates the current fence and resumes
   verification;
 - a running process, receipt or evidence generation that disagrees with the
@@ -642,8 +683,10 @@ Recovery is idempotent by `operation_id`:
 
 Startup reconciliation runs before a mutable layout command accepts another
 operation for that scope. Concurrent activation, activation-versus-rollback,
-delayed-controller, lost-response and crash-at-every-phase fixtures must prove
-one selector winner, monotonic revisions and no stale verified process.
+delayed-controller, lost-selector-response, crash immediately before spawn,
+spawn-success/response-loss, crash after receipt persistence and
+crash-at-every-phase fixtures must prove one selector winner, one live runtime
+owner, monotonic revisions and no stale verified process.
 
 ### Package discovery and installation model
 
@@ -774,8 +817,9 @@ Dataset or Study references.
   `PackageGenerationRef`/`WebBuildRef`/native artifact refs;
 - activation-plan digest and selector generations/revisions/fences observed
   before and after;
-- ordered `prepared`, `selector_committed`, `process_started` and `verified`
-  receipts, with reconciliation outcome;
+- ordered `prepared`, `selector_committed`, `start_intent_recorded`,
+  `process_started` and `verified` receipts, with stable deployment-unit and
+  invocation-token identity plus reconciliation outcome;
 - toolchain versions, ordered command identities and monotonic deadline policy;
 - per-check typed execution/failure/rollback status and partial-evidence refs;
 - bounded shutdown stage, TERM/KILL escalation, residual process/thread counts
@@ -785,8 +829,9 @@ Dataset or Study references.
 
 Authority may advance only from one `passed` evidence manifest whose observed
 post-selector equals the plan target. A rollback produces a new
-`MigrationEvidenceRef` linked to the failed attempt and prior generation; it
-does not rewrite the failed evidence.
+`MigrationEvidenceRef` linked to the failed attempt, current composition and
+compensation or independent prior target; it does not rewrite the failed
+evidence.
 
 `BridgeUseCoverageRef` identifies:
 
@@ -1064,11 +1109,17 @@ Every candidate file is classified by:
     partition-time semantics where event/news/schedule behavior exists;
 12. lateness/finality, replay range and idempotency identity for event-like
     inputs.
+13. plugin entry-point, MCP transport and remote-worker protocol ownership,
+    capability/version state, registration identity and optional dependency
+    direction where future interfaces exist.
 
 Names alone are not evidence. Files with multiple owners are split by behavior
 in their owning child; they are never copied whole into a target Context.
 Scheduler, news, sentiment and external-event files remain `blocked` until
-their owning child freezes these temporal semantics.
+their owning child freezes these temporal semantics in a typed per-path
+manifest. Plugin, MCP and remote-worker code remains absent or blocked until
+`optional-interface-extension-boundary` freezes its Interface/Platform
+contracts.
 
 ## Requirements and Acceptance
 
@@ -1089,8 +1140,8 @@ their owning child freezes these temporal semantics.
 8. `_trade_native` is optional, isolated and differentially tested.
 9. No moved file lacks a semantic owner or explicit tool/example/docs
    disposition.
-10. Every slice can return to its immediately preceding generation without
-    database or artifact rollback.
+10. Every slice can be reversed without database or artifact rollback and,
+    for non-LIFO Python/ASGI reversal, without removing later accepted slices.
 11. Selector revisions are monotonic and fenced, every activation is
     crash-recoverable by operation ID, and stale process receipts cannot
     verify a generation.
@@ -1110,8 +1161,9 @@ depends on repository CWD fails the change.
 |---|---|---|
 | package discovery/version | package/build configuration | Contexts do not inspect checkout layout |
 | module authority manifest/guard | architecture developer tooling | compatibility modules consume explicit records |
-| selector and activation journal | deployment layout controller | Contexts, CLI/HTTP and compatibility modules never mutate it |
-| service process receipt | deployment service manager | controller validates; application business code does not write it |
+| selector persistence and operation journal mechanics | policy-free deployment layout controller | typed owner adapters depend on its finite-scope port; it imports no application policy |
+| slice activation/verification/compensation | package deployment, Bootstrap/ASGI, Web deployment or Context native owner adapter | store/controller does not interpret module, HTTP, Web, native or business semantics |
+| service start intent and process receipt | deployment service manager | controller validates stable unit/token/fence; application business code does not write it |
 | business behavior | owning Context cell | package change does not rewrite semantics |
 | CLI/HTTP/SDK adapters | Interfaces | Contexts expose contracts/use cases/queries |
 | runtime construction/shutdown | Bootstrap with Platform primitives | CLI/ASGI compatibility delegates once |
@@ -1396,10 +1448,12 @@ Required package/layout fixtures include:
 ## Persistent-write safety
 
 The only new durable write surface is the explicit deployment layout control
-store. `tools/layout_control` is the sole selector/operation writer; the
-deployment service manager writes only its own fenced process receipt. Context,
-Interface, compatibility and read-only status code cannot write this root.
-Every attempt is keyed by scope plus operation ID and immutable plan digest.
+store. Policy-free `tools/layout_control` is the sole selector/operation writer
+and owns no module, ASGI, Web, native or business policy; typed owner adapters
+call its finite-scope port. The deployment service manager writes only its own
+fenced start-intent/process receipts. Context, Interface, compatibility and
+read-only status code cannot write this root. Every attempt is keyed by scope
+plus operation ID and immutable plan digest.
 
 Per-scope locks serialize complete predecessor validation and selector CAS.
 Canonical bounded JSON is staged in the destination directory, flushed,
@@ -1544,18 +1598,22 @@ coverage and blocks retirement.
 
 ## Rollback
 
-Rollback is generation-based and per slice:
+Rollback is generation-based and per logical slice:
 
 1. stop advancing the affected migration record;
 2. recover the operation journal and current selector generation/revision;
    if state is unambiguous, create a new rollback operation and execute the
    exact `LayoutActivationPlanV1` rollback for only the affected scope;
-3. restore the legacy forwarder as implementation only if it was the prior
-   authoritative generation;
-4. for Python/ASGI select the retained prior immutable deployment generation;
-   for Web set the prior `WebBuildRef` directory through the documented
-   precedence; for native select the prior generation or disable only the owner
-   adapter. Every rollback CAS increments revision and fences the failed
+3. for a Python/ASGI slice, compare its predecessor composition to the current
+   accepted composition. If later slices exist, build and validate a new
+   immutable compensation generation from current with only the failed slice
+   delta reversed; selecting a historical generation that removes later slices
+   is forbidden;
+4. restore a legacy forwarder as implementation only inside that reviewed
+   compensation when it was the failed slice's prior authority. For Web select
+   the prior `WebBuildRef`; for an independently selected typed native
+   capability select its prior value; a native artifact bundled in Python uses
+   compensation. Every rollback CAS increments revision and fences the failed
    generation;
 5. restart the affected process generation and run `./trade dev layout-status
    --json` plus the scope-specific contract checks;
@@ -1569,6 +1627,9 @@ Rollback is generation-based and per slice:
 Rollback triggers include any duplicate owner, import-origin mismatch,
 entrypoint/route/SSE/asset contract regression, lifecycle residue, native
 differential mismatch or unknown consumer discovered after cutover.
+The rollback matrix includes a non-LIFO fixture: after slices A, B and ASGI are
+accepted in successive Python generations, reverting A produces a new
+generation that preserves B and ASGI byte-for-byte and contract-for-contract.
 
 ## Child OpenSpec Changes
 
@@ -1584,9 +1645,14 @@ implementation consumes, rather than duplicates:
 7. `btc-observation-analysis-ui-v1`.
 
 This parent implementation is limited to additive package discovery proof,
-schemas/validators, deterministic source inventory/authority guards and
-read-only status. The following ordered implementation children are mandatory,
-not conditional on PR size:
+read-only evidence vocabulary and validators, deterministic source
+inventory/authority guards and read-only status. It may define immutable refs,
+closed report axes and parser validation required by those readers. It may not
+implement or semantically own selector CAS, mutable operation journals,
+start-intent/service-manager protocols, reconciliation transitions, retention
+commands or slice-specific activation/compensation plans. Those mutation
+contracts are versioned only by `layout-selector-control-plane`. The following
+ordered implementation children are mandatory, not conditional on PR size:
 
 1. `layout-selector-control-plane`;
 2. `native-module-isolation`;
@@ -1596,7 +1662,9 @@ not conditional on PR size:
 6. `web-workspace-physical-layout`;
 7. `web-workspace-default-activation`;
 8. one `tool-example-test-layout-<scope>` per bounded topology mutation;
-9. `layout-bridge-observability` before dynamic coverage may be complete.
+9. `optional-interface-extension-boundary` before plugin, MCP or remote-worker
+   code or dependencies are admitted;
+10. `layout-bridge-observability` before dynamic coverage may be complete.
 
 Each child freezes its exact files/exports, source and prerequisite SHAs,
 consumer/tree index, authority and deployment refs, selector revisions,
@@ -1610,17 +1678,22 @@ Final bridge removal stays in `tests-and-legacy-cleanup`.
 ## Rollout and Rollback
 
 Rollout is off by default for each module/root until its shadow evidence passes.
-There is no global flag that switches every package at once. Package generation,
-ASGI factory and Web build selectors are independently reversible. Deployment
-first creates `LayoutActivationPlanV1` and a `prepared` receipt, verifies a
-canary/temporary immutable generation, confirms expected selector generation
-and revision, commits one revision-fenced CAS, records the matching process
-start, verifies `MigrationEvidenceRef`, then observes compatibility and only
-later permits cleanup. A crash resumes by operation ID before another mutation
-is admitted.
+There is no global flag that switches every package at once. Python modules and
+ASGI share one immutable deployment selector; Web build and explicitly
+reviewed typed native capability selectors remain independent. Logical
+Python/ASGI slices are independently reversible through a new compensating
+deployment generation, not by pretending they have independent runtime
+selectors. Deployment first creates `LayoutActivationPlanV1` and a `prepared`
+receipt, verifies a canary/temporary immutable generation, confirms expected
+selector generation and revision, commits one revision-fenced CAS, records a
+durable start intent and matching process start, verifies
+`MigrationEvidenceRef`, then observes compatibility and only later permits
+cleanup. A crash resumes by operation ID and deployment-unit identity before
+another mutation is admitted.
 
 The old root remains installed and importable for at least 30 days after target
 authority for that contract, unless a later reviewed public-contract policy
-sets a longer window. Rollback restores the immediately previous generation;
-no big-bang reverse import rewrite is required.
+sets a longer window. A LIFO failure may restore the exact predecessor; a
+non-LIFO failure builds a compensating successor preserving later accepted
+slices. No big-bang reverse import rewrite is required.
 

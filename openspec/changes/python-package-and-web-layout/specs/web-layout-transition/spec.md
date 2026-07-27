@@ -43,6 +43,11 @@ bounded process-group KILL escalation, reload-supervisor teardown, cleanup
 failure classification and zero residual PIDs. The rollout evidence SHALL
 record the bounded shutdown stage, escalation signal, residual process/thread
 counts and forced-exit receipt without arguments, stacks or user payloads.
+The ASGI child SHALL freeze supervisor, worker and command-child parentage,
+process-group or cgroup ownership, selector-fence propagation, signal routing
+and PID enumeration. A durable start intent SHALL bind one stable deployment
+unit and invocation token before spawn so a lost response can adopt the
+matching live process or tear it down before retry/rollback.
 
 #### Scenario: A workflow child is spawned after backend movement
 - **WHEN** the runtime command runner starts its supervised child module
@@ -59,6 +64,10 @@ counts and forced-exit receipt without arguments, stacks or user payloads.
 #### Scenario: Startup automation fails after core resources start
 - **WHEN** the frozen current runtime would log and continue after automation startup failure
 - **THEN** the layout transition preserves an explicit `started_degraded` compatibility state and does not silently convert it to fully healthy or fatal startup; changing that policy belongs to the Bootstrap owner child
+
+#### Scenario: Reload supervisor exits around worker spawn
+- **WHEN** the supervisor dies immediately before or after worker spawn, including a TERM-ignoring grandchild
+- **THEN** fence-bound process enumeration adopts or terminates the exact owned tree, bounded TERM-to-KILL cleanup reaches zero residual PIDs and no second worker generation starts from a missing receipt
 
 ### Requirement: Frontend workspace movement SHALL preserve build and served assets
 

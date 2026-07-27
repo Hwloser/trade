@@ -103,6 +103,32 @@ help.
 - **WHEN** CLI help or one domain import loads an unrelated Context, Web server, provider, database or native module
 - **THEN** compatibility validation fails even if command text and exit status match
 
+### Requirement: Optional future interface dependencies SHALL remain at governed boundaries
+
+Plugin discovery, MCP transports and remote-worker protocols SHALL be owned by
+Interface or Platform adapters and SHALL NOT be imported by Context domain,
+use-case or compatibility-forwarder modules. Their entry-point
+group/name/version, capability state, protocol negotiation, idempotency
+identity and registration-order semantics SHALL be frozen by the
+`optional-interface-extension-boundary` child before any dependency is added.
+
+Optional integration imports SHALL be side-effect-free and capability-gated.
+Clean-wheel validation SHALL cover the dependency absent, incompatible and
+duplicate-registration states. Package discovery SHALL not auto-enroll an
+unreviewed plugin, MCP or worker module.
+
+#### Scenario: An optional integration dependency is absent
+- **WHEN** a clean wheel imports public domain, use-case, CLI help or compatibility-forwarder modules without plugin, MCP or worker extras installed
+- **THEN** those imports remain usable, no registration side effect occurs and the optional capability is explicitly unavailable
+
+#### Scenario: A domain imports an MCP or worker transport
+- **WHEN** the dependency guard finds plugin, MCP transport/client or remote-worker protocol imports below a Context contract/adapter boundary
+- **THEN** authority advancement fails and the dependency must move to its governed Interface or Platform adapter
+
+#### Scenario: Two optional handlers claim one registration identity
+- **WHEN** entry-point or remote registration discovery resolves duplicate group/name/version or handler identity
+- **THEN** registration fails deterministically without choosing by filesystem or discovery order
+
 ### Requirement: Compatibility bridges SHALL have measured retirement criteria
 
 Each legacy bridge SHALL name an owner, introduction generation, supported

@@ -118,7 +118,10 @@ forwarders until measured retirement conditions pass.
    modules through digest-bound children, preserve old names as explicit
    forwarders, compare public contracts, and retire bridges by measured
    criteria. This adds review and control-store overhead but keeps every slice
-   independently testable, crash-recoverable and reversible.
+   independently testable, crash-recoverable and reversible. Python modules
+   and ASGI intentionally share one immutable deployment selector; reversing
+   an older logical slice after later accepted changes builds a new
+   compensating generation instead of selecting a stale full environment.
 
 ## Capabilities
 
@@ -161,9 +164,10 @@ forwarders until measured retirement conditions pass.
 
 The implementation is a sequence of independently reviewable changes. This
 parent may implement only the additive package-discovery proof, authority and
-evidence schemas, source guards, deterministic inventory index and read-only
-layout diagnostics. Every authority-changing unit below is a mandatory child
-OpenSpec change and separate reviewable PR:
+read-only evidence vocabulary, source guards, deterministic inventory index and
+read-only layout diagnostics. It does not implement selector mutation,
+service-manager recovery or slice activation policy. Every authority-changing
+unit below is a mandatory child OpenSpec change and separate reviewable PR:
 
 1. package-authority foundation without activation;
 2. deployment selector/control-plane implementation;
@@ -173,13 +177,15 @@ OpenSpec change and separate reviewable PR:
 6. FastAPI compatibility bridge and target interface/bootstrap modules;
 7. Vite workspace movement and later default activation;
 8. each tools/examples/test-layout classification slice;
-9. measured legacy retirement in `tests-and-legacy-cleanup`.
+9. optional plugin/MCP/remote-worker boundary before those dependencies exist;
+10. measured legacy retirement in `tests-and-legacy-cleanup`.
 
 Every slice preserves the old entrypoint or root and has an explicit selector
-or revert path. A failed slice restores the old package discovery/import,
-ASGI module, Vite root or native target without reverting earlier semantic
-Context migrations. No immutable artifact or runtime data is deleted on
-rollback.
+or compensation path. A failed Python/ASGI logical slice produces a new
+immutable generation from the current accepted composition with only that
+slice reversed; Web and a reviewed typed native capability can select their
+prior reference independently. Earlier semantic Context migrations remain
+intact. No immutable artifact or runtime data is deleted on rollback.
 
 ## Design Quality Governance
 

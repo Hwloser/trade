@@ -8,7 +8,10 @@ commands/events/queries, import side effects, semantic owner, target cell,
 compatibility obligation, validation and rollback. Scheduler, event, news and
 sentiment paths SHALL additionally record clock source/timezone,
 source/publication/observed/knowledge/partition times, lateness/finality,
-replay range and idempotency identity.
+replay range and idempotency identity in a typed per-path temporal manifest.
+The manifest SHALL also bind a canonical semantic registration order containing
+schedule ID, topic, owner, conditional capability, predecessor/successor
+constraints and digest rather than relying on incidental source order.
 
 A path SHALL have exactly one of: `owner_ready`, `compatibility`,
 `split_required`, `tool`, `deployment`, `example`, `test`, `historical`,
@@ -30,6 +33,10 @@ disposition.
 #### Scenario: A scheduler or news path lacks temporal semantics
 - **WHEN** classification cannot prove timezone or process-local clock, DST/misfire/catch-up policy, partition/finality rule, replay range or idempotency identity applicable to that path
 - **THEN** the path remains `blocked` until its Scheduler, Capture or Dataset owner child freezes those semantics
+
+#### Scenario: A temporal negative fixture is ambiguous
+- **WHEN** missing or ambiguous timezone, DST fold/gap, restart misfire, unbounded catch-up, registration-order drift, late correction/tombstone, replay-boundary or duplicate source-event identity cannot be classified deterministically
+- **THEN** the path remains `blocked`, its authority does not advance and the owner child must resolve the temporal manifest rather than inherit process-local behavior
 
 ### Requirement: Notebook and SDK consumers SHALL use installed public contracts
 
@@ -127,11 +134,14 @@ synthetic ten-times source indexes SHALL enforce the reviewed scan-count,
 wall-time and RSS bounds. Resource or performance overflow SHALL fail as
 `capacity_refusal`; it SHALL NOT drop checks or samples.
 
-Reports SHALL model `migration_state`, `execution_state`, `failure_class`,
-`rollback_state` and `operator_action` as separate closed fields. They SHALL
-include a tool exit code when one exists, a bounded failure detail,
-`partial_evidence_ref`, and active/prior generation identities. Lifecycle state
-SHALL NOT overwrite or imply an execution, failure or rollback result.
+Reports SHALL model `migration_state`, `execution_state`, `startup_state`,
+`failure_class`, `rollback_state` and `operator_action` as separate closed
+fields. `startup_state` SHALL be one of `not_started`, `starting`,
+`started_healthy`, `started_degraded`, `failed` or `stopped`, with bounded
+reason codes and degraded component identities. Reports SHALL include a tool
+exit code when one exists, a bounded failure detail, `partial_evidence_ref`,
+and active/prior generation identities. Lifecycle and startup state SHALL NOT
+overwrite or imply an execution, failure or rollback result.
 
 #### Scenario: A package smoke process hangs
 - **WHEN** an install, import, console, ASGI or native command exceeds its reviewed deadline
@@ -144,6 +154,10 @@ SHALL NOT overwrite or imply an execution, failure or rollback result.
 #### Scenario: A rollback succeeds after validation failed
 - **WHEN** the prior generation is restored after a contract mismatch
 - **THEN** the report retains `failure_class=contract_mismatch`, records `rollback_state=succeeded` independently and does not relabel the failed validation as passed
+
+#### Scenario: Startup remains available after automation failure
+- **WHEN** core resources start but a compatible startup automation component fails
+- **THEN** the report uses `startup_state=started_degraded`, names the bounded component/reason, remains running and reports neither `started_healthy` nor fatal startup
 
 #### Scenario: Global validation capacity is exhausted
 - **WHEN** worker, heavy-job, RSS, temporary-disk or queue-deadline admission would exceed its reviewed bound
@@ -178,24 +192,31 @@ than 24 hours old. Scan error SHALL be `tool_failed`, never an empty inventory.
 ### Requirement: Every migration slice SHALL be independently reversible
 
 Each slice SHALL name its prior authority, target authority, activation
-condition, rollback trigger, rollback selector, retained compatibility path and
-post-rollback validation. Python package, ASGI/backend, frontend build and
-native adapter generations SHALL be independently selectable.
+condition, rollback trigger, closed selector scope, retained compatibility
+path and post-rollback validation. Python modules and ASGI/backend SHALL share
+one immutable `python_deployment` selector; they SHALL be independently
+reversible as logical deltas through compensating successor generations, not
+independently selectable runtime implementations. Frontend build and an
+explicitly reviewed finite native capability MAY have independent selectors.
 
 Each slice SHALL publish an immutable `LayoutActivationPlanV1` with the exact
 selector mechanism and precedence, expected current generation, target and
-rollback generations, expected selector revision, idempotent operation ID,
+rollback or compensation target, current composition-manifest digest, desired
+slice delta, expected selector revision, idempotent operation ID, owner-adapter
 activation and rollback argv digests, evidence reference, operator, deadline
 and post-action checks. Activation SHALL use linearizable compare-and-set
 semantics on both expected generation and revision, allocate exactly the next
 monotonic revision/fence, and SHALL reject moving package
-specifiers, unverified `latest` paths and one global selector for all scopes.
+specifiers, unverified `latest` paths, arbitrary selector scopes and one global
+selector for all scopes.
 Repeating one operation ID with identical inputs SHALL return the committed
 selector; reusing it with different inputs SHALL fail. Rollback SHALL be a new
-forward revision selecting the prior generation and SHALL never decrement a
-fence.
+forward revision and SHALL never decrement a fence. When later accepted
+Python/ASGI slices exist, rollback SHALL build and verify a new immutable
+generation from the current composition with only the failed delta reversed;
+it SHALL NOT select a historical full generation that removes later slices.
 
-The Python and ASGI selectors SHALL be an immutable virtualenv or container
+The Python/ASGI selector SHALL be an immutable virtualenv or container
 generation while retaining `trade_web:create_app`; the Web selector precedence
 SHALL remain `--web-dist`, then `TRADE_WEB_DIST`, then a reviewed default
 generation; native selection SHALL be bound to the owning adapter and the exact
@@ -209,12 +230,16 @@ access or reversal of previously completed semantic owner migrations.
 - **THEN** the affected module returns to its prior authority or forwarding state, the consumer inventory is updated and only that slice is revalidated
 
 #### Scenario: Rollback validation fails
-- **WHEN** reinstalling or selecting the prior generation does not restore its recorded imports/contracts
+- **WHEN** a Python/ASGI compensation generation or independently selected prior Web/native reference does not restore its recorded imports/contracts
 - **THEN** rollout halts, the bridge remains installed and the failure is P0 until the prior authority is recoverable
 
 #### Scenario: Another operator changed the active generation
 - **WHEN** activation observes a current generation or revision different from the plan's expected selector
 - **THEN** it performs no switch and requires a newly reviewed plan rather than overwriting the concurrent decision
+
+#### Scenario: An older Python slice fails after later slices were accepted
+- **WHEN** slices A, B and the ASGI factory were accepted in successive Python deployment generations and A must be reversed
+- **THEN** rollback builds a new successor whose composition preserves B and ASGI exactly, reverses only A, passes the complete focused matrix and is selected by a higher revision
 
 #### Scenario: A delayed process reports startup
 - **WHEN** a process-start or verification receipt carries a revision older than the current selector fence
@@ -224,9 +249,14 @@ access or reversal of previously completed semantic owner migrations.
 
 Real authority changes SHALL use one explicitly configured deployment layout
 control store outside the repository, package generation and business-data
-root. The deployment layout controller SHALL be the sole selector and operation
-writer. A service manager MAY write only its own fenced process receipt, and
-layout status SHALL remain read-only.
+root. The policy-free deployment layout controller SHALL be the sole selector
+and operation writer. It SHALL accept only finite scope identities and opaque
+generation/plan/evidence digests and SHALL NOT import application packages or
+interpret Python module, ASGI, Web, native or business policy. Typed
+slice-owner adapters SHALL own planning, activation, verification and
+compensation and depend on the store port, never the reverse. A service manager
+MAY write only its own fenced start-intent/process receipt, and layout status
+SHALL remain read-only.
 
 The store SHALL use owner-only directories/files, reject symlinks, non-regular
 files, traversal and oversized identities/records, and retain one
@@ -236,13 +266,18 @@ make selector CAS linearizable. Malformed, missing-field, wrong-owner or
 inconsistent predecessor state SHALL be preserved and SHALL block mutation
 without automatic repair.
 
-Every operation SHALL append immutable, digest-bound
-`prepared -> selector_committed -> process_started -> verified` receipts keyed
-by operation ID. Only `verified` may advance authority. Startup reconciliation
-SHALL compare the current selector, operation phase, process generation/fence
-and evidence digest before accepting another mutation. It SHALL resume the same
-idempotent operation, start an explicit forward-revision rollback, or stop as
-`reconciliation_required`; it SHALL NOT overwrite ambiguous state.
+Every operation SHALL append immutable, digest-bound `prepared ->
+selector_committed -> start_intent_recorded -> process_started -> verified`
+receipts keyed by operation ID. Before service-manager invocation, the start
+intent SHALL durably bind a stable deployment-unit identity and invocation
+token to operation, generation, revision/fence and exact owner-adapter command
+digest. Only `verified` may advance authority. Startup reconciliation SHALL
+compare the current selector, operation phase, stable unit/token, process
+generation/fence and evidence digest before accepting another mutation. It
+SHALL adopt one matching live instance, prove absence before retrying the
+identical invocation, perform verified fenced teardown before rollback, or
+stop as `reconciliation_required`; it SHALL NOT infer absence from a missing
+receipt or overwrite ambiguous state.
 
 Current selectors SHALL be retained indefinitely. Operation/process/evidence
 records SHALL remain for at least the longer of 90 days, the rollback support
@@ -255,7 +290,11 @@ unresolved records SHALL not be collected.
 
 #### Scenario: The controller crashes after selector commit
 - **WHEN** the selector references the target revision but no matching process-start receipt exists
-- **THEN** reconciliation resumes the exact reviewed start command within deadline or creates an explicit rollback operation, and no unrelated activation is admitted
+- **THEN** reconciliation first resolves the stable deployment-unit identity and invocation token, adopts a matching live instance or proves absence before retry, and admits neither a duplicate runtime owner nor an unrelated activation
+
+#### Scenario: Spawn succeeds but its response is lost
+- **WHEN** the service manager spawns the target and fails before returning or persisting `process_started`
+- **THEN** recovery finds and adopts the one process matching the durable intent, or performs verified fenced teardown before rollback; it never starts the predecessor or a second target concurrently
 
 #### Scenario: Selector state is corrupt
 - **WHEN** the current selector, phase receipt or process receipt is malformed, digest-mismatched, symlinked, oversized or internally inconsistent
@@ -263,9 +302,13 @@ unresolved records SHALL not be collected.
 
 ### Requirement: Concrete authority changes SHALL have digest-bound implementation children
 
-This parent SHALL implement only additive package-discovery proof,
-schemas/validators, deterministic source inventory/authority guards and
-read-only diagnostics. Selector mutation, native activation, each owner-ready
+This parent SHALL implement only additive package-discovery proof, immutable
+read-only evidence vocabulary/validators, deterministic source
+inventory/authority guards and read-only diagnostics. Selector CAS, mutable
+operation journals, start-intent/service-manager protocols, reconciliation
+transitions, retention commands and slice-specific activation/compensation
+plans SHALL be implemented and versioned only by
+`layout-selector-control-plane`. Native activation, each owner-ready
 Python transfer, SDK/notebook transfer, ASGI/Bootstrap transfer, frontend
 physical/default transfer and test/tool topology mutation SHALL each use the
 mandatory implementation child class defined by the design.
@@ -283,6 +326,10 @@ approval.
 #### Scenario: A frontend move and default switch are proposed together
 - **WHEN** physical workspace movement and deployment default activation do not have independently reversible reviewed generations
 - **THEN** the combined change is rejected even if frontend tests pass
+
+#### Scenario: Plugin, MCP or remote-worker code is proposed
+- **WHEN** an implementation introduces plugin entry points, MCP transports or remote-worker protocol dependencies without a strict-approved `optional-interface-extension-boundary` child
+- **THEN** package discovery, dependency guards and compatibility forwarders reject the change and no optional handler is registered
 
 ### Requirement: Layout status SHALL be read-only, typed and actionable
 
