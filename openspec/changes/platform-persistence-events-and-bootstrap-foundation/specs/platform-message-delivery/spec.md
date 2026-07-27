@@ -2,12 +2,15 @@
 
 ### Requirement: Command ingress SHALL durably admit one operation identity
 
-Platform command ingress SHALL accept only the approved framework-free Kernel
-`CommandEnvelope[T]` carrying a trusted `ActorContext`, correlation and causation
-identities, canonical command fingerprint, scoped idempotency fingerprint and finite
-monotonic deadline. The owning ingress repository SHALL use the approved bounded
-key-generation admission algorithm from strict-approved Kernel artifact
-`sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`.
+After the explicit prerequisite gate passes, Platform command ingress SHALL accept
+only the framework-free Kernel `CommandEnvelope[T]` carrying a trusted
+`ActorContext`, correlation and causation identities, canonical command fingerprint,
+scoped idempotency fingerprint and finite monotonic deadline from Kernel V21
+candidate commit `3cdb25e0ad8a377d8ece0469333a582700f5bf2b` and portable artifact
+digest
+`sha256:a7ec722f8e922cdc8630920a771b7a43a0945c0e765dd2347ac51c7bd316e75b`.
+The owning ingress repository SHALL use that exact generation's bounded
+key-generation admission algorithm.
 One admission SHALL share the command's remaining monotonic deadline across at most
 three claim attempts, each with at most one claim transaction, plus at most one
 separate refusal-audit transaction after the final claim attempt ends. A generation
@@ -275,6 +278,80 @@ resolution but SHALL never advertise redelivery because no immutable message exi
 #### Scenario: A source must be contacted again
 - **WHEN** recovery requires a fresh provider interaction rather than delivery of the original immutable message
 - **THEN** Platform rejects `RedeliverMessage` for that purpose and requires the owning Process/Capture command path
+
+### Requirement: Shutdown-link integrity signals SHALL have exactly one fenced delivery attempt
+
+The Kernel SHALL remain the owner of the immutable shutdown-link corruption
+identity, idempotency-key derivation and pure
+`ShutdownLinkQueryResultV1`/`ShutdownLinkIntegrityObservationV1` values. Platform
+Execution Operation Control SHALL be the sole writer of the integrity observation,
+claim and terminal signal disposition. It SHALL use the Platform local transaction
+and outbox participant without transferring ownership of the generic outbox table.
+Platform Events SHALL deliver the admitted signal only through the dedicated
+one-attempt capability described here and SHALL expose its bounded operator-health
+projection.
+
+For one exact safe corruption identity, the first composed query SHALL atomically
+create or resolve one `ShutdownLinkIntegrityObservationV1` and one linked outbox
+signal. Concurrent and repeated reads SHALL return that same observation and outbox.
+Before any external delivery call, one owner transaction SHALL compare
+`pending -> claimed`, bind the stable signal ID, current owner instance/fence,
+trusted claim time, finite claim expiry and `attempt_count=1`. Only that live claim
+MAY invoke one bounded external call. A stale owner/fence or second claim SHALL be
+rejected before invocation.
+
+The closed disposition graph SHALL be:
+
+```text
+pending -> claimed -> delivered
+                   -> delivery_failed
+                   -> delivery_outcome_unknown
+```
+
+A synchronous external result SHALL terminalize as `delivered` or
+`delivery_failed`. A crash before claim leaves `pending` eligible for its first and
+only claim. A crash, process disappearance or claim expiry after `claimed` but
+before a terminal commit SHALL terminalize the same observation as
+`delivery_outcome_unknown`. This dedicated signal SHALL NOT use ordinary
+at-least-once `leased -> pending` recovery, generic retry scheduling, dead-letter
+redelivery or a background continuation after claim. No automatic second external
+call is permitted, including when it is unknown whether the first call was sent.
+
+The composed query's corruption result remains unavailable regardless of signal
+disposition. `delivery_failed` and `delivery_outcome_unknown` SHALL remain visible in
+the authorized operator-health projection and SHALL not be reported as delivered,
+healthy or retried. Any operator acknowledgement SHALL be a separate future
+authorized contract and cannot rewrite this history.
+
+The first observation transaction SHALL use the one trusted `UtcInstant` supplied
+by the Kernel contract for both observation and error evidence. If trusted wall time
+is unavailable, Platform SHALL return exactly
+`SHUTDOWN_LINK_INTEGRITY_CLOCK_UNAVAILABLE`, create no observation/outbox and make no
+signal call. If the observation/outbox transaction cannot commit under its finite
+deadline, Platform SHALL return exactly
+`SHUTDOWN_LINK_INTEGRITY_AUDIT_UNAVAILABLE`, with no receipt/observation/claim or
+background work. Public/operator projections SHALL contain no credential, raw actor
+evidence, payload, callback, exception text, path or mismatched field value.
+
+#### Scenario: Two queries observe one corrupt shutdown link
+- **WHEN** concurrent composed queries resolve the same exact safe corruption identity
+- **THEN** one observation and one outbox signal exist, both queries return the unavailable corruption product, and at most one fenced claim can invoke externally
+
+#### Scenario: The owner crashes before claiming the signal
+- **WHEN** the observation/outbox committed but no `pending -> claimed` transaction committed
+- **THEN** the same pending observation remains eligible for its first claim and no duplicate observation/outbox is created
+
+#### Scenario: The process disappears after signal claim
+- **WHEN** claim expiry is reached without a durable terminal result, whether before or after the external send
+- **THEN** the observation becomes `delivery_outcome_unknown`, remains operator-visible and never triggers an automatic second external call
+
+#### Scenario: The external delivery returns failure
+- **WHEN** the one bounded call returns a synchronous failure
+- **THEN** the observation terminalizes as `delivery_failed` without generic retry, DLQ redelivery or a healthy query result
+
+#### Scenario: Integrity audit persistence is unavailable
+- **WHEN** the first observation/outbox transaction cannot commit within its deadline
+- **THEN** the exact audit-unavailable product is returned and no signal is claimed, delivered or retried
 
 ### Requirement: Compatibility EventBus SHALL remain a bounded bridge
 

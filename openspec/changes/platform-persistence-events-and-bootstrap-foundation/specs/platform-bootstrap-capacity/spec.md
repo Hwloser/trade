@@ -159,12 +159,47 @@ processes directly.
 Every capability profile SHALL publish bounded telemetry-freshness evidence and
 alert ownership for oldest outbox age, terminal-persistence unavailable, persistent
 ordering gaps, activation incomplete/authority unavailable/rollback pending,
-residual shutdown owners and backup certification/trust failures. Freshness SHALL
-carry observation time, expected interval, stale-after bound and source status.
-Missing or stale required telemetry SHALL be `unavailable` or `defer`, never healthy.
-Alert policy SHALL name threshold, evaluation window, owner, runbook and
+residual shutdown owners, shutdown-link integrity `delivery_failed` or
+`delivery_outcome_unknown`, required-codec snapshot integrity, message-contract
+health and backup certification/trust failures. Freshness SHALL carry observation
+time, expected interval, stale-after bound and source status. Missing or stale
+required telemetry SHALL be `unavailable` or `defer`, never healthy. Alert policy
+SHALL name threshold, evaluation window, owner, runbook and
 acknowledgement/escalation path without putting unbounded identities into metric
 labels.
+
+Before opening ingress, Bootstrap SHALL freeze the static owner-codec registry and
+ask Platform Persistence to validate the sole authoritative current
+`RequiredOwnerCodecManifestV1` against the exact stable 16-shard revision vector
+under the same closed retention-mutation gate, current owner fence, exclusive
+snapshot lease and finite startup deadline. It SHALL compare no more than 4,096
+entries with no more than 13 registry-key comparisons per entry and SHALL NOT scan
+durable projection, replay, receipt or audit rows. A missing, non-current,
+incomplete, corrupt, stale-fence, stale-revision or over-capacity snapshot, missing
+required codec or descriptor/capability identity mismatch SHALL keep ingress closed
+with the exact Kernel readiness product.
+
+Caller and readiness DTOs SHALL remain redacted. A separately authorized bounded
+operator query SHALL expose the Kernel-defined
+`MessageContractHealthObservationV1` with only public failure code, descriptor
+count, manifest-entry count, one exact closed cause and its exact closed recovery
+action. It SHALL contain no descriptor, registry key, dependent identity, actor,
+payload, callback, exception text, credential or path. The cause/action relation
+SHALL be the exact Kernel V21 relation and SHALL accept no arbitrary hint:
+
+- codec exception/result type/output/round-trip and projection malformed/too-large
+  causes map to `inspect_owner_codec`;
+- missing/incomplete/digest-mismatched snapshot causes map to
+  `repair_manifest_snapshot`;
+- stale-fence/read-timeout causes map to `retry_bootstrap`;
+- missing required binding maps to `restore_required_codec`;
+- codec/required-binding identity mismatch, duplicate registry key and static
+  binding mismatch map to `rollback_codec_release`; and
+- registry capacity conflict maps to `reduce_registry_capacity_pressure`.
+
+The query SHALL be observational only. It cannot repair a snapshot, mutate the
+registry, restore a codec, roll back a release, reopen ingress or start another
+workflow.
 
 #### Scenario: Platform routes a Capture event
 - **WHEN** a future `CaptureCommitted` envelope enters delivery
@@ -178,6 +213,22 @@ labels.
 - **WHEN** a required backlog, activation, shutdown or backup-trust telemetry source exceeds its declared stale-after bound
 - **THEN** status and gates report telemetry unavailable/defer, an owned alert is eligible, and no zero or last-known value is presented as current health
 
+#### Scenario: A required historical codec is unavailable
+- **WHEN** the current required-codec snapshot cannot prove the exact executable codec identity under the frozen registry
+- **THEN** Bootstrap keeps ingress closed, returns the redacted required-codec-unavailable readiness product and exposes only the exact authorized cause/action observation
+
+#### Scenario: The manifest is internally complete but not current
+- **WHEN** its owner/fence or source-revision digest differs from the frozen current window
+- **THEN** Bootstrap rejects it and does not scan dependent durable rows or select a stale snapshot
+
+#### Scenario: An operator inspects message-contract health
+- **WHEN** an authorized query asks why registry readiness failed
+- **THEN** it returns one bounded exact cause/action pair with safe counts and performs no registry, snapshot or lifecycle mutation
+
+#### Scenario: Shutdown-link delivery is ambiguous
+- **WHEN** a claimed integrity signal reaches `delivery_outcome_unknown`
+- **THEN** Platform health keeps the outcome visible and non-healthy while Bootstrap does not trigger an automatic resend
+
 #### Scenario: A business name enters Platform
 - **WHEN** a proposed Platform module or table encodes a BTC-, Dataset- or Study-specific rule
 - **THEN** architecture review rejects it and moves the rule to its owner Context or Process contract
@@ -185,15 +236,18 @@ labels.
 ### Requirement: Foundation activation SHALL require explicit prerequisites
 
 Foundation implementation SHALL begin only after this change has current
-digest-bound six-role approval and strict design-check, and after the strict-approved
-`kernel-and-public-contracts` change is merged or otherwise present at reviewed
-commit `cbc5f671335b7347b6beee5cfeca383c5e7d8ad9` and portable artifact digest
-`sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`.
-An equivalent later commit is acceptable only when the governed Kernel artifact
-digest remains exact; any digest change requires an explicit compatibility
-review, an update to this prerequisite and renewed Platform review/strict
-approval. Architecture guardrails SHALL be updated with the exact target legacy
-bridge and Platform table bindings before those paths write.
+digest-bound six-role approval and strict design-check, and only after the frozen
+`kernel-and-public-contracts` V21 candidate at commit
+`3cdb25e0ad8a377d8ece0469333a582700f5bf2b` and portable artifact digest
+`sha256:a7ec722f8e922cdc8630920a771b7a43a0945c0e765dd2347ac51c7bd316e75b`
+has its own current digest-bound strict approval and is merged or otherwise present
+as governed input. This V21 candidate is not yet an approved implementation
+prerequisite, so Platform implementation and strict handoff remain blocked. An
+equivalent later commit is acceptable only when the governed Kernel artifact digest
+remains exact; any digest change requires an explicit compatibility review, an
+update to this prerequisite and renewed Platform review/strict approval.
+Architecture guardrails SHALL be updated with the exact target legacy bridge and
+Platform table bindings before those paths write.
 
 No current runtime may adopt formal owner shutdown/control behavior before
 `runtime-owner-shutdown-and-recovery-hardening-v1` passes strict approval and its
@@ -202,8 +256,8 @@ crash-takeover and real signal-to-reap implementation fixtures. No Context may
 emit formal outbox or accept formal ingress until Platform transaction, inbox,
 lease recovery and duplicate/crash fixtures pass.
 
-#### Scenario: Kernel contracts are not merged
-- **WHEN** an implementation PR cannot consume the exact approved Kernel artifact digest
+#### Scenario: Kernel V21 is not strictly approved and present
+- **WHEN** an implementation PR cannot consume the exact V21 candidate with its own current strict approval
 - **THEN** it remains blocked and does not recreate local IDs, envelopes, actors, receipts or errors
 
 #### Scenario: Kernel prose or contracts drift

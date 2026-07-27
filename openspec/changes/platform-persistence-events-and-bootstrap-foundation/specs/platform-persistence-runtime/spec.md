@@ -79,6 +79,75 @@ deadline.
 - **WHEN** another connection holds the write lock until an owner transaction's remaining monotonic budget expires
 - **THEN** the owner transaction returns a bounded unavailable/deadline outcome, commits no owner/audit/inbox/outbox row and leaves no retrying background work
 
+### Requirement: Codec retention accounting and required manifests SHALL be bounded and authoritative
+
+Platform Persistence SHALL be the sole writer of codec-retention accounting for
+every codec-dependent durable projection, replay, receipt or other resolvable
+identity defined by the exact Kernel V21 generation after its prerequisite gate
+passes. Processes SHALL store
+only projection-independent immutable references and opaque links and SHALL NOT
+write owner canonical payload/projection bytes, codec manifests or a Platform
+codec-retention port.
+
+Runtime accounting SHALL use exactly 16 Platform-owned retention shards. The shard
+index SHALL use the frozen Kernel algorithm: the first four bytes of SHA-256 over
+the length-framed durable dependent identity modulo 16. The owner-local transaction
+that makes a dependent identity visible SHALL increment or create at most one row
+for its exact registry key and codec identity in that shard. The transaction that
+makes the identity permanently unresolvable SHALL decrement or remove that row only
+after its retention horizon. Each mutation SHALL use at most three compare-and-swap
+attempts under the dependent transaction's existing finite monotonic deadline;
+exhaustion SHALL roll back the dependent identity and retention mutation together.
+It SHALL NOT clone or rewrite a complete manifest.
+
+Each nonzero shard row SHALL bind exact registry key, exact codec identity, shard
+index, positive retained-reference count, conservative latest-required-retention
+high-water mark and monotonically increasing shard revision. A conservative
+high-water mark MAY remain later than the exact current maximum while the count is
+positive, but SHALL never permit early retirement. Zero or negative counts, identity
+mismatch, revision regression or early removal SHALL be corruption.
+
+Bootstrap and codec retirement SHALL close both ingress and retention-mutation
+admission, drain all admitted shard transactions under one finite deadline and hold
+the current Platform owner fence plus one exclusive retention-snapshot lease. Under
+that frozen window they SHALL read one stable ordered 16-shard revision vector,
+aggregate no more than 4,096 entries from no more than 65,536 shard rows and publish
+one immutable `RequiredOwnerCodecManifestV1` generation in one Platform persistence
+transaction. The header SHALL bind schema version 1, positive monotonic generation,
+current owner instance/fence, exact entry count, exact source-revision digest, exact
+ordered-entry digest and committed marker. Entries SHALL be sorted by exact registry
+key, repeat the snapshot generation and bind only the Kernel-approved fields. The
+same transaction SHALL atomically switch the sole authoritative current pointer only
+after the complete header and entries are written.
+
+Readiness SHALL read the sole current pointer and complete matching generation in
+one bounded transaction while the same mutation gate, fence, lease and exact frozen
+16-shard revision vector remain valid. It SHALL reject a missing pointer/generation,
+non-committed or mixed generation, owner/fence mismatch, count or digest mismatch,
+stale source revision, duplicate/zero-count entry, timeout or over-capacity
+aggregate. It SHALL NOT enumerate or scan durable projections, replay rows, receipts
+or audit rows to reconstruct retention.
+
+#### Scenario: A durable projection becomes visible
+- **WHEN** an owner-local transaction commits a new codec-dependent projection identity
+- **THEN** that identity and exactly one deterministic retention-shard increment become visible together, or both remain absent after no more than three CAS attempts
+
+#### Scenario: A retained identity reaches the end of its lifecycle
+- **WHEN** an identity is permanently unresolvable and its retention horizon has passed
+- **THEN** the same owner-local transaction decrements or removes only its selected shard row and cannot retire the codec while any positive dependent count remains
+
+#### Scenario: Bootstrap freezes required codecs during concurrent traffic
+- **WHEN** Bootstrap closes both admissions, drains in-flight mutations and acquires the current owner fence plus exclusive snapshot lease
+- **THEN** it binds one stable 16-shard revision vector and atomically publishes one complete immutable manifest generation and current pointer
+
+#### Scenario: A manifest is internally complete but stale
+- **WHEN** its owner/fence or source-revision digest does not match the frozen current window
+- **THEN** readiness rejects it as required-codec unavailable rather than accepting internal completeness or scanning dependent rows for a replacement
+
+#### Scenario: Processes attempts retention accounting
+- **WHEN** a Process repository stores a handoff or workflow transition
+- **THEN** architecture and port checks permit only projection-independent facts and reject owner codec bytes, manifests or retention mutation access
+
 ### Requirement: MigrationCoordinator SHALL run owner registrations under durable capability fencing
 
 `MigrationCoordinator` SHALL accept versioned `MigrationRegistration` values from
@@ -163,7 +232,9 @@ last registration satisfies its retirement window.
 
 The eventual additive Platform schema SHALL make Platform Persistence the sole
 writer of schema capabilities, migration runs/checkpoints, writer leases, the
-global activation lease and activation journal. Platform Execution Operation
+global activation lease, activation journal, codec-retention shards,
+required-codec manifest generations and the authoritative current-snapshot
+pointer. Platform Execution Operation
 Control SHALL be the sole writer of operation claims, operation receipts and
 refusal-audit metadata and SHALL consume Platform Persistence transaction
 primitives without transferring logical ownership. Platform Events SHALL be the

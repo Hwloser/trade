@@ -29,12 +29,25 @@ migration and runtime-concurrency design-quality profiles.
   `CommandEnvelope`, `ActorContext`, idempotency fingerprint,
   `OperationReceipt` and `ErrorEnvelope` contracts, including its bounded
   three-claim-plus-one-audit transaction product and refusal outcome priority.
+- Define Platform-owned codec-retention accounting for every codec-dependent
+  durable identity: exactly 16 deterministic shards, one-row/three-CAS
+  transaction bounds, a fenced immutable `RequiredOwnerCodecManifestV1`
+  snapshot and one authoritative current pointer. Bootstrap readiness uses the
+  frozen snapshot and never scans durable message, replay or receipt rows.
+- Define the bounded authorized `MessageContractHealthObservationV1` query with
+  the Kernel-closed cause/action mapping. Caller/readiness products remain
+  redacted, and an operator query never repairs a manifest or starts work.
 - Define generic outbox/inbox delivery, lease/ack recovery, bounded retry,
   dead-letter/redelivery, explicit unordered delivery and a durable
   `OrderingContract` for ordered streams. Stable consumer effect identity
   survives compatible binary upgrades under immutable policy evidence; ordered
   dead letters cannot implicitly advance the head, and a never-received
   sequence is an `OrderingGapRecord`, not a fabricated dead letter.
+- Define the persistence, exactly-once observation/outbox admission, fenced
+  one-attempt delivery and operator-health responsibilities for
+  `ShutdownLinkIntegrityObservationV1`. A post-claim crash becomes
+  `delivery_outcome_unknown`; it never causes an automatic second external
+  signal.
 - Define an additive `DatabaseRuntime`, `MigrationCoordinator` and exact
   `LegacySchemaBootstrapAdapter` bridge so schema changes no longer occur as an
   implicit query-side effect. Existing `TradeDB` history remains intact until
@@ -109,9 +122,14 @@ or current production contracts.
   replay or shadow copy, dual-read comparisons, verified backup, readiness
   gates and generation rollback. No table deletion or bulk data migration is
   authorized by this proposal.
-- Implementation prerequisites are the merged strict-approved
-  `kernel-and-public-contracts` artifact at portable digest
-  `sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`
-  and the already merged architecture guardrails. Any Kernel artifact drift
-  requires renewed compatibility review. Production runtime activation
-  additionally requires the strict shutdown/recovery hardening child.
+- The reviewed compatibility target is the frozen
+  `kernel-and-public-contracts` V21 candidate at commit
+  `3cdb25e0ad8a377d8ece0469333a582700f5bf2b` and portable artifact digest
+  `sha256:a7ec722f8e922cdc8630920a771b7a43a0945c0e765dd2347ac51c7bd316e75b`.
+  It is not yet a merged strict-approved prerequisite. Platform implementation
+  and strict handoff remain blocked until that exact Kernel generation has
+  current digest-bound strict approval and is merged or otherwise present as
+  governed input. Any Kernel artifact drift requires renewed compatibility
+  review and a fresh Platform strict approval. The architecture guardrails are
+  already merged. Production runtime activation additionally requires the
+  strict shutdown/recovery hardening child.

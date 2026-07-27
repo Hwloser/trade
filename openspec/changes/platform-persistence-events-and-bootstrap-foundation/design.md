@@ -12,15 +12,19 @@ This child is the third prerequisite in the strict-approved
 5. Capture, Datasets and Studies boundaries.
 
 The architecture guardrails are merged at repository commit `4fa6113`. The
-`kernel-and-public-contracts` change has strict design approval at reviewed
-commit `cbc5f671335b7347b6beee5cfeca383c5e7d8ad9` and portable artifact digest
-`sha256:1d06f033c231ce22d6abe164a1ed1f8fc553de54762f33a46882f4b4391b1f4f`,
-but is still an implementation/merge prerequisite. This child consumes that
-exact generation's framework-free IDs, envelope metadata, `ActorContext`,
-`CommandEnvelope`, `OperationReceipt`, `ErrorEnvelope`, policy references and
-shutdown/control contracts. It does not duplicate them. Any prerequisite
-artifact digest change invalidates this design review and requires an explicit
-compatibility disposition before implementation.
+current compatibility target for `kernel-and-public-contracts` is the frozen
+V21 candidate at commit `3cdb25e0ad8a377d8ece0469333a582700f5bf2b` and
+portable artifact digest
+`sha256:a7ec722f8e922cdc8630920a771b7a43a0945c0e765dd2347ac51c7bd316e75b`.
+That generation is not yet a merged strict-approved prerequisite. This child
+consumes its framework-free IDs, envelope metadata, `ActorContext`,
+`CommandEnvelope`, `OperationReceipt`, `ErrorEnvelope`, owner-codec retention
+and manifest contracts, message-contract health products and shutdown/control
+integrity contracts. It does not duplicate them. Platform implementation and
+strict handoff remain blocked until the exact V21 candidate receives current
+digest-bound strict approval and is merged or otherwise present as governed
+input. Any prerequisite artifact digest change invalidates this compatibility
+disposition and requires a renewed Platform review before implementation.
 
 This is a design-only round. The audit read repository source and temporary
 test fixtures only. It did not open real `data/`, a live SQLite database,
@@ -145,7 +149,18 @@ The design is accepted only when:
 20. activation binds exact target readiness and prior rollback evidence and
     fails closed when the sole journal authority is missing or inconsistent; and
 21. SQLite lock wait/hold, restore verifier memory/pass/scratch and telemetry
-    freshness have finite profile bounds.
+    freshness have finite profile bounds;
+22. each codec-dependent durable identity atomically changes at most one of
+    exactly 16 retention shards with at most three CAS attempts, while a fenced
+    frozen window publishes one complete immutable current
+    `RequiredOwnerCodecManifestV1` without scanning dependent rows;
+23. authorized message-contract health returns one exact Kernel-closed
+    cause/action pair and no descriptor, key, payload, exception, credential or
+    path; and
+24. shutdown-link corruption creates at most one integrity observation/outbox,
+    one fenced external delivery attempt and a durable visible
+    `delivery_outcome_unknown` after post-claim ambiguity, with no automatic
+    second call.
 
 The implementation PRs, not this design PR, own the behavior tests above. This
 change is complete when those obligations are specified, reviewable and strict
@@ -275,7 +290,8 @@ asynchronously; it cannot call the central Platform DB in the same transaction.
 
 #### Command admission state
 
-The exact strict-approved Kernel artifact named in **Context** exclusively owns
+The exact Kernel V21 candidate named in **Context**, once its prerequisite gate
+passes, exclusively owns
 the operation state graph, refusal error product, key rotation algorithm and
 admission bounds. Platform Execution Operation Control persists those contracts without publishing
 a second state graph. In particular, one admission shares one monotonic
@@ -286,6 +302,37 @@ Conflict, corruption and contention remain provisional until the bounded
 refusal audit commits. Audit start/commit failure or exhausted audit budget
 returns `IDEMPOTENCY_AUDIT_UNAVAILABLE` and creates no claim, operation,
 receipt, dispatch, retry or background continuation.
+
+#### Codec-retention and required-manifest state
+
+Platform Persistence is the sole owner of every codec-dependent durable
+identity's retention accounting. The dependent identity becomes visible in the
+same owner-local transaction that increments or creates one deterministic
+one-of-16 shard row; permanent unresolvability after the retention horizon
+decrements or removes that same shard row. One transaction touches at most one
+row, makes at most three CAS attempts under its existing deadline and fails the
+dependent transition closed on exhaustion. Processes stores only
+projection-independent immutable references and cannot call this retention
+port.
+
+Bootstrap or codec retirement closes ingress and retention-mutation admission,
+drains in-flight shard transactions, holds the current owner fence and one
+exclusive snapshot lease, freezes one ordered 16-shard revision vector and
+publishes one immutable `RequiredOwnerCodecManifestV1` generation. The complete
+header, sorted entries, count, source-revision digest, ordered-entry digest and
+committed marker become visible before the same transaction switches the sole
+current pointer. Readiness binds that exact current generation and frozen
+revision vector. It never enumerates durable projections, replay keys, receipts
+or audit rows.
+
+#### Message-contract health state
+
+Caller and readiness errors stay redacted. A separately authorized bounded
+operator query returns the Kernel-defined
+`MessageContractHealthObservationV1`: public failure code, descriptor count,
+manifest-entry count and exactly one closed cause/action mapping. It is
+side-effect-free and cannot repair the registry, snapshot or dependent rows.
+Missing or stale evidence is unavailable rather than healthy.
 
 #### Delivery state
 
@@ -310,6 +357,28 @@ machine. Dispatch selection uses a versioned `DeliveryCapacityProfile`: bounded
 keyset scan, class/key inflight limits, poison-key cooldown, deterministic
 fairness, reserved control capacity and a maximum starvation interval. Business
 and rights meaning remains opaque in delivery class/constraint references.
+
+#### Shutdown-link integrity signal state
+
+The Kernel owns the immutable corruption identity, idempotency derivation and
+pure link/query products. Platform owns the observation, outbox, claim,
+delivery and operator-health persistence:
+
+```text
+pending -> claimed -> delivered
+                   -> delivery_failed
+                   -> delivery_outcome_unknown
+```
+
+The first observation and outbox commit atomically. `pending -> claimed`
+persists stable signal identity, current owner/fence, claim time, finite expiry
+and `attempt_count=1` before the sole bounded external call. A pre-claim crash
+leaves the first claim eligible. A post-claim crash, lease expiry or
+send/terminal-commit ambiguity terminalizes as
+`delivery_outcome_unknown`; it never reopens `pending` or automatically calls
+again. Repeated queries reuse the same observation and cannot make corruption
+healthy. Clock or transaction failure returns the exact Kernel unavailable
+product and admits no signal.
 
 #### Inbox state
 
@@ -400,11 +469,14 @@ an extracted archive or a legacy `status=restored` row cannot select it.
 | `DatabaseRuntimeRequest/Handle` | DB identity, mode, capability range, owner/fence/lease | additive schema version; no raw connection |
 | `LocalTransactionContext/Result` | owner, transaction/operation/correlation/causation, deadline, fence, outcome | protocol capability, not a generic unit of work |
 | `MigrationRegistration/Plan/View` | owner, migration/digest, generations, dependencies, checkpoint/cutover/rollback | registration identity immutable; changed digest rejected |
+| `CodecRetentionMutation/RequiredOwnerCodecManifestV1` | dependent identity, one-of-16 shard, fence/revision, immutable current snapshot | Platform-owned; one-row/three-CAS bound; current pointer is authoritative |
+| `MessageContractHealthObservationV1` | public code, bounded counts, exact closed cause/action | authorized/redacted query only; no repair side effect |
 | `OutboxEnvelopeRecord` | Kernel envelope plus owner, digest/ref, ordering, deadline, retry policy | payload schema remains owner-owned |
 | `DeliveryLease/Receipt` | dispatcher owner/fence/token/expiry, attempt and closed outcome | stale token/fence rejected |
 | `InboxReceipt` | stable consumer effect namespace, message, observed contract version/policy, digest/effective receipt | version is not the uniqueness key; incompatible effect is corruption |
 | `OrderingContract/Ref` | scope/key, epoch, sequence, expected sequence, gap/HOL policy | contract digest pinned per envelope |
 | `DeadLetterView/RedeliverMessage` | bounded safe evidence and audited control | redelivery creates new attempt |
+| `ShutdownLinkIntegrityObservationV1` | safe link identity, attempt and closed signal disposition | one observation/outbox and one fenced external attempt |
 | `BackupManifest/Certification` | generation, capability, archive/member hashes, trust-policy/key/signature evidence | hashes prove integrity; trusted detached certification proves authenticity |
 | `RestoreOperation/View` | state/step, source/prior/target generation, fence/journal/health | transition append-only |
 | `CapacityEnvelope` | fixture/resource/load/latency/backlog/threshold/outcome | versioned and deterministic |
@@ -444,9 +516,12 @@ if ownership and requirements remain unchanged and review is refreshed.
 | `platform_schema_capabilities` | Platform Persistence | capability repository | Bootstrap/operators | MigrationCoordinator | capability activation | Platform |
 | `platform_migration_runs` | Platform Persistence | migration repository | Bootstrap/operators | MigrationCoordinator | one transition/checkpoint | Platform |
 | `platform_writer_leases` | Platform Persistence | fence repository | owner transactions | DatabaseRuntime | claim/renew/revoke CAS | Platform |
+| `platform_codec_retention_shards` | Platform Persistence | codec-retention repository | Bootstrap/codec retirement | owner-local dependent-identity transactions | dependent visibility/retirement + one shard CAS | Platform Persistence |
+| `platform_required_codec_manifest` and current pointer | Platform Persistence | codec-manifest repository | Bootstrap/authorized health | fenced snapshot publisher only | frozen-vector snapshot + pointer switch | Platform Persistence |
 | `platform_operation_claims` | Platform Execution Operation Control | ingress repository | operation query | ingress only | one bounded claim attempt | Platform Execution |
 | `platform_operation_receipts` | Platform Execution Operation Control | receipt repository | Interfaces/Processes | ingress/authorized operation transition | operation transition | Platform Execution |
 | `platform_refusal_audits` | Platform Execution Operation Control | operator audit repository | authorized operators | ingress audit only | one optional post-attempt audit | Platform Execution |
+| `platform_shutdown_link_integrity` | Platform Execution Operation Control | shutdown-integrity repository | composed query/operator health | integrity coordinator only | observation+outbox; claim; terminal outcome | Platform Execution |
 | `platform_outbox` | Platform Events | outbox repository | dispatcher/operator | owner local transaction | owner state + outbox | Platform |
 | `platform_delivery_attempts` | Platform Events | delivery repository | dispatcher/operator | dispatcher | lease/ack/retry terminalization | Platform |
 | `platform_inbox_receipts` | Platform Events | inbox protocol repository | owner/dispatcher | owner local transaction | inbox + owner state | Platform |
@@ -469,9 +544,14 @@ The physical SQLite file may remain shared during transition.
   facade.
 - **Idempotency:** exact Kernel-bounded command claim, stable consumer effect
   namespace+message ID inbox, registration ID+digest, backup ID+certified
-  manifest/archive/trust-policy identity, restore ID+generation CAS.
+  manifest/archive/trust-policy identity, restore ID+generation CAS, and exact
+  shutdown-link corruption identity for one observation/outbox and one signal
+  attempt.
 - **Concurrency:** `BEGIN IMMEDIATE` or an equivalent SQLite CAS only inside
   repository methods; fence/lease tokens are compared on every mutation.
+  Codec-dependent identity visibility/retirement touches one deterministic
+  retention shard with at most three CAS attempts; frozen snapshot publication
+  requires the current owner fence and exclusive snapshot lease.
 - **Staging:** migrations use additive/checkpointed generations; backups and
   restore use no-follow temporary staging and digest verification.
 - **Visibility:** owner state/outbox and inbox/owner transition are atomic;
@@ -479,6 +559,8 @@ The physical SQLite file may remain shared during transition.
   restore becomes active only through the Persistence journal CAS.
 - **Crash windows:** every externally visible transition has a durable state
   and restart reconciliation rule. No directory scan becomes authority.
+  Post-claim shutdown-signal ambiguity becomes a terminal visible unknown
+  outcome, never an automatic retry.
 - **Corrupt predecessor:** digest/schema/claim mismatch quarantines or blocks;
   no substitution from "latest".
 - **Partial result:** explicit preparing/retry/gap/dead-letter/unavailable
@@ -531,6 +613,11 @@ Platform queries return bounded immutable views and cannot:
 - start a provider or business use case;
 - advance an operation, delivery, ordering or restore state;
 - expose payload bytes, SQL, credentials or raw errors.
+- scan dependent durable rows to infer codec retention or manifest completeness.
+
+The authorized message-contract health and shutdown-integrity projections are
+also observation-only. Their fixed cause/action or signal state cannot trigger
+codec repair, registry mutation, resend, acknowledgement or lifecycle cleanup.
 
 Commands carry actor, idempotency, correlation/causation and a finite deadline.
 They return a durable receipt or explicit admission failure promptly. Long
@@ -611,6 +698,52 @@ sequenceDiagram
   D->>OR: ack/retry/dead-letter with lease CAS
 ```
 
+#### Codec retention and manifest freeze
+
+```mermaid
+sequenceDiagram
+  participant W as Dependent identity owner
+  participant TX as Owner-local transaction
+  participant RS as Retention shard store
+  participant B as Bootstrap/retirement
+  participant MS as Manifest snapshot store
+
+  W->>TX: make codec-dependent identity visible
+  TX->>RS: CAS one deterministic shard (max 3)
+  TX-->>W: identity + shard update commit together
+  B->>RS: close mutation admission; drain; hold owner fence + snapshot lease
+  B->>RS: freeze ordered 16-shard revision vector
+  B->>MS: write complete generation + entries + digests
+  B->>MS: same transaction switch sole current pointer
+  B->>MS: validate current generation against frozen vector
+  Note over B,MS: no dependent-row scan
+```
+
+#### Shutdown-link integrity observation and one-attempt signal
+
+```mermaid
+sequenceDiagram
+  participant Q as Composed shutdown query
+  participant IC as Integrity coordinator
+  participant IR as Integrity repository
+  participant S as External signal adapter
+  participant H as Operator health query
+
+  Q->>IC: corrupt safe link identity
+  IC->>IR: atomically create/reuse observation + outbox
+  IR-->>Q: unavailable query product + integrity observation
+  IC->>IR: claim pending with owner/fence/expiry; attempt=1
+  alt claim commits and external call returns
+    IC->>S: one bounded call
+    S-->>IC: success or failure
+    IC->>IR: delivered or delivery_failed
+  else crash/expiry after claim before terminal commit
+    IC->>IR: delivery_outcome_unknown
+    Note over IC,S: no automatic second call
+  end
+  H->>IR: bounded redacted status
+```
+
 #### Ordered gap
 
 ```mermaid
@@ -680,6 +813,9 @@ sequenceDiagram
 | incompatible schema/write range | reject writer or read-only fallback | Bootstrap/MigrationCoordinator |
 | legacy unaware writer possible | block incompatible migration | operator maintenance/adoption |
 | owner tx fails | rollback state/audit/inbox/outbox | owning Context |
+| retention shard CAS exhausts | fail dependent identity transaction closed | Platform Persistence/owner caller |
+| manifest pointer/generation/vector/digest is stale or corrupt | block ingress as required-codec unavailable; no dependent-row scan | Platform Persistence/Bootstrap |
+| message-contract health evidence is missing/stale | unavailable/defer with exact closed cause/action when known | Platform status/operator |
 | dispatcher dies pre-ack | lease expiry and reclaim | Platform Events |
 | consumer duplicate | existing inbox receipt, no transition | owner adapter |
 | consumer binary/version upgrade | stable effect identity returns first receipt or incompatible version quarantines | owner adapter |
@@ -693,6 +829,8 @@ sequenceDiagram
 | crash after writer fence | activation journal reconciliation | Platform Persistence activation authority with Platform Backup coordinator |
 | target health fails | CAS prior generation and rebind | Platform Backup/Bootstrap |
 | partial Bootstrap startup | reverse unwind acquired generation | Bootstrap |
+| shutdown-link integrity clock/audit unavailable | exact unavailable product; no observation/outbox or signal claim | Platform Execution Operation Control |
+| shutdown-link signal crashes after claim | terminal visible `delivery_outcome_unknown`; no resend | Platform Execution Operation Control |
 | current runtime shutdown tail | legacy behavior; hardening child required | runtime hardening child |
 
 No event handler embeds all business logic. It decodes/validates, invokes one
@@ -717,6 +855,9 @@ cannot be chosen after observing the run.
 | one dispatch claim batch | 1,000 records | current replay hard clamp; lower default measured |
 | one replay/recovery invocation | 1,000 records | current bounded replay behavior |
 | one status/history page | 50 transitions/attempts | approved Kernel ProcessView bound |
+| codec retention shard count | exactly 16 | Kernel V21 durable-identity contract |
+| one codec-retention mutation | one shard row, at most 3 CAS attempts | bounded owner-local write |
+| required-codec manifest | 4,096 entries; at most 65,536 shard rows aggregated | frozen snapshot; no dependent-row scan |
 | one dead-letter query page | 100 records | prevents unbounded operator query |
 | one gap buffer per ordering key | 1,000 messages and 64 MiB | hard refusal ceiling, not default |
 | one dispatcher policy attempts | 100 | schema ceiling; normal profile lower |
@@ -766,6 +907,8 @@ Low-cardinality metrics:
 
 - command admission outcomes by stable reason/owner;
 - owner transaction commit/rollback/stale-fence;
+- codec-retention CAS outcome, frozen snapshot generation/integrity and
+  message-contract health cause/action;
 - outbox pending/leased/retry/dead-letter counts and oldest age;
 - delivery attempts, lease expiry/reclaim and terminal-persistence unavailable;
 - inbox duplicate/conflict and ordering gap/expiry;
@@ -774,6 +917,8 @@ Low-cardinality metrics:
 - backup trust-policy/key/signature outcome and restore byte/disk refusal;
 - restore state, activation/rollback and health duration;
 - Bootstrap profile lifecycle/residual owner;
+- shutdown-link integrity pending/claimed/delivered/delivery-failed/
+  delivery-outcome-unknown;
 - CapacityEnvelope pass/defer/overload.
 
 Structured logs include operation/message/migration/restore identity,
@@ -788,6 +933,8 @@ Bounded operator queries distinguish:
 - pending from stuck/lease-expired;
 - retry scheduled from dead-lettered;
 - sequence gap from no traffic;
+- current required-codec snapshot from stale/corrupt/unavailable evidence;
+- shutdown-link signal delivery failure from ambiguous post-claim outcome;
 - migration follower from incompatible writer;
 - certified local backup from remote unavailable;
 - staged restore from active/rolled back;
@@ -800,7 +947,9 @@ executes the action.
 Critical telemetry has freshness contracts and owned alerts for oldest outbox
 age, terminal-persistence unavailability, persistent ordering gaps, activation
 incomplete/authority unavailable/rollback pending, residual shutdown owners and
-backup trust failures. Each carries observed time, expected interval and
+backup trust failures. It also covers required-codec snapshot integrity and
+shutdown-link `delivery_failed`/`delivery_outcome_unknown`. Each carries
+observed time, expected interval and
 stale-after bound. Missing or stale telemetry is unavailable/defer, never
 healthy. Admission-audit-unavailable emits at most one safe structured event
 and one low-cardinality counter; telemetry failure neither retries nor masks
@@ -813,6 +962,9 @@ the caller result.
 - canonical Platform DTO/codecs and forbidden framework/business vocabulary;
 - startup mode and read-only no-side-effect contracts;
 - transaction owner/fence and allowed participant set;
+- deterministic one-of-16 retention-shard selection, one-row/three-CAS bound,
+  manifest header/entry/current-pointer integrity and exact health
+  cause/action/redaction;
 - exact state transition products;
 - envelope/payload digest, stable inbox effect identity/version compatibility
   and ordering arithmetic;
@@ -825,6 +977,13 @@ the caller result.
 - temporary SQLite owner transition + audit/inbox/outbox atomicity;
 - duplicate ingress across two connections;
 - dispatcher crash before/after lease, consumer commit and ack;
+- retention visibility/retirement atomicity, CAS exhaustion and concurrent
+  freeze interleavings; absent/non-current/incomplete/mixed/stale-fence/count/
+  vector-digest/entry-digest manifest rejection with a sentinel proving no
+  dependent-row scan;
+- shutdown-link duplicate/concurrent query, clock/audit failure, pre-claim
+  crash, post-claim/pre-send and post-send/pre-terminal crash,
+  delivered/delivery-failed/outcome-unknown and no-second-call fixtures;
 - exact duplicate across consumer version upgrade, incompatible version,
   digest conflict and stale fence;
 - N+1-before-N, epoch regression, gap timeout, ordered DLQ, original-position
@@ -956,14 +1115,16 @@ allow tailored graphs while preserving one composition authority.
 - **Shutdown remains an observed production pain.** -> Keep a visible hard gate
   and prioritize the independent hardening child before runtime delegation.
 - **Kernel PR dependency can drift.** -> Pin reviewed digest and do not
-  implement until merged/present; re-review on contract drift.
+  implement until the V21 candidate is strict-approved and merged/present;
+  re-review on contract drift.
 
 ### Rollout and rollback
 
 #### Design and implementation slices
 
 1. Approve this design only; no production change.
-2. Merge the exact Kernel/public contracts prerequisite.
+2. Obtain current strict approval for and merge/present the exact Kernel V21
+   candidate prerequisite.
 3. `platform-persistence-runtime`: add contracts, read-only runtime,
    capability/fence/migration tables and legacy bootstrap bridge; no Context
    cutover.
@@ -988,6 +1149,9 @@ does not depend on future package moves.
 #### Rollback triggers
 
 - any duplicate effective owner transition;
+- codec retirement while a dependent identity remains resolvable;
+- stale/corrupt required-codec snapshot accepted or startup scans dependent rows;
+- repeated shutdown-link signal or post-claim ambiguity reported as delivered;
 - stale fence accepted;
 - lost/reordered message outside its contract;
 - unbounded retry/wait or live process/thread after deadline;
@@ -1043,8 +1207,8 @@ select and review:
 
 | Order | Child | Exit evidence | Rollback |
 |---:|---|---|---|
-| 1 | `platform-persistence-runtime` | read-only/no-write, fence, migration leader/checkpoint, v2-v22 bridge | disable target runtime; legacy selected |
-| 2 | `platform-command-and-delivery-store` | duplicate/crash/order/DLQ/redelivery and 1x/10x fixtures | stop new ingress; retain records |
+| 1 | `platform-persistence-runtime` | read-only/no-write, fence, migration leader/checkpoint, codec-retention snapshot/health, v2-v22 bridge | disable target runtime; legacy selected |
+| 2 | `platform-command-and-delivery-store` | duplicate/crash/order/DLQ/redelivery, shutdown-integrity one-attempt delivery and 1x/10x fixtures | stop new ingress; retain records |
 | 3 | `platform-backup-certification-and-restore` | unsafe/corrupt rejection and crash/health rollback | legacy backup selected; prior generation active |
 | 4 | `platform-bootstrap-profiles` | sole-root architecture and compatibility-only profiles | entrypoints stay legacy |
 | 5 | `runtime-owner-shutdown-and-recovery-hardening-v1` | bounded retry/join, takeover and signal-to-reap | do not adopt formal control |
