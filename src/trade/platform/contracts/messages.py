@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, is_dataclass
 from enum import Enum
-from typing import Generic, TypeVar
+from typing import Generic, NoReturn, TypeVar
 
 from trade.kernel.digest import ContentDigest
 from trade.kernel.envelope import EnvelopeMeta
@@ -20,6 +20,8 @@ from trade.platform.contracts.actor import (
 )
 
 __all__ = [
+    "CanonicalJsonError",
+    "CanonicalJsonErrorCode",
     "CodecContentPolicy",
     "CommandEnvelope",
     "FingerprintDomain",
@@ -32,8 +34,10 @@ __all__ = [
     "ReplayAdmissionV1",
     "ReplayContextV1",
     "canonical_idempotency_subject_bytes",
+    "decode_bounded_json_v1",
     "derive_command_fingerprint",
     "derive_idempotency_fingerprint",
+    "encode_canonical_json_v1",
     "frame_hmac_components",
 ]
 
@@ -43,10 +47,63 @@ _FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _MAX_SCHEMA_VERSION = 2_147_483_647
 _MAX_KEY_SET_GENERATION = 9_223_372_036_854_775_807
 _MAX_CANONICAL_BYTES = 65_536
+_MAX_JSON_CONTAINER_DEPTH = 8
+_MAX_JSON_STRING_BYTES = 2_048
+_MAX_JSON_INTEGER = 9_999_999_999_999_999_999
+_MAX_JSON_INTEGER_DIGITS = 19
+_MAX_JSON_CONTAINER_ITEMS = 100
+_MAX_JSON_AGGREGATE_ITEMS = 1_024
+_MAX_JSON_VALUE_NODES = 2_048
 _MIN_SECRET_BYTES = 32
 _MAX_RETAINED_KEY_VERSIONS = 3
+_JSON_WHITESPACE = frozenset(" \t\r\n")
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+_SHORT_ESCAPE_VALUES = {
+    '"': '"',
+    "\\": "\\",
+    "/": "/",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+}
+_CANONICAL_CONTROL_ESCAPES = {
+    0x08: b"\\b",
+    0x09: b"\\t",
+    0x0A: b"\\n",
+    0x0C: b"\\f",
+    0x0D: b"\\r",
+}
 
 T = TypeVar("T")
+
+
+class CanonicalJsonErrorCode(str, Enum):
+    RAW_BYTES_EXCEEDED = "raw_bytes_exceeded"
+    INVALID_UTF8 = "invalid_utf8"
+    BOM_FORBIDDEN = "bom_forbidden"
+    INVALID_SYNTAX = "invalid_syntax"
+    DUPLICATE_KEY = "duplicate_key"
+    INVALID_SURROGATE = "invalid_surrogate"
+    STRING_BYTES_EXCEEDED = "string_bytes_exceeded"
+    INVALID_INTEGER = "invalid_integer"
+    CONTAINER_DEPTH_EXCEEDED = "container_depth_exceeded"
+    CONTAINER_ITEMS_EXCEEDED = "container_items_exceeded"
+    AGGREGATE_ITEMS_EXCEEDED = "aggregate_items_exceeded"
+    VALUE_NODES_EXCEEDED = "value_nodes_exceeded"
+    UNSUPPORTED_VALUE = "unsupported_value"
+    OUTPUT_BYTES_EXCEEDED = "output_bytes_exceeded"
+
+
+class CanonicalJsonError(ValueError):
+    __slots__ = ("code",)
+
+    def __init__(self, code: CanonicalJsonErrorCode) -> None:
+        if not isinstance(code, CanonicalJsonErrorCode):
+            raise TypeError("code must be CanonicalJsonErrorCode")
+        self.code = code
+        super().__init__(code.value)
 
 
 class PayloadPurpose(str, Enum):
@@ -313,6 +370,468 @@ class ReplayAdmissionV1:
             raise ValueError("current subject must identify the verified replay initiator")
         if not isinstance(self.deadline, Deadline):
             raise TypeError("deadline must be Deadline")
+
+
+@dataclass(slots=True)
+class _JsonScanFrame:
+    kind: str
+    state: str
+    item_count: int = 0
+    decoded_keys: set[str] | None = None
+
+
+class _CanonicalJsonScanner:
+    __slots__ = (
+        "_aggregate_items",
+        "_frames",
+        "_index",
+        "_root_complete",
+        "_root_started",
+        "_text",
+        "_value_nodes",
+    )
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._index = 0
+        self._frames: list[_JsonScanFrame] = []
+        self._root_started = False
+        self._root_complete = False
+        self._aggregate_items = 0
+        self._value_nodes = 0
+
+    def scan(self) -> None:
+        while True:
+            self._skip_whitespace()
+            if not self._frames:
+                if not self._root_started:
+                    if self._at_end:
+                        _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+                    self._root_started = True
+                    self._scan_value()
+                    continue
+                if not self._root_complete or not self._at_end:
+                    _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+                return
+
+            frame = self._frames[-1]
+            if frame.kind == "array":
+                self._scan_array_state(frame)
+            else:
+                self._scan_object_state(frame)
+
+    @property
+    def _at_end(self) -> bool:
+        return self._index >= len(self._text)
+
+    def _skip_whitespace(self) -> None:
+        while not self._at_end and self._text[self._index] in _JSON_WHITESPACE:
+            self._index += 1
+
+    def _scan_array_state(self, frame: _JsonScanFrame) -> None:
+        if frame.state == "first_or_end":
+            if self._peek("]"):
+                self._close_container("]")
+                return
+            frame.state = "value"
+
+        if frame.state == "value":
+            self._register_container_item(frame)
+            frame.state = "comma_or_end"
+            self._scan_value()
+            return
+
+        if self._consume(","):
+            frame.state = "value"
+            return
+        if self._peek("]"):
+            self._close_container("]")
+            return
+        _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+
+    def _scan_object_state(self, frame: _JsonScanFrame) -> None:
+        if frame.state == "first_key_or_end":
+            if self._peek("}"):
+                self._close_container("}")
+                return
+            self._scan_object_key(frame)
+            return
+
+        if frame.state == "key":
+            self._scan_object_key(frame)
+            return
+
+        if frame.state == "colon":
+            if not self._consume(":"):
+                _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+            frame.state = "value"
+            return
+
+        if frame.state == "value":
+            frame.state = "comma_or_end"
+            self._scan_value()
+            return
+
+        if self._consume(","):
+            frame.state = "key"
+            return
+        if self._peek("}"):
+            self._close_container("}")
+            return
+        _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+
+    def _scan_object_key(self, frame: _JsonScanFrame) -> None:
+        if self._at_end or self._text[self._index] != '"':
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+        key = self._scan_string()
+        self._register_container_item(frame)
+        if frame.decoded_keys is None:
+            raise AssertionError("object scanner frame must own decoded keys")
+        if key in frame.decoded_keys:
+            _raise_json(CanonicalJsonErrorCode.DUPLICATE_KEY)
+        frame.decoded_keys.add(key)
+        frame.state = "colon"
+
+    def _register_container_item(self, frame: _JsonScanFrame) -> None:
+        frame.item_count += 1
+        if frame.item_count > _MAX_JSON_CONTAINER_ITEMS:
+            _raise_json(CanonicalJsonErrorCode.CONTAINER_ITEMS_EXCEEDED)
+        self._aggregate_items += 1
+        if self._aggregate_items > _MAX_JSON_AGGREGATE_ITEMS:
+            _raise_json(CanonicalJsonErrorCode.AGGREGATE_ITEMS_EXCEEDED)
+
+    def _scan_value(self) -> None:
+        self._value_nodes += 1
+        if self._value_nodes > _MAX_JSON_VALUE_NODES:
+            _raise_json(CanonicalJsonErrorCode.VALUE_NODES_EXCEEDED)
+        if self._at_end:
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+
+        token = self._text[self._index]
+        if token == '"':
+            self._scan_string()
+            self._complete_scalar()
+            return
+        if token == "{":
+            self._start_container("object")
+            return
+        if token == "[":
+            self._start_container("array")
+            return
+        if token == "t":
+            self._scan_literal("true")
+            self._complete_scalar()
+            return
+        if token == "f":
+            self._scan_literal("false")
+            self._complete_scalar()
+            return
+        if token == "n":
+            self._scan_literal("null")
+            self._complete_scalar()
+            return
+        if "0" <= token <= "9":
+            self._scan_integer()
+            self._complete_scalar()
+            return
+        if token in "-+." or token in "NI":
+            _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+        _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+
+    def _start_container(self, kind: str) -> None:
+        depth = len(self._frames) + 1
+        if depth > _MAX_JSON_CONTAINER_DEPTH:
+            _raise_json(CanonicalJsonErrorCode.CONTAINER_DEPTH_EXCEEDED)
+        self._index += 1
+        if kind == "array":
+            self._frames.append(_JsonScanFrame(kind="array", state="first_or_end"))
+        else:
+            self._frames.append(
+                _JsonScanFrame(
+                    kind="object",
+                    state="first_key_or_end",
+                    decoded_keys=set(),
+                )
+            )
+
+    def _close_container(self, closing_token: str) -> None:
+        if not self._consume(closing_token):
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+        self._frames.pop()
+        if not self._frames:
+            self._root_complete = True
+
+    def _complete_scalar(self) -> None:
+        if not self._frames:
+            self._root_complete = True
+
+    def _scan_literal(self, literal: str) -> None:
+        end = self._index + len(literal)
+        if self._text[self._index : end] != literal:
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+        self._index = end
+
+    def _scan_integer(self) -> None:
+        start = self._index
+        if self._text[self._index] == "0":
+            self._index += 1
+            if not self._at_end and "0" <= self._text[self._index] <= "9":
+                _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+        else:
+            while not self._at_end and "0" <= self._text[self._index] <= "9":
+                self._index += 1
+                if self._index - start > _MAX_JSON_INTEGER_DIGITS:
+                    _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+        if not self._at_end and self._text[self._index] in ".eE":
+            _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+
+    def _scan_string(self) -> str:
+        self._index += 1
+        decoded: list[str] = []
+        decoded_bytes = 0
+        while not self._at_end:
+            value = self._text[self._index]
+            self._index += 1
+            if value == '"':
+                return "".join(decoded)
+            if value == "\\":
+                value = self._scan_escape()
+            elif ord(value) < 0x20:
+                _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+            elif _is_surrogate(value):
+                _raise_json(CanonicalJsonErrorCode.INVALID_SURROGATE)
+            decoded_bytes += len(value.encode("utf-8"))
+            if decoded_bytes > _MAX_JSON_STRING_BYTES:
+                _raise_json(CanonicalJsonErrorCode.STRING_BYTES_EXCEEDED)
+            decoded.append(value)
+        _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+
+    def _scan_escape(self) -> str:
+        if self._at_end:
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+        escape = self._text[self._index]
+        self._index += 1
+        if escape in _SHORT_ESCAPE_VALUES:
+            return _SHORT_ESCAPE_VALUES[escape]
+        if escape != "u":
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+
+        code_point = self._scan_hex_quad()
+        if 0xDC00 <= code_point <= 0xDFFF:
+            _raise_json(CanonicalJsonErrorCode.INVALID_SURROGATE)
+        if 0xD800 <= code_point <= 0xDBFF:
+            if self._text[self._index : self._index + 2] != "\\u":
+                _raise_json(CanonicalJsonErrorCode.INVALID_SURROGATE)
+            self._index += 2
+            low = self._scan_hex_quad()
+            if not 0xDC00 <= low <= 0xDFFF:
+                _raise_json(CanonicalJsonErrorCode.INVALID_SURROGATE)
+            code_point = 0x10000 + ((code_point - 0xD800) << 10) + (low - 0xDC00)
+        return chr(code_point)
+
+    def _scan_hex_quad(self) -> int:
+        end = self._index + 4
+        token = self._text[self._index : end]
+        if len(token) != 4 or any(character not in _HEX_DIGITS for character in token):
+            _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+        self._index = end
+        return int(token, 16)
+
+    def _consume(self, token: str) -> bool:
+        if self._peek(token):
+            self._index += 1
+            return True
+        return False
+
+    def _peek(self, token: str) -> bool:
+        return not self._at_end and self._text[self._index] == token
+
+
+def decode_bounded_json_v1(raw: bytes) -> object:
+    if not isinstance(raw, bytes):
+        raise TypeError("raw canonical JSON input must be bytes")
+    if len(raw) > _MAX_CANONICAL_BYTES:
+        _raise_json(CanonicalJsonErrorCode.RAW_BYTES_EXCEEDED)
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        _raise_json(CanonicalJsonErrorCode.INVALID_UTF8)
+    if text.startswith("\ufeff"):
+        _raise_json(CanonicalJsonErrorCode.BOM_FORBIDDEN)
+
+    _CanonicalJsonScanner(text).scan()
+    try:
+        value = json.loads(
+            text,
+            parse_int=_bounded_parse_int,
+            parse_float=_reject_json_number,
+            parse_constant=_reject_json_number,
+        )
+    except (json.JSONDecodeError, RecursionError):
+        _raise_json(CanonicalJsonErrorCode.INVALID_SYNTAX)
+    _validate_materialized_json(value)
+    return value
+
+
+def encode_canonical_json_v1(
+    value: object,
+    *,
+    max_bytes: int = _MAX_CANONICAL_BYTES,
+) -> bytes:
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool):
+        raise TypeError("max_bytes must be an integer")
+    if not 1 <= max_bytes <= _MAX_CANONICAL_BYTES:
+        raise ValueError("max_bytes must be in 1..65,536")
+    _validate_materialized_json(value)
+
+    output = bytearray()
+    actions: list[tuple[str, object]] = [("value", value)]
+    while actions:
+        action, item = actions.pop()
+        if action == "raw":
+            if not isinstance(item, bytes):
+                raise AssertionError("canonical JSON raw action must contain bytes")
+            _append_json_bytes(output, item, max_bytes=max_bytes)
+            continue
+        if action == "string":
+            if not isinstance(item, str):
+                raise AssertionError("canonical JSON string action must contain str")
+            _append_json_bytes(output, _canonical_string_bytes(item), max_bytes=max_bytes)
+            continue
+
+        if item is None:
+            _append_json_bytes(output, b"null", max_bytes=max_bytes)
+        elif item is True:
+            _append_json_bytes(output, b"true", max_bytes=max_bytes)
+        elif item is False:
+            _append_json_bytes(output, b"false", max_bytes=max_bytes)
+        elif isinstance(item, int):
+            _append_json_bytes(output, str(item).encode("ascii"), max_bytes=max_bytes)
+        elif isinstance(item, str):
+            _append_json_bytes(output, _canonical_string_bytes(item), max_bytes=max_bytes)
+        elif isinstance(item, list):
+            _append_json_bytes(output, b"[", max_bytes=max_bytes)
+            scheduled: list[tuple[str, object]] = []
+            for index, child in enumerate(item):
+                if index:
+                    scheduled.append(("raw", b","))
+                scheduled.append(("value", child))
+            scheduled.append(("raw", b"]"))
+            actions.extend(reversed(scheduled))
+        elif isinstance(item, dict):
+            _append_json_bytes(output, b"{", max_bytes=max_bytes)
+            scheduled = []
+            for index, key in enumerate(sorted(item)):
+                if index:
+                    scheduled.append(("raw", b","))
+                scheduled.extend(
+                    (
+                        ("string", key),
+                        ("raw", b":"),
+                        ("value", item[key]),
+                    )
+                )
+            scheduled.append(("raw", b"}"))
+            actions.extend(reversed(scheduled))
+        else:
+            _raise_json(CanonicalJsonErrorCode.UNSUPPORTED_VALUE)
+    return bytes(output)
+
+
+def _validate_materialized_json(root: object) -> None:
+    aggregate_items = 0
+    value_nodes = 0
+    worklist: list[tuple[object, int]] = [(root, 0)]
+    while worklist:
+        value, parent_depth = worklist.pop()
+        value_nodes += 1
+        if value_nodes > _MAX_JSON_VALUE_NODES:
+            _raise_json(CanonicalJsonErrorCode.VALUE_NODES_EXCEEDED)
+
+        if value is None or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            if not 0 <= value <= _MAX_JSON_INTEGER:
+                _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+            continue
+        if isinstance(value, str):
+            _validate_json_string(value)
+            continue
+        if not isinstance(value, (list, dict)):
+            _raise_json(CanonicalJsonErrorCode.UNSUPPORTED_VALUE)
+
+        depth = parent_depth + 1
+        if depth > _MAX_JSON_CONTAINER_DEPTH:
+            _raise_json(CanonicalJsonErrorCode.CONTAINER_DEPTH_EXCEEDED)
+        item_count = len(value)
+        if item_count > _MAX_JSON_CONTAINER_ITEMS:
+            _raise_json(CanonicalJsonErrorCode.CONTAINER_ITEMS_EXCEEDED)
+        aggregate_items += item_count
+        if aggregate_items > _MAX_JSON_AGGREGATE_ITEMS:
+            _raise_json(CanonicalJsonErrorCode.AGGREGATE_ITEMS_EXCEEDED)
+
+        if isinstance(value, list):
+            worklist.extend((item, depth) for item in reversed(value))
+            continue
+        for key in value:
+            if not isinstance(key, str):
+                _raise_json(CanonicalJsonErrorCode.UNSUPPORTED_VALUE)
+            _validate_json_string(key)
+        worklist.extend((value[key], depth) for key in reversed(sorted(value)))
+
+
+def _validate_json_string(value: str) -> None:
+    if any(_is_surrogate(character) for character in value):
+        _raise_json(CanonicalJsonErrorCode.INVALID_SURROGATE)
+    if len(value.encode("utf-8")) > _MAX_JSON_STRING_BYTES:
+        _raise_json(CanonicalJsonErrorCode.STRING_BYTES_EXCEEDED)
+
+
+def _canonical_string_bytes(value: str) -> bytes:
+    encoded = bytearray(b'"')
+    for character in value:
+        code_point = ord(character)
+        if code_point == 0x22:
+            encoded.extend(b'\\"')
+        elif code_point == 0x5C:
+            encoded.extend(b"\\\\")
+        elif code_point in _CANONICAL_CONTROL_ESCAPES:
+            encoded.extend(_CANONICAL_CONTROL_ESCAPES[code_point])
+        elif code_point < 0x20:
+            encoded.extend(f"\\u00{code_point:02x}".encode("ascii"))
+        else:
+            encoded.extend(character.encode("utf-8"))
+    encoded.extend(b'"')
+    return bytes(encoded)
+
+
+def _bounded_parse_int(token: str) -> int:
+    if (
+        len(token) > _MAX_JSON_INTEGER_DIGITS
+        or not token
+        or (token != "0" and (token[0] == "0" or not token.isascii()))
+        or not token.isdecimal()
+    ):
+        _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+    return int(token)
+
+
+def _reject_json_number(_token: str) -> NoReturn:
+    _raise_json(CanonicalJsonErrorCode.INVALID_INTEGER)
+
+
+def _append_json_bytes(output: bytearray, value: bytes, *, max_bytes: int) -> None:
+    if len(output) + len(value) > max_bytes:
+        _raise_json(CanonicalJsonErrorCode.OUTPUT_BYTES_EXCEEDED)
+    output.extend(value)
+
+
+def _is_surrogate(value: str) -> bool:
+    return 0xD800 <= ord(value) <= 0xDFFF
+
+
+def _raise_json(code: CanonicalJsonErrorCode) -> NoReturn:
+    raise CanonicalJsonError(code)
 
 
 def frame_hmac_components(components: tuple[bytes, ...]) -> bytes:
