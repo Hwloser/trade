@@ -30,6 +30,8 @@ from trade_py.devtools.quality.planner import build_plan
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 7, 27, 12, tzinfo=timezone.utc)
+ACTIVATION_PLAN_DIGEST = "sha256:" + "a" * 64
+MIGRATION_EVIDENCE_REF = "sha256:" + "b" * 64
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -71,10 +73,12 @@ def _manifest(authorities: list[dict[str, Any]] | None = None) -> str:
                 f'implementation_digest = "{item["implementation_digest"]}"',
                 f'compatibility_direction = "{item["compatibility_direction"]}"',
                 f'state = "{item["state"]}"',
-                "",
-                "[authorities.consumer_inventory]",
             )
         )
+        for key in ("activation_plan_digest", "migration_evidence_ref"):
+            if value := item.get(key):
+                lines.append(f"{key} = {json.dumps(value)}")
+        lines.extend(("", "[authorities.consumer_inventory]"))
         inventory = item["consumer_inventory"]
         for key, value in inventory.items():
             if isinstance(value, str):
@@ -94,6 +98,16 @@ def _repo(tmp_path: Path) -> Path:
     _run_git(repo, "config", "user.name", "Layout Test")
     _write(repo, "src/trade/__init__.py", '"""Target package foundation."""\n')
     _write(repo, "trade_py/__init__.py", '"""Legacy package."""\n')
+    _write(
+        repo,
+        "pyproject.toml",
+        "[project]\n"
+        'name = "layout-test"\n'
+        'version = "0.0.0"\n'
+        "\n"
+        "[project.scripts]\n"
+        'trade-py = "trade_py.cli.main:main"\n',
+    )
     _write(repo, "layout-authority.toml", _manifest())
     _run_git(repo, "add", ".")
     _run_git(repo, "commit", "-m", "baseline")
@@ -127,7 +141,7 @@ def _authority_row(
         selected_modules=(legacy_module, target_module),
         generated_at=generated_at,
     )
-    return {
+    row = {
         "legacy_module": legacy_module,
         "target_module": target_module,
         "owner": owner,
@@ -137,6 +151,11 @@ def _authority_row(
         "state": state,
         "consumer_inventory": asdict(inventory),
     }
+    if state != "inventoried":
+        row["activation_plan_digest"] = ACTIVATION_PLAN_DIGEST
+    if state in {"legacy_forwarding", "target_authoritative", "retireable"}:
+        row["migration_evidence_ref"] = MIGRATION_EVIDENCE_REF
+    return row
 
 
 def _commit_authorities(repo: Path, rows: list[dict[str, Any]]) -> None:
@@ -428,6 +447,114 @@ def test_optional_transport_is_rejected_from_every_lower_layer(
     )
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        'import importlib\nimportlib.import_module("mcp.client")\n',
+        'import importlib as loader\nloader.import_module("plugins.registry")\n',
+        'from importlib import import_module as load\nload("remote_worker.client")\n',
+        '__import__("mcp.client")\n',
+        'import importlib.util\nimportlib.util.find_spec("plugins.registry")\n',
+        ('from importlib.util import find_spec as locate\nlocate("remote_worker.client")\n'),
+        ('from importlib import util as loader_util\nloader_util.find_spec("mcp.client")\n'),
+        ('import importlib\nload = importlib.import_module\nload("plugins.registry")\n'),
+        (
+            "from importlib import import_module\n"
+            "load = import_module\n"
+            "load_again = load\n"
+            'load_again("remote_worker.client")\n'
+        ),
+        (
+            "from importlib import import_module\n"
+            'tuple(map(import_module, ("json", "mcp.client")))\n'
+        ),
+        ('from importlib import import_module\npool.map(import_module, ("plugins.registry",))\n'),
+    ),
+)
+def test_dynamic_optional_transport_is_rejected_from_lower_layer(
+    tmp_path: Path,
+    content: str,
+) -> None:
+    repo = _repo(tmp_path)
+    path = "src/trade/datasets/domain/rule.py"
+    _write(repo, path, content)
+
+    report = validate_authority_manifest(
+        repo,
+        candidate_paths=(path,),
+        observed_at=NOW,
+    )
+
+    assert "layout.authority.optional_dependency_leak" in {item.code for item in report.findings}
+    assert any(
+        edge.imported in {"mcp.client", "plugins.registry", "remote_worker.client"}
+        for edge in report.import_edges
+    )
+
+
+def test_unresolved_dynamic_import_fails_closed_in_lower_layer(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = "src/trade/datasets/use_cases/load.py"
+    _write(
+        repo,
+        path,
+        "import importlib\ndef load(name: str):\n    return importlib.import_module(name)\n",
+    )
+
+    assert "layout.authority.dynamic_import_unresolved" in _codes(
+        repo,
+        candidate_paths=(path,),
+        observed_at=NOW,
+    )
+
+
+def test_dynamic_legacy_import_is_rejected_from_target_module(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    path = "src/trade/datasets/domain/rule.py"
+    _write(repo, path, 'from importlib import import_module\nimport_module("trade_py.sample")\n')
+
+    assert "layout.authority.reverse_dependency" in _codes(
+        repo,
+        candidate_paths=(path,),
+        observed_at=NOW,
+    )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        (
+            "[project]\n"
+            'name = "layout-test"\n'
+            'version = "0.0.0"\n'
+            "\n"
+            "[project.scripts]\n"
+            'trade-py = "trade_py.cli.main:main"\n'
+            'trade-plugin = "trade.plugins:main"\n'
+        ),
+        (
+            "[project]\n"
+            'name = "layout-test"\n'
+            'version = "0.0.0"\n'
+            "\n"
+            "[project.scripts]\n"
+            'trade-py = "trade_py.cli.main:main"\n'
+            "\n"
+            '[project.entry-points."trade.plugins"]\n'
+            'sample = "trade.plugins.sample:Plugin"\n'
+        ),
+    ),
+)
+def test_unapproved_package_entry_points_are_rejected(
+    tmp_path: Path,
+    metadata: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "pyproject.toml", metadata)
+
+    assert "layout.authority.entry_point_unapproved" in _codes(repo, observed_at=NOW)
+
+
 def test_relative_import_is_included_in_consumer_inventory(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     _write(repo, "src/trade/sample.py", "VALUE = 1\n")
@@ -455,6 +582,132 @@ def test_valid_shadow_authority_binds_current_sources_and_inventory(tmp_path: Pa
     assert report.ok
     assert len(report.authorities) == 1
     assert report.authorities[0].consumer_inventory.completeness_state == "complete"
+
+
+@pytest.mark.parametrize(
+    "state",
+    ("prepared", "shadow_verified", "legacy_forwarding", "target_authoritative", "retireable"),
+)
+def test_planned_authority_requires_activation_plan_lineage(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    legacy_source = (
+        "from trade.sample import VALUE\n"
+        if state in {"legacy_forwarding", "target_authoritative", "retireable"}
+        else "VALUE = 1\n"
+    )
+    _write(repo, "trade_py/sample.py", legacy_source)
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state=state)
+    row.pop("activation_plan_digest")
+    _commit_authority(repo, row)
+
+    assert "layout.authority.activation_plan_missing" in _codes(
+        repo,
+        observed_at=NOW + timedelta(hours=1),
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    ("legacy_forwarding", "target_authoritative", "retireable"),
+)
+def test_terminal_authority_requires_migration_evidence(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(repo, "trade_py/sample.py", "from trade.sample import VALUE\n")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state=state)
+    row.pop("migration_evidence_ref")
+    _commit_authority(repo, row)
+
+    assert "layout.authority.migration_evidence_missing" in _codes(
+        repo,
+        observed_at=NOW + timedelta(hours=1),
+    )
+
+
+@pytest.mark.parametrize("state", ("prepared", "shadow_verified"))
+def test_nonterminal_authority_rejects_terminal_evidence(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(repo, "trade_py/sample.py", "VALUE = 1\n")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state=state)
+    row["migration_evidence_ref"] = MIGRATION_EVIDENCE_REF
+    _commit_authority(repo, row)
+
+    assert "layout.authority.lineage_premature" in _codes(
+        repo,
+        observed_at=NOW + timedelta(hours=1),
+    )
+
+
+def test_inventoried_authority_rejects_activation_lineage(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(repo, "trade_py/sample.py", "VALUE = 1\n")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state="inventoried")
+    row["activation_plan_digest"] = ACTIVATION_PLAN_DIGEST
+    _commit_authority(repo, row)
+
+    assert "layout.authority.lineage_premature" in _codes(
+        repo,
+        observed_at=NOW + timedelta(hours=1),
+    )
+
+
+def test_authority_lineage_requires_complete_sha256_digest(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(repo, "trade_py/sample.py", "VALUE = 1\n")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo)
+    row["activation_plan_digest"] = "sha256:not-a-digest"
+    _commit_authority(repo, row)
+
+    assert "layout.authority.lineage_invalid" in _codes(
+        repo,
+        observed_at=NOW + timedelta(hours=1),
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    ("legacy_forwarding", "target_authoritative", "retireable"),
+)
+def test_valid_terminal_authority_binds_plan_and_migration_evidence(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(repo, "trade_py/sample.py", "from trade.sample import VALUE\n")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state=state)
+    _commit_authority(repo, row)
+
+    report = validate_authority_manifest(repo, observed_at=NOW + timedelta(hours=1))
+
+    assert report.ok
+    assert report.authorities[0].activation_plan_digest == ACTIVATION_PLAN_DIGEST
+    assert report.authorities[0].migration_evidence_ref == MIGRATION_EVIDENCE_REF
 
 
 def test_owner_partitions_are_deterministic(tmp_path: Path) -> None:
@@ -538,6 +791,63 @@ def test_forwarder_cannot_import_optional_transport(tmp_path: Path) -> None:
     codes = _codes(repo, observed_at=NOW + timedelta(hours=1))
 
     assert "layout.authority.optional_dependency_leak" in codes
+    assert "layout.authority.forwarder_not_thin" in codes
+
+
+@pytest.mark.parametrize(
+    "dynamic_line",
+    (
+        'importlib.import_module("mcp.client")',
+        'load("plugins.registry")',
+        'tuple(map(load, ("remote_worker.client",)))',
+    ),
+)
+def test_forwarder_cannot_dynamically_import_optional_transport(
+    tmp_path: Path,
+    dynamic_line: str,
+) -> None:
+    repo = _repo(tmp_path)
+    loader_import = (
+        "import importlib\n"
+        if dynamic_line.startswith("importlib.")
+        else "from importlib import import_module as load\n"
+    )
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(
+        repo,
+        "trade_py/sample.py",
+        f"from trade.sample import VALUE\n{loader_import}{dynamic_line}\n",
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state="legacy_forwarding")
+    _commit_authority(repo, row)
+
+    codes = _codes(repo, observed_at=NOW + timedelta(hours=1))
+
+    assert "layout.authority.optional_dependency_leak" in codes
+    assert "layout.authority.forwarder_not_thin" in codes
+
+
+def test_forwarder_unresolved_dynamic_import_fails_closed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    _write(repo, "src/trade/sample.py", "VALUE = 1\n")
+    _write(
+        repo,
+        "trade_py/sample.py",
+        "from importlib import import_module\n"
+        "from trade.sample import VALUE\n"
+        "def load(name: str):\n"
+        "    return import_module(name)\n",
+    )
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "sample sources")
+    row = _authority_row(repo, state="legacy_forwarding")
+    _commit_authority(repo, row)
+
+    codes = _codes(repo, observed_at=NOW + timedelta(hours=1))
+
+    assert "layout.authority.dynamic_import_unresolved" in codes
     assert "layout.authority.forwarder_not_thin" in codes
 
 

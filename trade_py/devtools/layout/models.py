@@ -64,6 +64,8 @@ class ModuleAuthorityRef:
     implementation_digest: str
     compatibility_direction: str
     state: str
+    activation_plan_digest: str | None
+    migration_evidence_ref: str | None
     consumer_inventory: ConsumerInventoryRef
 
 

@@ -91,7 +91,9 @@ _MANIFEST_FIELDS = frozenset(
 )
 _AUTHORITY_FIELDS = frozenset(
     {
+        "activation_plan_digest",
         "legacy_module",
+        "migration_evidence_ref",
         "target_module",
         "owner",
         "contract_generation",
@@ -101,6 +103,24 @@ _AUTHORITY_FIELDS = frozenset(
         "consumer_inventory",
     }
 )
+_DIGEST_PREFIX = "sha256:"
+_PLANNED_STATES = frozenset(
+    {
+        "prepared",
+        "shadow_verified",
+        "legacy_forwarding",
+        "target_authoritative",
+        "retireable",
+    }
+)
+_COMPLETED_STATES = frozenset(
+    {
+        "legacy_forwarding",
+        "target_authoritative",
+        "retireable",
+    }
+)
+_APPROVED_PROJECT_SCRIPTS = {"trade-py": "trade_py.cli.main:main"}
 
 
 @dataclass(frozen=True)
@@ -140,6 +160,17 @@ def validate_authority_manifest(
             findings=(AuthorityFinding(code, manifest_name, None, str(exc)),),
             authorities=(),
             import_edges=(),
+        )
+    try:
+        findings.extend(_package_metadata_findings(root, deadline_at=deadline))
+    except (TreeIndexError, ValueError, tomllib.TOMLDecodeError) as exc:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.package_metadata_invalid",
+                "pyproject.toml",
+                None,
+                str(exc),
+            )
         )
 
     entries_by_module: dict[str, TreeEntry] = {}
@@ -393,6 +424,57 @@ def _validate_authority_row(
                 "compatibility_direction must be legacy_to_target",
             )
         )
+    activation_plan_digest = _optional_digest(
+        row.get("activation_plan_digest"),
+        "activation_plan_digest",
+        manifest_name,
+        findings,
+    )
+    migration_evidence_ref = _optional_digest(
+        row.get("migration_evidence_ref"),
+        "migration_evidence_ref",
+        manifest_name,
+        findings,
+    )
+    state = values["state"]
+    if state == "inventoried" and (
+        activation_plan_digest is not None or migration_evidence_ref is not None
+    ):
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.lineage_premature",
+                manifest_name,
+                None,
+                "inventoried authority cannot claim activation or migration evidence",
+            )
+        )
+    if state in _PLANNED_STATES and activation_plan_digest is None:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.activation_plan_missing",
+                manifest_name,
+                None,
+                f"authority state {state} requires an immutable activation-plan digest",
+            )
+        )
+    if state in _COMPLETED_STATES and migration_evidence_ref is None:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.migration_evidence_missing",
+                manifest_name,
+                None,
+                f"authority state {state} requires terminal migration evidence",
+            )
+        )
+    if state in {"prepared", "shadow_verified"} and migration_evidence_ref is not None:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.lineage_premature",
+                manifest_name,
+                None,
+                f"authority state {state} cannot claim terminal migration evidence",
+            )
+        )
     if not (
         values["legacy_module"] == "trade_py" or values["legacy_module"].startswith("trade_py.")
     ):
@@ -556,6 +638,8 @@ def _validate_authority_row(
             implementation_digest=values["implementation_digest"],
             compatibility_direction=values["compatibility_direction"],
             state=values["state"],
+            activation_plan_digest=activation_plan_digest,
+            migration_evidence_ref=migration_evidence_ref,
             consumer_inventory=inventory,
         ),
         findings,
@@ -606,6 +690,83 @@ def _check_deadline(deadline_at: float) -> None:
             "layout.index.timeout",
             "Module authority validation exceeded its monotonic deadline",
         )
+
+
+def _package_metadata_findings(
+    repo_root: Path,
+    *,
+    deadline_at: float,
+) -> list[AuthorityFinding]:
+    content = read_regular_relative(
+        repo_root,
+        "pyproject.toml",
+        max_bytes=MAX_MANIFEST_BYTES,
+        deadline_at=deadline_at,
+    )
+    payload = tomllib.loads(content.decode("utf-8"))
+    project = payload.get("project")
+    if not isinstance(project, dict):
+        raise ValueError("pyproject.toml requires a project table")
+    findings: list[AuthorityFinding] = []
+    scripts = project.get("scripts")
+    if scripts != _APPROVED_PROJECT_SCRIPTS:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.entry_point_unapproved",
+                "pyproject.toml",
+                None,
+                "project.scripts must preserve only the reviewed trade-py console entry point",
+            )
+        )
+    entry_points = project.get("entry-points")
+    if entry_points not in (None, {}):
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.entry_point_unapproved",
+                "pyproject.toml",
+                None,
+                "plugin, MCP and remote-worker entry-point groups require a strict-approved child",
+            )
+        )
+    return findings
+
+
+def _optional_digest(
+    value: object,
+    name: str,
+    path: str,
+    findings: list[AuthorityFinding],
+) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value.startswith(_DIGEST_PREFIX)
+        or len(value) != len(_DIGEST_PREFIX) + 64
+    ):
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.lineage_invalid",
+                path,
+                None,
+                f"{name} must be a complete SHA-256 digest",
+            )
+        )
+        return None
+    suffix = value.removeprefix(_DIGEST_PREFIX)
+    try:
+        int(suffix, 16)
+    except ValueError:
+        findings.append(
+            AuthorityFinding(
+                "layout.authority.lineage_invalid",
+                path,
+                None,
+                f"{name} must be a complete SHA-256 digest",
+            )
+        )
+        return None
+    return value
 
 
 def _cross_authority_findings(
