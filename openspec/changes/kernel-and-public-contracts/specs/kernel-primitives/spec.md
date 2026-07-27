@@ -52,6 +52,15 @@ integer milliseconds in 1-86,400,000. A durable deadline SHALL record a UTC
 wall-clock instant, while a local wait SHALL derive and consume a monotonic
 remaining duration; wall-clock movement SHALL NOT extend a local wait.
 
+`Deadline` SHALL be an in-memory execution-budget value containing
+`wall_clock_expires_at: UtcInstant` and a finite process-local
+`monotonic_expires_at`. The composite `Deadline` and its monotonic component
+SHALL NOT be public wire values, durable fields or cross-process evidence.
+Public receipt/view fields named `deadline` SHALL contain only the canonical
+`UtcInstant` wall-clock evidence. Decoding that evidence SHALL NOT reconstruct,
+rebind, start or extend a monotonic budget; each executable attempt requires a
+new local `Deadline` admitted by its trusted boundary.
+
 #### Scenario: A naive datetime is supplied
 - **WHEN** a caller constructs or decodes a time without timezone evidence
 - **THEN** the Kernel rejects it rather than assuming local time or UTC
@@ -67,6 +76,14 @@ remaining duration; wall-clock movement SHALL NOT extend a local wait.
 #### Scenario: Wall clock changes during a wait
 - **WHEN** the system wall clock moves after a local deadline has been admitted
 - **THEN** the wait remains bounded by the original monotonic duration and the wire receipt retains the declared UTC deadline
+
+#### Scenario: A durable deadline is decoded
+- **WHEN** a receipt or view containing canonical UTC deadline evidence is decoded in another process
+- **THEN** the decoded value remains a `UtcInstant` and no local monotonic deadline or remaining-duration claim is created
+
+#### Scenario: A producer encodes a monotonic deadline
+- **WHEN** a public DTO contains `monotonic_expires_at`, a floating-point deadline or the composite Kernel `Deadline`
+- **THEN** exact version 1 decoding rejects the field/value rather than treating process-local clock state as durable evidence
 
 ### Requirement: Content digests SHALL identify bytes with an explicit algorithm
 

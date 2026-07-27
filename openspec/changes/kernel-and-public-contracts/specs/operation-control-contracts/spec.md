@@ -10,6 +10,14 @@ Bootstrap system evidence. Caller payload fields SHALL NOT establish identity
 or authority. A decoded wire actor SHALL remain unverified until re-established
 against trusted local evidence.
 
+Every public receipt field named `actor` or `initiator` SHALL be immutable
+attribution with `assurance=unverified`, produced from the verified admission
+actor before persistence or serialization. The verified actor that authorized
+the current admission SHALL remain separate local evidence and SHALL NOT be
+reconstructed by decoding a receipt. Receipt attribution SHALL preserve bounded
+identity and provenance facts for audit but SHALL NOT authorize replay,
+control, recovery or another mutation.
+
 For mutating command idempotency, the adapter SHALL also establish an immutable
 `IdempotencySubjectV1` with exact fields `schema_version=1`,
 `owner_namespace`, `tenant_id`, `principal_kind`, `principal_id` and an ordered
@@ -349,7 +357,7 @@ shared transaction or cross-owner write is permitted.
 ### Requirement: Operation receipts SHALL report durable admission and terminal state truthfully
 
 An `OperationReceipt` SHALL contain version, operation identity and kind,
-command fingerprint, trusted actor, admitted request message identity,
+command fingerprint, unverified actor attribution, admitted request message identity,
 correlation identity, optional direct-causation identity, scoped idempotency
 fingerprint, closed operation state, safe reason, timestamps and optional
 process linkage. These message, correlation and optional causation values SHALL
@@ -362,6 +370,10 @@ identities rather than replacing them with the duplicate request's identities;
 an idempotency identity reused for another command SHALL return the conflict
 error below without that receipt. Raw payloads and raw idempotency keys SHALL
 NOT be exposed.
+The receipt `actor` SHALL equal the admitted actor's immutable
+`as_wire_attribution()` value and SHALL have no mutation authority. A verified
+current actor remains required at every mutation boundary; a receipt decoder
+SHALL NOT upgrade attribution or copy it into a command/control envelope.
 Platform command ingress SHALL be the sole future authority and writer for
 command-admission idempotency claims, operation identity and every initial,
 intermediate and terminal `OperationReceipt`. Processes SHALL own its separate
@@ -419,6 +431,10 @@ process to owner `deadline_exceeded`.
 - **WHEN** Processes records a new current step or terminal Process state
 - **THEN** it updates only its Process Manager record and ProcessView, and any OperationReceipt change requires a separate Platform-owned transition through durable handoff
 
+#### Scenario: An operation receipt is decoded
+- **WHEN** a consumer decodes a receipt whose actor was verified at original admission
+- **THEN** the decoded actor remains unverified attribution and cannot submit a mutation without separately re-established current authority
+
 ### Requirement: Process views SHALL be bounded read-only recovery projections
 
 A `ProcessView` SHALL expose schema version, process identity/type, triggering
@@ -430,6 +446,10 @@ actions and timestamps. It SHALL NOT expose either owner's idempotency
 fingerprint, `ProcessStartKeyV1`, workflow key, raw command/event payload, SQL,
 credentials, business-table rows, artifact bytes or traceback. Querying the
 view SHALL NOT execute a recovery action.
+Its public `deadline` SHALL be a canonical `UtcInstant` containing only the
+owner's declared wall-clock expiry evidence. Any local monotonic process budget
+SHALL remain owner-internal; decoding a `ProcessView` SHALL NOT construct,
+rebind or extend one.
 
 The top-level reason code SHALL be required for `blocked`, `retry_scheduled`,
 `failed`, `cancelled` and `deadline_exceeded`; optional for
@@ -464,6 +484,10 @@ neither authorize nor execute its action.
 #### Scenario: A process cannot be observed
 - **WHEN** the process query store is unavailable or no observation completes before the caller deadline
 - **THEN** the view or error reports `unavailable` or `not_observed` and does not represent the result as empty, healthy or completed
+
+#### Scenario: A process view is restored from durable bytes
+- **WHEN** a historical ProcessView is decoded after restart or in another process
+- **THEN** its deadline remains UTC evidence only and cannot be used as a reconstructed monotonic execution budget
 
 ### Requirement: Status families SHALL remain orthogonal and closed
 
@@ -644,7 +668,7 @@ production ingress may wire this telemetry path.
 
 A cancellation API SHALL return an exact immutable `ControlReceipt` v1 with:
 schema name/version, control identity/kind, `request_message_id`,
-correlation/optional causation, trusted initiator, exactly one operation or
+correlation/optional causation, unverified initiator attribution, exactly one operation or
 opaque process target, requested/finished times, finite control deadline, closed
 disposition, stable reason code, optional `target_terminal_receipt_id`, and
 optional safe `ErrorEnvelope`. The request/correlation/causation identities
@@ -661,6 +685,15 @@ retried/redelivered/replayed logical envelope preserves its receipt; a newly
 submitted duplicate has a new request identity but returns the original control
 receipt only when ordinary command idempotency resolves the same operation and
 exact control claim, without rewriting original attribution.
+
+The executable control attempt SHALL use one local finite `Deadline`, including
+its monotonic expiry and receipt-finalization reserve. The public receipt
+`deadline` SHALL be only
+`local_deadline.wall_clock_expires_at: UtcInstant`; neither the monotonic value
+nor reserve SHALL be serialized or reconstructed. `initiator` SHALL equal the
+verified admission actor's `as_wire_attribution()` value and SHALL be
+unverified. Current authorization SHALL be evaluated separately before the
+claim transaction.
 
 The v1 disposition product SHALL be exact:
 
@@ -725,14 +758,19 @@ step that consumes that reserve.
 
 #### Scenario: A replay-derived control is authorized
 - **WHEN** replay processing derives a new cancellation or shutdown control
-- **THEN** the receipt attributes the new request to the current verified replay initiator while historical attribution remains only in ReplayContext
+- **THEN** current verified replay authority authorizes admission, the receipt stores its unverified attribution, and historical attribution remains only in ReplayContext
+
+#### Scenario: A control receipt is decoded
+- **WHEN** a historical ControlReceipt is decoded after its admitting process exits
+- **THEN** its initiator remains unverified attribution and its UTC deadline remains evidence only; neither authority nor a local monotonic budget is reconstructed
 
 ### Requirement: Shutdown SHALL have one finite deadline and explicit residual ownership
 
 A shutdown API SHALL close admission and return a `ShutdownReceipt` containing
 owner namespace/instance identity, fence generation, control/correlation/
-optional causation identity, the exact original `request_message_id`, trusted
-initiator, optional operation/process links, request/deadline/finished time,
+optional causation identity, the exact original `request_message_id`,
+unverified initiator attribution, optional operation/process links,
+request/deadline/finished time,
 closed shutdown state/current stage/reason, graceful/forced termination counts,
 bounded residual owners, owner-scoped recovery descriptors and a safe error.
 `completed` SHALL require stage `done`, zero live owned work, durable terminal
@@ -740,10 +778,15 @@ audit, released non-reentrant resources and release of only the matching
 generation fence. Deadline-exceeded, incomplete or failed shutdown SHALL retain
 owner fencing and report stage/reason/residual/recovery facts.
 
-The trusted initiator SHALL be the bounded credential-free `ActorContext` that
-requested shutdown. `control_id` SHALL resolve for the receipt retention period
+The public initiator SHALL be the bounded credential-free unverified
+attribution copied from the actor that requested shutdown; it SHALL NOT provide
+execution authority. The public `deadline` SHALL be the same canonical
+`UtcInstant` evidence as the linked control receipt, while the attempt consumes
+the separately admitted local monotonic `Deadline`. `control_id` SHALL resolve
+for the receipt retention period
 to an immutable actor-bearing `ControlReceipt` with the same request message,
-initiator, correlation and causation. A mismatch SHALL be corruption. The
+initiator, correlation, causation and UTC deadline. A mismatch SHALL be
+corruption. The
 causation field SHALL be absent in both records for a root control and equal the
 direct parent in both records for a child control. The
 optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require

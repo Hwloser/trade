@@ -15,6 +15,19 @@ set. Unknown fields, unknown versions, excessive depth/items/string/bytes or
 unregistered owner payloads SHALL fail before object construction or digest
 calculation.
 
+`Deadline` values containing process-local monotonic expiry SHALL NOT be
+serialized. Public receipt/view fields named `deadline` SHALL encode exactly
+one canonical `UtcInstant` containing declared wall-clock expiry evidence; a
+decoder SHALL NOT construct a local `Deadline` from that value. Floating-point
+numbers, `monotonic_expires_at`, receipt-finalization reserves and other
+process-clock state SHALL be forbidden on the v1 wire.
+
+Any `ActorContext` encoded inside an operation, control or shutdown receipt
+SHALL have `assurance=unverified` and SHALL be attribution only. Encoding a
+verified receipt actor or decoding receipt attribution into executable
+authority SHALL fail closed. Verified current authority remains ingress-local
+and requires separate trusted evidence.
+
 Version 1 canonical output SHALL sort object keys by decoded Unicode
 scalar-value sequence, preserve decoded scalar sequences without Unicode
 normalization, encode non-ASCII scalars directly as UTF-8 and reject lone
@@ -61,6 +74,14 @@ deep, integer and duplicate-key fixtures.
 #### Scenario: A producer sends an additive unknown field
 - **WHEN** a version 1 consumer receives a field absent from the exact version 1 schema
 - **THEN** it rejects the payload and requires explicit version negotiation rather than silently discarding the field
+
+#### Scenario: A public receipt carries process-local clock state
+- **WHEN** a receipt or view includes a monotonic float, `monotonic_expires_at`, a composite Deadline or a receipt-finalization reserve
+- **THEN** version 1 decoding rejects it and accepts only the declared UTC deadline evidence field
+
+#### Scenario: A public receipt claims verified actor assurance
+- **WHEN** an operation, control or shutdown receipt encodes `actor` or `initiator` with verified assurance
+- **THEN** version 1 decoding rejects the receipt rather than recreating mutation authority from durable bytes
 
 #### Scenario: A payload exceeds a limit
 - **WHEN** a payload exceeds any byte, depth, string, collection or history bound

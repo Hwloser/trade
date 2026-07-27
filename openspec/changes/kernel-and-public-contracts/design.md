@@ -190,7 +190,7 @@ The admitted primitives are:
 | Module | Primitive | Invariant |
 |---|---|---|
 | `ids` | `OpaqueId`, `IdNamespace` | Namespace is 1-64 ASCII lower-case letters/digits plus `._-`; value is 1-128 printable ASCII characters excluding whitespace/control; generated values use UUID4; ordering is never inferred |
-| `time` | `UtcInstant`, `DurationMs`, `Deadline` | Sole wire form `YYYY-MM-DDTHH:MM:SS.ffffffZ`; four-digit year `0001..9999`, seconds `00..59`, exact microsecond precision and literal `Z`; direct construction accepts only aware zero-offset datetime; duration is integer 1-86,400,000 ms; wall-clock deadline is evidence, monotonic time owns local waits |
+| `time` | `UtcInstant`, `DurationMs`, `Deadline` | Sole instant wire form `YYYY-MM-DDTHH:MM:SS.ffffffZ`; four-digit year `0001..9999`, seconds `00..59`, exact microsecond precision and literal `Z`; direct construction accepts only aware zero-offset datetime; duration is integer 1-86,400,000 ms; `Deadline` combines UTC evidence with process-local monotonic expiry and is not itself a public wire value |
 | `digest` | `ContentDigest` | Algorithm is explicit; v1 permits SHA-256 lower hex only |
 | `errors` | `ContractViolation`, `ContractErrorCode` | Closed code plus UTF-8 detail of at most 1,024 bytes; no live cause or traceback on wire |
 | `result` | `Result[T, E]` | Exactly one of value/error; no implicit truthiness or exception swallowing |
@@ -200,6 +200,16 @@ Specific `OperationId`, `ProcessId`, `CaptureArtifactRef` and other named types
 remain aliases or wrappers in their owning contracts. `OpaqueId` serializes as
 `{"namespace": "...", "value": "..."}` so a legacy integer can be represented
 without pretending it was generated globally.
+
+`Deadline` is an in-memory execution-budget value:
+`(wall_clock_expires_at: UtcInstant, monotonic_expires_at: float)`. The
+monotonic component is meaningful only inside the process and clock domain
+that admitted the attempt. It is never serialized, persisted, copied to a
+receipt or reconstructed from historical bytes. Public receipts and views use
+their existing `deadline` field name with value type `UtcInstant`; that field
+is only durable evidence of the declared wall-clock expiry. Decoding such
+evidence cannot start, extend or recreate an execution budget. A new attempt
+must receive a newly admitted local `Deadline` from its trusted boundary.
 
 ### 3. Keep immutable references and policy identities owner-local
 
@@ -362,7 +372,12 @@ named `actor`, `user` or `principal` are data and cannot establish authority.
 A wire-decoded actor is observational and `unverified` until a trusted adapter
 re-establishes it from local evidence. Unknown actors are denied for mutation;
 anonymous actors require an explicit command/query policy. Logs and receipts use
-safe principal identifiers, never tokens, credentials or full claims.
+safe principal identifiers, never tokens, credentials or full claims. A
+receipt stores `actor` or `initiator` only as immutable attribution produced by
+`as_wire_attribution()` with `assurance=unverified`; it never stores executable
+authority. The separately admitted verified `ActorContext` authorizes the
+current command/control transaction but is not reconstructed by a receipt
+decoder.
 
 Command idempotency does not hash the mutable `ActorContext`. A separate exact
 `IdempotencySubjectV1` contains schema version, owner namespace, tenant ID,
@@ -535,6 +550,13 @@ terminal_at
 process_id: OpaqueId | None
 ```
 
+`actor` is the immutable unverified attribution captured from the verified
+admission actor. It preserves bounded principal/provenance evidence for audit
+and equality, but `actor.can_submit_mutation` is false and no receipt consumer
+may use it to authorize replay, control or another mutation. Current authority
+is re-established at each ingress and, for replay, is carried separately by
+`ReplayContextV1.replay_initiator`.
+
 Platform command ingress is the sole future authority and writer for
 command-admission idempotency claims, operation identity, every
 `OperationReceipt` state transition and terminal receipt. Processes owns only
@@ -692,7 +714,10 @@ updated_at
 It intentionally exposes no idempotency fingerprint or workflow key. Duplicate
 handoff resolution is owner-internal; callers observe the stable `process_id`
 and `triggering_operation_id` without receiving Platform or Processes claim
-material.
+material. `deadline` is a canonical `UtcInstant` containing only the owning
+process's declared wall-clock expiry evidence. The owner retains any local
+monotonic execution budget outside `ProcessView`; a view decoder cannot
+construct or rebind one.
 
 `reason_code` is required for `blocked`, `retry_scheduled`, `failed`,
 `cancelled` and `deadline_exceeded`; optional for `compensation_pending`; and
@@ -992,6 +1017,14 @@ budget and starts no target step that would consume it. Replay-derived controls
 use current verified replay authority; historical actors remain attribution in
 `ReplayContextV1`.
 
+The public `ControlReceipt.initiator` is the admitted actor converted to
+unverified wire attribution before persistence. The verified actor used for
+authorization remains separate admission evidence and is never recreated from
+the receipt. `ControlReceipt.deadline` is the `UtcInstant` projection of the
+local `ControlDeadlineBudget.deadline.wall_clock_expires_at`; the local
+`Deadline` and receipt-finalization reserve remain attempt-local and are not
+encoded.
+
 `ShutdownReceipt` is a closed v1 record:
 
 ```text
@@ -1019,13 +1052,15 @@ shutdown_recovery_actions
 safe_error?
 ```
 
-`initiator` is the trusted bounded `ActorContext` that requested the control.
-It contains no credential or raw claim. `control_id` must resolve for the full
-receipt retention period to the immutable actor-bearing `ControlReceipt` with
-the same request message, initiator, correlation and causation; a mismatch is
-corruption. Causation is absent in both records for a root control and equals
-the direct parent in both records for a child control. The direct initiator copy
-keeps shutdown audit attribution available
+`initiator` is the bounded unverified attribution copied from the actor that
+requested the control. It contains no credential, raw claim or executable
+authority. `deadline` is the declared UTC expiry copied from the linked
+control receipt, not a reconstructed local monotonic budget. `control_id` must
+resolve for the full receipt retention period to the immutable actor-bearing
+`ControlReceipt` with the same request message, initiator, correlation,
+causation and UTC deadline evidence; a mismatch is corruption. Causation is
+absent in both records for a root control and equals the direct parent in both
+records for a child control. The direct attribution copy keeps shutdown audit attribution available
 without a second read, while the linked control receipt proves the admission lifecycle.
 The optional Platform `process_id` remains a non-semantic `OpaqueId` and does
 not import Processes contracts.
@@ -1353,7 +1388,11 @@ migration.
 
 IDs are opaque, bounded and immutable; content digests are algorithm-bound;
 public fingerprints are keyed, purpose-separated and versioned; times are UTC
-and aware while local elapsed deadlines use monotonic time. Owner reference
+and aware while local elapsed deadlines use monotonic time. Public wire and
+durable DTOs contain only canonical UTC deadline evidence, never a monotonic
+float or a recreated local `Deadline`. Receipt actors are unverified
+attribution; current mutation authority exists only at trusted admission.
+Owner reference
 contracts include owner/kind/object/version/digest and no location. Contract
 states use exact closed transition relations. Query observation and condition
 form a closed tagged union. Terminal timestamps exist only for terminal states.
