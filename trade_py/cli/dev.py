@@ -5,6 +5,7 @@ Usage:
     trade dev fix                   # explicitly fix selected owned source
     trade dev design-check <change> # inspect design evidence before implementation
     trade dev openspec [change]     # aggregate active OpenSpec workflow status
+    trade dev layout-status         # inspect immutable deployment layout evidence
     trade dev belief <symbol>       # print latest BeliefState for symbol
     trade dev attention <symbol>    # print top AttentionScores for symbol
     trade dev evidence <symbol>     # print Evidence rows for symbol
@@ -65,6 +66,9 @@ def make_parser() -> argparse.ArgumentParser:
         "--format", choices=("text", "json"), default="text", help="Output format"
     )
 
+    sp_layout = sub.add_parser("layout-status", help="只读部署布局证据状态")
+    sp_layout.add_argument("--json", dest="as_json", action="store_true", help="JSON 输出")
+
     for cmd in ["belief", "attention", "evidence", "rec"]:
         p = sub.add_parser(cmd, help=f"查看 {cmd}")
         p.add_argument("symbol", help="股票代码")
@@ -112,6 +116,12 @@ def _run_openspec(args: argparse.Namespace) -> int:
     return run_openspec_cli(args)
 
 
+def _run_layout_status(args: argparse.Namespace) -> int:
+    from trade_py.devtools.layout_status.cli import run_layout_status_cli
+
+    return run_layout_status_cli(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = make_parser()
     args = parser.parse_args(argv)
@@ -131,6 +141,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "openspec":
         return _run_openspec(args)
+
+    if args.cmd == "layout-status":
+        return _run_layout_status(args)
 
     data_root = getattr(args, "data_root", None)
     if data_root is None:
