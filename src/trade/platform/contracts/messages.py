@@ -88,6 +88,7 @@ class CanonicalJsonErrorCode(str, Enum):
     INVALID_SURROGATE = "invalid_surrogate"
     STRING_BYTES_EXCEEDED = "string_bytes_exceeded"
     INVALID_INTEGER = "invalid_integer"
+    INVALID_SCHEMA = "invalid_schema"
     CONTAINER_DEPTH_EXCEEDED = "container_depth_exceeded"
     CONTAINER_ITEMS_EXCEEDED = "container_items_exceeded"
     AGGREGATE_ITEMS_EXCEEDED = "aggregate_items_exceeded"

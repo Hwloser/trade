@@ -3,9 +3,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import NoReturn
 
-from trade.kernel.ids import OpaqueId
+from trade.kernel.ids import IdNamespace, OpaqueId
 from trade.kernel.time import UtcInstant
+from trade.platform.contracts.messages import (
+    CanonicalJsonError,
+    CanonicalJsonErrorCode,
+    decode_bounded_json_v1,
+    encode_canonical_json_v1,
+)
 
 __all__ = [
     "ErrorCategory",
@@ -13,12 +20,33 @@ __all__ = [
     "ObservationState",
     "QueryCondition",
     "QueryStatus",
+    "decode_error_envelope_v1",
+    "encode_error_envelope_v1",
     "make_admission_error",
 ]
 
 _REASON_PATTERN = re.compile(r"[A-Z0-9._-]{1,96}", re.ASCII)
 _MAX_SAFE_TEXT_BYTES = 1_024
 _MAX_RETRY_AFTER_MS = 86_400_000
+_ERROR_ENVELOPE_FIELDS = frozenset(
+    {
+        "schema_name",
+        "schema_version",
+        "reason_code",
+        "category",
+        "observation_state",
+        "retryable",
+        "retry_after_ms",
+        "request_message_id",
+        "correlation_id",
+        "causation_id",
+        "operation_id",
+        "process_id",
+        "occurred_at",
+        "safe_message",
+        "recovery_hint",
+    }
+)
 
 
 class ErrorCategory(str, Enum):
@@ -266,6 +294,61 @@ class QueryStatus:
             raise ValueError("query status error observation does not match the status")
 
 
+def encode_error_envelope_v1(error: ErrorEnvelope) -> bytes:
+    if not isinstance(error, ErrorEnvelope):
+        raise TypeError("error must be ErrorEnvelope")
+    return encode_canonical_json_v1(
+        {
+            "category": error.category.value,
+            "causation_id": _optional_id_to_wire(error.causation_id),
+            "correlation_id": error.correlation_id.to_dict(),
+            "observation_state": error.observation_state.value,
+            "occurred_at": None if error.occurred_at is None else error.occurred_at.to_wire(),
+            "operation_id": _optional_id_to_wire(error.operation_id),
+            "process_id": _optional_id_to_wire(error.process_id),
+            "reason_code": error.reason_code,
+            "recovery_hint": error.recovery_hint,
+            "request_message_id": error.request_message_id.to_dict(),
+            "retry_after_ms": error.retry_after_ms,
+            "retryable": error.retryable,
+            "safe_message": error.safe_message,
+            "schema_name": error.schema_name,
+            "schema_version": error.schema_version,
+        }
+    )
+
+
+def decode_error_envelope_v1(raw: bytes) -> ErrorEnvelope:
+    value = decode_bounded_json_v1(raw)
+    payload = _exact_object(value, fields=_ERROR_ENVELOPE_FIELDS)
+    if (
+        payload["schema_name"] != "trade.error"
+        or payload["schema_version"] != 1
+        or isinstance(payload["schema_version"], bool)
+    ):
+        _raise_invalid_schema()
+    try:
+        return ErrorEnvelope(
+            schema_name=_string_field(payload, "schema_name"),
+            schema_version=_integer_field(payload, "schema_version"),
+            reason_code=_string_field(payload, "reason_code"),
+            category=ErrorCategory(_string_field(payload, "category")),
+            observation_state=ObservationState(_string_field(payload, "observation_state")),
+            retryable=_boolean_field(payload, "retryable"),
+            retry_after_ms=_optional_integer_field(payload, "retry_after_ms"),
+            request_message_id=_id_from_wire(payload["request_message_id"]),
+            correlation_id=_id_from_wire(payload["correlation_id"]),
+            causation_id=_optional_id_from_wire(payload["causation_id"]),
+            operation_id=_optional_id_from_wire(payload["operation_id"]),
+            process_id=_optional_id_from_wire(payload["process_id"]),
+            occurred_at=_optional_instant_from_wire(payload["occurred_at"]),
+            safe_message=_string_field(payload, "safe_message"),
+            recovery_hint=_string_field(payload, "recovery_hint"),
+        )
+    except (TypeError, ValueError):
+        _raise_invalid_schema()
+
+
 def make_admission_error(
     *,
     reason_code: str,
@@ -296,6 +379,67 @@ def make_admission_error(
         safe_message=safe_message,
         recovery_hint=product.recovery_hint,
     )
+
+
+def _exact_object(value: object, *, fields: frozenset[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != fields:
+        _raise_invalid_schema()
+    if any(not isinstance(key, str) for key in value):
+        _raise_invalid_schema()
+    return value
+
+
+def _id_from_wire(value: object) -> OpaqueId:
+    payload = _exact_object(value, fields=frozenset({"namespace", "value"}))
+    return OpaqueId(
+        namespace=IdNamespace(_string_field(payload, "namespace")),
+        value=_string_field(payload, "value"),
+    )
+
+
+def _optional_id_to_wire(value: OpaqueId | None) -> dict[str, str] | None:
+    return None if value is None else value.to_dict()
+
+
+def _optional_id_from_wire(value: object) -> OpaqueId | None:
+    return None if value is None else _id_from_wire(value)
+
+
+def _optional_instant_from_wire(value: object) -> UtcInstant | None:
+    return None if value is None else UtcInstant.from_wire(_expect_string(value))
+
+
+def _string_field(payload: dict[str, object], name: str) -> str:
+    return _expect_string(payload[name])
+
+
+def _expect_string(value: object) -> str:
+    if not isinstance(value, str):
+        _raise_invalid_schema()
+    return value
+
+
+def _integer_field(payload: dict[str, object], name: str) -> int:
+    value = payload[name]
+    if not isinstance(value, int) or isinstance(value, bool):
+        _raise_invalid_schema()
+    return value
+
+
+def _optional_integer_field(payload: dict[str, object], name: str) -> int | None:
+    value = payload[name]
+    return None if value is None else _integer_field(payload, name)
+
+
+def _boolean_field(payload: dict[str, object], name: str) -> bool:
+    value = payload[name]
+    if not isinstance(value, bool):
+        _raise_invalid_schema()
+    return value
+
+
+def _raise_invalid_schema() -> NoReturn:
+    raise CanonicalJsonError(CanonicalJsonErrorCode.INVALID_SCHEMA)
 
 
 def _validate_reason(value: str) -> str:
