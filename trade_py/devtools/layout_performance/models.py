@@ -12,6 +12,7 @@ BASELINE_SCHEMA_VERSION = "trade.layout.performance-baseline.v1"
 
 @dataclass(frozen=True)
 class MetricSummary:
+    samples_ms: tuple[float, ...]
     sample_count: int
     p50_ms: float
     p95_ms: float
@@ -32,6 +33,7 @@ class MetricSummary:
             raise ValueError("performance evidence requires at least one sample")
         ordered = sorted(durations_ms)
         return cls(
+            samples_ms=tuple(ordered),
             sample_count=len(ordered),
             p50_ms=_percentile(ordered, 0.50),
             p95_ms=_percentile(ordered, 0.95),
@@ -99,6 +101,7 @@ class CapacityEvidence:
 @dataclass(frozen=True)
 class RunnerIdentity:
     identity_digest: str
+    harness_digest: str
     runner_image: str
     platform: str
     machine: str
@@ -117,6 +120,7 @@ class RunnerIdentity:
 class PerformanceEvidence:
     generated_at: str
     source_commit: str
+    source_tree_digest: str
     runner: RunnerIdentity
     cold_processes: int
     warmups: int

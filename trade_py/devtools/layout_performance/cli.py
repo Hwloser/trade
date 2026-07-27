@@ -18,7 +18,10 @@ from trade_py.devtools.layout_performance.evidence import (
     load_performance_evidence,
     render_evidence,
 )
-from trade_py.devtools.layout_performance.processes import PerformanceProcessError
+from trade_py.devtools.layout_performance.processes import (
+    PerformanceProcessError,
+    run_process,
+)
 
 DEFAULT_BASELINE = Path("tests/baselines/layout-performance.json")
 
@@ -54,6 +57,7 @@ def run_layout_performance_cli(args: argparse.Namespace) -> int:
 
         baseline_path = _resolve_path(repo_root, args.baseline)
         baseline = load_performance_evidence(baseline_path, baseline=True)
+        _require_repository_bound_baseline(repo_root, baseline.source_commit)
         candidate = capture_performance(
             repo_root,
             node_modules=_optional_path(args.node_modules),
@@ -161,6 +165,21 @@ def _resolve_path(repo_root: Path, value: Path) -> Path:
 
 def _optional_path(value: Path | None) -> Path | None:
     return value.resolve() if value is not None else None
+
+
+def _require_repository_bound_baseline(repo_root: Path, source_commit: str) -> None:
+    run_process(
+        ("git", "cat-file", "-e", f"{source_commit}^{{commit}}"),
+        cwd=repo_root,
+        timeout_seconds=5,
+        output_limit_bytes=4096,
+    )
+    run_process(
+        ("git", "merge-base", "--is-ancestor", source_commit, "HEAD"),
+        cwd=repo_root,
+        timeout_seconds=5,
+        output_limit_bytes=4096,
+    )
 
 
 def _relative_display(repo_root: Path, path: Path) -> str:

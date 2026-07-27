@@ -6,6 +6,7 @@ import hashlib
 import json
 from typing import Any
 
+from trade_py.devtools.layout_performance.integrity import validate_performance_evidence
 from trade_py.devtools.layout_performance.models import (
     PerformanceEvidence,
     PerformanceReport,
@@ -19,9 +20,13 @@ def compare_performance(
     baseline: PerformanceEvidence,
     candidate: PerformanceEvidence,
 ) -> PerformanceReport:
+    validate_performance_evidence(baseline)
+    validate_performance_evidence(candidate)
     violations: list[str] = []
     if baseline.runner.identity_digest != candidate.runner.identity_digest:
         violations.append("layout.performance.runner_mismatch")
+    if baseline.source_tree_digest != candidate.source_tree_digest:
+        violations.append("layout.performance.source_tree_mismatch")
     if candidate.cold_processes != 15 or candidate.warmups != 5 or candidate.warm_samples != 30:
         violations.append("layout.performance.sample_matrix")
     if set(baseline.probes) != set(candidate.probes):
@@ -44,6 +49,8 @@ def compare_performance(
                 expected.module_count + 10,
             ):
                 violations.append(f"layout.performance.{name}.{temperature}.modules")
+            if actual.module_digest != expected.module_digest:
+                violations.append(f"layout.performance.{name}.{temperature}.module_identity")
 
     current = candidate.current_index
     scaled = candidate.synthetic_10x_index

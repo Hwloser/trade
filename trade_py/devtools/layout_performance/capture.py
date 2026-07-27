@@ -16,6 +16,7 @@ from trade_py.devtools.layout_performance.capacity import (
 )
 from trade_py.devtools.layout_performance.identity import (
     capture_runner_identity,
+    capture_source_tree_digest,
     source_commit,
 )
 from trade_py.devtools.layout_performance.index import capture_index_evidence
@@ -57,9 +58,11 @@ def capture_performance(
     try:
         runner = capture_runner_identity(root)
         commit = source_commit(root)
+        source_tree = capture_source_tree_digest(root)
         completed.append("runner_identity")
         partial["runner"] = asdict(runner)
         partial["source_commit"] = commit
+        partial["source_tree_digest"] = source_tree
 
         capacity = ValidationCapacity(available_memory_bytes=detected_memory_bytes())
         probes = capture_probe_evidence(root, capacity=capacity)
@@ -104,6 +107,7 @@ def capture_performance(
     return PerformanceEvidence(
         generated_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         source_commit=commit,
+        source_tree_digest=source_tree,
         runner=runner,
         cold_processes=COLD_PROCESSES,
         warmups=WARMUPS,

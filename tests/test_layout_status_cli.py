@@ -1482,6 +1482,40 @@ def test_reader_rejects_symlink_corrupt_digest_and_noncanonical_json(
     assert noncanonical.value.error.code == "layout.status.record_canonical"
 
 
+def test_reader_rejects_references_owned_by_non_root_records(tmp_path: Path) -> None:
+    manifest = _fixture(tmp_path)
+    manifest_record = json.loads(manifest.read_text(encoding="utf-8"))
+    authority_reference = next(
+        item for item in manifest_record["references"] if item["name"] == "authority"
+    )
+    authority_path = manifest.parent / authority_reference["path"]
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    nested = _record(
+        "consumer_inventory",
+        "unconsumed-inventory",
+        _inventory_payload(),
+    )
+    nested_path = manifest.parent / "records" / "unconsumed-inventory.json"
+    _write(nested_path, nested)
+    authority["references"] = [
+        {
+            "name": "unconsumed",
+            "path": "records/unconsumed-inventory.json",
+            "digest": nested["record_digest"],
+        }
+    ]
+    authority["record_digest"] = canonical_record_digest(authority)
+    _write(authority_path, authority)
+    authority_reference["digest"] = authority["record_digest"]
+    manifest_record["record_digest"] = canonical_record_digest(manifest_record)
+    _write(manifest, manifest_record)
+
+    with pytest.raises(LayoutStatusInvalid) as non_root:
+        ExplicitRecordReader(manifest).read()
+
+    assert non_root.value.error.code == "layout.status.non_root_references"
+
+
 def test_reader_enforces_count_size_depth_and_deadline(tmp_path: Path) -> None:
     manifest = _fixture(tmp_path / "count")
     with pytest.raises(LayoutStatusInvalid) as count:

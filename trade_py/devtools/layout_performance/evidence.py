@@ -9,6 +9,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
+from trade_py.devtools.layout_performance.integrity import validate_performance_evidence
 from trade_py.devtools.layout_performance.models import (
     BASELINE_SCHEMA_VERSION,
     SCHEMA_VERSION,
@@ -20,6 +21,7 @@ from trade_py.devtools.layout_performance.models import (
     RunnerIdentity,
     WebBuildEvidence,
 )
+from trade_py.devtools.layout_performance.probes import WARM_SAMPLES
 
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
 _OPEN_FLAGS = (
@@ -43,6 +45,7 @@ def load_performance_evidence(
             "schema_version",
             "generated_at",
             "source_commit",
+            "source_tree_digest",
             "runner",
             "cold_processes",
             "warmups",
@@ -65,9 +68,10 @@ def load_performance_evidence(
         name: _parse_probe(_object(value, f"probes.{name}"), f"probes.{name}")
         for name, value in sorted(probes_payload.items())
     }
-    return PerformanceEvidence(
+    evidence = PerformanceEvidence(
         generated_at=_string(payload, "generated_at"),
         source_commit=_string(payload, "source_commit"),
+        source_tree_digest=_string(payload, "source_tree_digest"),
         runner=_parse_runner(_object(payload["runner"], "runner")),
         cold_processes=_integer(payload, "cold_processes"),
         warmups=_integer(payload, "warmups"),
@@ -83,6 +87,8 @@ def load_performance_evidence(
         bridge_cumulative_ms=_number(payload, "bridge_cumulative_ms"),
         duplicate_implementation_imports=_integer(payload, "duplicate_implementation_imports"),
     )
+    validate_performance_evidence(evidence)
+    return evidence
 
 
 def render_evidence(evidence: PerformanceEvidence, *, baseline: bool) -> str:
@@ -122,17 +128,32 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(
             raw,
+            object_pairs_hook=_unique_object,
             parse_constant=lambda token: _raise_non_finite(token),
         )
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(f"performance evidence is invalid JSON: {exc}") from exc
-    return _object(value, "evidence")
+    payload = _object(value, "evidence")
+    canonical = (
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    if raw != canonical:
+        raise ValueError("performance evidence must use canonical JSON encoding")
+    return payload
 
 
 def _parse_metric(payload: dict[str, Any], name: str) -> MetricSummary:
     _exact_keys(
         payload,
         {
+            "samples_ms",
             "sample_count",
             "p50_ms",
             "p95_ms",
@@ -142,7 +163,8 @@ def _parse_metric(payload: dict[str, Any], name: str) -> MetricSummary:
         },
         name,
     )
-    return MetricSummary(
+    metric = MetricSummary(
+        samples_ms=_number_tuple(payload, "samples_ms"),
         sample_count=_integer(payload, "sample_count"),
         p50_ms=_number(payload, "p50_ms"),
         p95_ms=_number(payload, "p95_ms"),
@@ -150,6 +172,21 @@ def _parse_metric(payload: dict[str, Any], name: str) -> MetricSummary:
         module_count=_integer(payload, "module_count"),
         module_digest=_string(payload, "module_digest"),
     )
+    if not metric.samples_ms:
+        raise ValueError(f"{name}.samples_ms must not be empty")
+    if metric.sample_count != len(metric.samples_ms):
+        raise ValueError(f"{name}.sample_count does not match samples_ms")
+    summarized = MetricSummary.summarize(
+        list(metric.samples_ms),
+        peak_rss_bytes=metric.peak_rss_bytes,
+        module_count=metric.module_count,
+        module_digest=metric.module_digest,
+    )
+    if not math.isclose(metric.p50_ms, summarized.p50_ms, rel_tol=0, abs_tol=1e-9):
+        raise ValueError(f"{name}.p50_ms does not match samples_ms")
+    if not math.isclose(metric.p95_ms, summarized.p95_ms, rel_tol=0, abs_tol=1e-9):
+        raise ValueError(f"{name}.p95_ms does not match samples_ms")
+    return metric
 
 
 def _parse_probe(payload: dict[str, Any], name: str) -> ProbeEvidence:
@@ -267,6 +304,7 @@ def _parse_capacity(payload: dict[str, Any]) -> CapacityEvidence:
 def _parse_runner(payload: dict[str, Any]) -> RunnerIdentity:
     fields = {
         "identity_digest",
+        "harness_digest",
         "runner_image",
         "platform",
         "machine",
@@ -283,6 +321,7 @@ def _parse_runner(payload: dict[str, Any]) -> RunnerIdentity:
     _exact_keys(payload, fields, "runner")
     return RunnerIdentity(
         identity_digest=_string(payload, "identity_digest"),
+        harness_digest=_string(payload, "harness_digest"),
         runner_image=_string(payload, "runner_image"),
         platform=_string(payload, "platform"),
         machine=_string(payload, "machine"),
@@ -324,6 +363,13 @@ def _string(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _number_tuple(payload: dict[str, Any], key: str) -> tuple[float, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list) or len(value) > WARM_SAMPLES:
+        raise TypeError(f"{key} must be a bounded array")
+    return tuple(_standalone_number(item, key) for item in value)
+
+
 def _optional_string(payload: dict[str, Any], key: str) -> str | None:
     value = payload.get(key)
     if value is None:
@@ -341,7 +387,10 @@ def _integer(payload: dict[str, Any], key: str) -> int:
 
 
 def _number(payload: dict[str, Any], key: str) -> float:
-    value = payload.get(key)
+    return _standalone_number(payload.get(key), key)
+
+
+def _standalone_number(value: object, key: str) -> float:
     if (
         not isinstance(value, (int, float))
         or isinstance(value, bool)
@@ -365,6 +414,15 @@ def _boolean(payload: dict[str, Any], key: str) -> bool:
 
 def _raise_non_finite(token: str) -> None:
     raise ValueError(f"non-finite JSON number is forbidden: {token}")
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
 
 
 __all__ = [

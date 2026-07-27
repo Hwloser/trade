@@ -1,7 +1,7 @@
 # Current Layout Inventory
 
-Audit date: 2026-07-27  
-Scope: Git-tracked source/config/test paths only  
+Audit date: 2026-07-27
+Scope: Git-tracked source/config/test paths only
 Data access: none
 
 ## Inventory Method

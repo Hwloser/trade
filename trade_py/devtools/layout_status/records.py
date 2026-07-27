@@ -157,6 +157,12 @@ class ExplicitRecordReader:
                 expected_digests[relative] = ""
             payload = self._read_relative(relative)
             record = parse_record(payload, path=relative, deadline=self._deadline)
+            if depth > 0 and record.references:
+                self._raise(
+                    "layout.status.non_root_references",
+                    ("Version-one evidence records may be referenced only by the root manifest."),
+                    relative,
+                )
             if expected_digest is not None and record.record_digest != expected_digest:
                 self._raise(
                     "layout.status.reference_digest",

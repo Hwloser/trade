@@ -24,6 +24,10 @@ from trade_py.devtools.layout_performance.evidence import (
     load_performance_evidence,
     render_evidence,
 )
+from trade_py.devtools.layout_performance.identity import (
+    capture_source_tree_digest,
+    runner_identity_digest,
+)
 from trade_py.devtools.layout_performance.models import (
     CapacityEvidence,
     IndexEvidence,
@@ -33,6 +37,7 @@ from trade_py.devtools.layout_performance.models import (
     RunnerIdentity,
     WebBuildEvidence,
 )
+from trade_py.devtools.layout_performance.probes import PROBE_NAMES
 from trade_py.devtools.layout_performance.processes import (
     PerformanceProcessError,
     ProcessOutcome,
@@ -46,11 +51,9 @@ DIGEST_B = "sha256:" + "b" * 64
 DIGEST_C = "sha256:" + "c" * 64
 
 
-def _metric(samples: int) -> MetricSummary:
-    return MetricSummary(
-        sample_count=samples,
-        p50_ms=20.0,
-        p95_ms=25.0,
+def _metric(samples: int, *, duration_ms: float = 20.0) -> MetricSummary:
+    return MetricSummary.summarize(
+        [duration_ms] * samples,
         peak_rss_bytes=32 * 1024 * 1024,
         module_count=100,
         module_digest=DIGEST_A,
@@ -58,20 +61,24 @@ def _metric(samples: int) -> MetricSummary:
 
 
 def _evidence(*, web_available: bool = True) -> PerformanceEvidence:
+    runner_fields: dict[str, Any] = {
+        "harness_digest": DIGEST_C,
+        "runner_image": f"local:{DIGEST_B}",
+        "platform": "test-linux",
+        "machine": "x86_64",
+        "cpu_count": 8,
+        "memory_limit_bytes": 16 * GIB,
+        "python_implementation": "CPython",
+        "python_version": "3.14.0",
+        "python_executable_digest": DIGEST_B,
+        "uv_lock_digest": DIGEST_C,
+        "frontend_lock_digest": DIGEST_A,
+        "node_version": "v22.0.0",
+        "npm_version": "11.0.0",
+    }
     runner = RunnerIdentity(
-        identity_digest=DIGEST_A,
-        runner_image=f"local:{DIGEST_B}",
-        platform="test-linux",
-        machine="x86_64",
-        cpu_count=8,
-        memory_limit_bytes=16 * GIB,
-        python_implementation="CPython",
-        python_version="3.14.0",
-        python_executable_digest=DIGEST_B,
-        uv_lock_digest=DIGEST_C,
-        frontend_lock_digest=DIGEST_A,
-        node_version="v22.0.0",
-        npm_version="11.0.0",
+        identity_digest=runner_identity_digest(runner_fields),
+        **runner_fields,
     )
     web = WebBuildEvidence(
         available=web_available,
@@ -111,13 +118,12 @@ def _evidence(*, web_available: bool = True) -> PerformanceEvidence:
     return PerformanceEvidence(
         generated_at="2026-07-27T12:00:00Z",
         source_commit="1" * 40,
+        source_tree_digest=DIGEST_B,
         runner=runner,
         cold_processes=15,
         warmups=5,
         warm_samples=30,
-        probes={
-            "root_help": ProbeEvidence(cold=_metric(15), warm=_metric(30)),
-        },
+        probes={name: ProbeEvidence(cold=_metric(15), warm=_metric(30)) for name in PROBE_NAMES},
         current_index=IndexEvidence(
             scale=1,
             source_count=10,
@@ -287,7 +293,9 @@ def test_capacity_proof_is_process_local_and_leaves_no_children() -> None:
     assert not evidence.cross_invocation_lease_claimed
 
 
-def test_evidence_round_trip_rejects_unknown_and_non_finite_json(tmp_path: Path) -> None:
+def test_evidence_round_trip_rejects_unknown_duplicate_and_non_finite_json(
+    tmp_path: Path,
+) -> None:
     baseline = tmp_path / "baseline.json"
     baseline.write_text(render_evidence(_evidence(), baseline=True), encoding="utf-8")
 
@@ -295,13 +303,84 @@ def test_evidence_round_trip_rejects_unknown_and_non_finite_json(tmp_path: Path)
 
     payload = json.loads(baseline.read_text())
     payload["unknown"] = True
-    baseline.write_text(json.dumps(payload), encoding="utf-8")
+    baseline.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="fields differ"):
+        load_performance_evidence(baseline, baseline=True)
+
+    baseline.write_text(
+        render_evidence(_evidence(), baseline=True).replace(
+            '"bridge_count": 0,',
+            '"bridge_count": 0,\n  "bridge_count": 1,',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
         load_performance_evidence(baseline, baseline=True)
 
     baseline.write_text('{"schema_version": NaN}', encoding="utf-8")
     with pytest.raises(ValueError, match="non-finite"):
         load_performance_evidence(baseline, baseline=True)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda payload: payload["runner"].__setitem__("platform", "forged-linux"),
+            "identity_digest",
+        ),
+        (
+            lambda payload: payload["probes"]["root_help"]["cold"].__setitem__("p95_ms", 1.0),
+            "p95_ms does not match",
+        ),
+        (
+            lambda payload: payload["synthetic_10x_index"].__setitem__("source_bytes", 9999),
+            "source bytes must be exactly 10x",
+        ),
+        (
+            lambda payload: payload.__setitem__("source_tree_digest", "forged"),
+            "source_tree_digest must be a canonical",
+        ),
+    ],
+)
+def test_evidence_rejects_forged_identity_metric_and_index(
+    tmp_path: Path,
+    mutate: Any,
+    message: str,
+) -> None:
+    path = tmp_path / "forged.json"
+    payload = _evidence().to_dict(baseline=True)
+    mutate(payload)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_performance_evidence(path, baseline=True)
+
+
+def test_source_tree_digest_binds_tracked_and_untracked_source(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    source = repo / "trade_py" / "domain.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q"), cwd=repo, check=True)
+    subprocess.run(("git", "add", "--", "trade_py/domain.py"), cwd=repo, check=True)
+    initial = capture_source_tree_digest(repo)
+
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    modified = capture_source_tree_digest(repo)
+    untracked = repo / "trade_py" / "new_rule.py"
+    untracked.write_text("ENABLED = True\n", encoding="utf-8")
+    with_untracked = capture_source_tree_digest(repo)
+
+    assert modified != initial
+    assert with_untracked != modified
 
 
 def test_committed_baseline_contains_the_complete_reviewed_matrix() -> None:
@@ -313,14 +392,7 @@ def test_committed_baseline_contains_the_complete_reviewed_matrix() -> None:
     assert baseline.cold_processes == 15
     assert baseline.warmups == 5
     assert baseline.warm_samples == 30
-    assert set(baseline.probes) == {
-        "console_help",
-        "domain_help",
-        "factory_construct",
-        "import_trade",
-        "import_trade_web",
-        "root_help",
-    }
+    assert set(baseline.probes) == set(PROBE_NAMES)
     assert all(item.cold.sample_count == 15 for item in baseline.probes.values())
     assert all(item.warm.sample_count == 30 for item in baseline.probes.values())
     assert baseline.current_index.scan_count == 1
@@ -345,10 +417,11 @@ def test_comparator_distinguishes_pass_regression_and_unavailable() -> None:
     assert passing.failure_class == "none"
     assert passing.exit_code == 0
 
-    slow_metric = replace(_metric(15), p95_ms=100.0)
+    slow_metric = _metric(15, duration_ms=100.0)
     regressed = replace(
         baseline,
         probes={
+            **baseline.probes,
             "root_help": ProbeEvidence(cold=slow_metric, warm=_metric(30)),
         },
     )
@@ -369,6 +442,34 @@ def test_comparator_distinguishes_pass_regression_and_unavailable() -> None:
     mismatched = compare_performance(baseline, dependency_mismatch)
     assert mismatched.status == "regression"
     assert "layout.performance.web.dependency_mismatch" in mismatched.violations
+
+    module_mismatch = replace(
+        baseline,
+        probes={
+            **baseline.probes,
+            "root_help": ProbeEvidence(
+                cold=replace(baseline.probes["root_help"].cold, module_digest=DIGEST_B),
+                warm=baseline.probes["root_help"].warm,
+            ),
+        },
+    )
+    changed_modules = compare_performance(baseline, module_mismatch)
+    assert changed_modules.status == "regression"
+    assert "layout.performance.root_help.cold.module_identity" in changed_modules.violations
+
+
+def test_evidence_integrity_requires_capacity_proofs() -> None:
+    incomplete = replace(
+        _evidence(),
+        capacity=replace(
+            _evidence().capacity,
+            ordinary_observed_max=0,
+            rss_refused=False,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="capacity proof"):
+        compare_performance(_evidence(), incomplete)
 
 
 def test_web_evidence_uses_temporary_root_and_invalidates_source_key(
@@ -606,6 +707,27 @@ def test_cli_classifies_capture_failure_and_preserves_completed_stages(
     assert payload["completed_stages"] == ["runner_identity", "startup_probes"]
     assert payload["partial_evidence"]["source_commit"] == "1" * 40
     assert not (tmp_path / "baseline.json").exists()
+
+
+def test_verify_rejects_baseline_commit_outside_repository_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    baseline = replace(_evidence(), source_commit="f" * 40)
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(render_evidence(baseline, baseline=True), encoding="utf-8")
+    monkeypatch.chdir(REPO_ROOT)
+    args = dev.make_parser().parse_args(
+        ["layout-performance", "verify", "--baseline", str(baseline_path)]
+    )
+
+    code = run_layout_performance_cli(args)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert payload["failure_class"] == "tool_failure"
+    assert payload["error"]["code"] == "layout.performance.process_exit"
 
 
 def test_process_failure_does_not_expose_child_output_or_inherited_secret(
