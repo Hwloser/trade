@@ -22,11 +22,7 @@ def compare_performance(
     violations: list[str] = []
     if baseline.runner.identity_digest != candidate.runner.identity_digest:
         violations.append("layout.performance.runner_mismatch")
-    if (
-        candidate.cold_processes != 15
-        or candidate.warmups != 5
-        or candidate.warm_samples != 30
-    ):
+    if candidate.cold_processes != 15 or candidate.warmups != 5 or candidate.warm_samples != 30:
         violations.append("layout.performance.sample_matrix")
     if set(baseline.probes) != set(candidate.probes):
         violations.append("layout.performance.probe_set")

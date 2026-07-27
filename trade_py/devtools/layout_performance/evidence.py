@@ -81,20 +81,21 @@ def load_performance_evidence(
         capacity=_parse_capacity(_object(payload["capacity"], "capacity")),
         bridge_count=_integer(payload, "bridge_count"),
         bridge_cumulative_ms=_number(payload, "bridge_cumulative_ms"),
-        duplicate_implementation_imports=_integer(
-            payload, "duplicate_implementation_imports"
-        ),
+        duplicate_implementation_imports=_integer(payload, "duplicate_implementation_imports"),
     )
 
 
 def render_evidence(evidence: PerformanceEvidence, *, baseline: bool) -> str:
-    return json.dumps(
-        evidence.to_dict(baseline=baseline),
-        ensure_ascii=True,
-        indent=2,
-        sort_keys=True,
-        allow_nan=False,
-    ) + "\n"
+    return (
+        json.dumps(
+            evidence.to_dict(baseline=baseline),
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    )
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -121,7 +122,7 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(
             raw,
-            parse_constant=lambda token: (_raise_non_finite(token)),
+            parse_constant=lambda token: _raise_non_finite(token),
         )
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(f"performance evidence is invalid JSON: {exc}") from exc
@@ -255,9 +256,7 @@ def _parse_capacity(payload: dict[str, Any]) -> CapacityEvidence:
         temp_refused=_boolean(payload, "temp_refused"),
         cleanup_timed_out=_boolean(payload, "cleanup_timed_out"),
         cleanup_survivors=_integer(payload, "cleanup_survivors"),
-        cross_invocation_lease_claimed=_boolean(
-            payload, "cross_invocation_lease_claimed"
-        ),
+        cross_invocation_lease_claimed=_boolean(payload, "cross_invocation_lease_claimed"),
     )
 
 

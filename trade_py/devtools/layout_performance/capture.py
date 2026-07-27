@@ -64,9 +64,7 @@ def capture_performance(
         capacity = ValidationCapacity(available_memory_bytes=detected_memory_bytes())
         probes = capture_probe_evidence(root, capacity=capacity)
         completed.append("startup_probes")
-        partial["probes"] = {
-            name: asdict(evidence) for name, evidence in sorted(probes.items())
-        }
+        partial["probes"] = {name: asdict(evidence) for name, evidence in sorted(probes.items())}
 
         current_index, synthetic_index = capture_index_evidence(
             root,

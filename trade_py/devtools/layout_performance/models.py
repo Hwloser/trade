@@ -130,9 +130,7 @@ class PerformanceEvidence:
 
     def to_dict(self, *, baseline: bool) -> dict[str, Any]:
         payload = asdict(self)
-        payload["schema_version"] = (
-            BASELINE_SCHEMA_VERSION if baseline else SCHEMA_VERSION
-        )
+        payload["schema_version"] = BASELINE_SCHEMA_VERSION if baseline else SCHEMA_VERSION
         return payload
 
 

@@ -279,10 +279,7 @@ def test_committed_baseline_contains_the_complete_reviewed_matrix() -> None:
     assert all(item.warm.sample_count == 30 for item in baseline.probes.values())
     assert baseline.current_index.scan_count == 1
     assert baseline.synthetic_10x_index.scan_count == 1
-    assert (
-        baseline.synthetic_10x_index.source_count
-        >= baseline.current_index.source_count * 10
-    )
+    assert baseline.synthetic_10x_index.source_count >= baseline.current_index.source_count * 10
     assert baseline.web.available
     assert baseline.web.no_change_cache_hit
     assert baseline.web.cache_invalidated
@@ -352,10 +349,7 @@ def test_web_evidence_uses_temporary_root_and_invalidates_source_key(
         **_kwargs: Any,
     ) -> ProcessOutcome:
         if argv[:2] == ("git", "ls-files"):
-            stdout = (
-                b"trade_web/frontend/package.json\0"
-                b"trade_web/frontend/src/App.tsx\0"
-            )
+            stdout = b"trade_web/frontend/package.json\0trade_web/frontend/src/App.tsx\0"
         else:
             build_roots.append(cwd)
             output = cwd / "dist" / "asset.js"

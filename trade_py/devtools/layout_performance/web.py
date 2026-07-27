@@ -215,9 +215,7 @@ def _run_build(
         env=environment,
     )
     if outcome.timed_out:
-        raise RuntimeError(
-            f"Web build exceeded {WEB_BUILD_TIMEOUT_SECONDS} seconds"
-        )
+        raise RuntimeError(f"Web build exceeded {WEB_BUILD_TIMEOUT_SECONDS} seconds")
     if outcome.cleanup_survivors:
         raise RuntimeError("Web build left residual processes")
     return outcome

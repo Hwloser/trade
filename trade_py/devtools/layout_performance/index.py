@@ -110,10 +110,7 @@ def _build_synthetic_repo(source_root: Path, target_root: Path) -> None:
             )
             source_bytes += len(source)
             file_count += 1
-            if (
-                source_bytes > MAX_SYNTHETIC_SOURCE_BYTES
-                or file_count > MAX_SYNTHETIC_FILES
-            ):
+            if source_bytes > MAX_SYNTHETIC_SOURCE_BYTES or file_count > MAX_SYNTHETIC_FILES:
                 raise RuntimeError("synthetic 10x source exceeds its reviewed budget")
             target = target_root / "synthetic" / f"r{replica:02d}" / relative
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -131,9 +131,7 @@ def _read_bounded(
                     "parent exited while a descendant retained the process group",
                 )
             if not events and parent_returncode is not None:
-                events = tuple(
-                    (key, selectors.EVENT_READ) for key in selector.get_map().values()
-                )
+                events = tuple((key, selectors.EVENT_READ) for key in selector.get_map().values())
             for key, _mask in events:
                 descriptor = int(key.fd)
                 try:
@@ -155,9 +153,11 @@ def _read_bounded(
                 break
         if process.poll() is None:
             process.wait(timeout=1)
-        return bytes(streams[process.stdout.fileno()][1]), bytes(
-            streams[process.stderr.fileno()][1]
-        ), timed_out
+        return (
+            bytes(streams[process.stdout.fileno()][1]),
+            bytes(streams[process.stderr.fileno()][1]),
+            timed_out,
+        )
     finally:
         selector.close()
 
