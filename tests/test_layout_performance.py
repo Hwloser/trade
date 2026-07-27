@@ -258,6 +258,43 @@ def test_evidence_round_trip_rejects_unknown_and_non_finite_json(tmp_path: Path)
         load_performance_evidence(baseline, baseline=True)
 
 
+def test_committed_baseline_contains_the_complete_reviewed_matrix() -> None:
+    baseline = load_performance_evidence(
+        REPO_ROOT / "tests" / "baselines" / "layout-performance.json",
+        baseline=True,
+    )
+
+    assert baseline.cold_processes == 15
+    assert baseline.warmups == 5
+    assert baseline.warm_samples == 30
+    assert set(baseline.probes) == {
+        "console_help",
+        "domain_help",
+        "factory_construct",
+        "import_trade",
+        "import_trade_web",
+        "root_help",
+    }
+    assert all(item.cold.sample_count == 15 for item in baseline.probes.values())
+    assert all(item.warm.sample_count == 30 for item in baseline.probes.values())
+    assert baseline.current_index.scan_count == 1
+    assert baseline.synthetic_10x_index.scan_count == 1
+    assert (
+        baseline.synthetic_10x_index.source_count
+        >= baseline.current_index.source_count * 10
+    )
+    assert baseline.web.available
+    assert baseline.web.no_change_cache_hit
+    assert baseline.web.cache_invalidated
+    assert baseline.web.cleanup_complete
+    assert baseline.capacity.queue_refused
+    assert baseline.capacity.rss_refused
+    assert baseline.capacity.temp_refused
+    assert baseline.capacity.cleanup_timed_out
+    assert baseline.capacity.cleanup_survivors == 0
+    assert not baseline.capacity.cross_invocation_lease_claimed
+
+
 def test_comparator_distinguishes_pass_regression_and_unavailable() -> None:
     baseline = _evidence()
     passing = compare_performance(baseline, baseline)

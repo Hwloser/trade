@@ -1,0 +1,185 @@
+{
+  "bridge_count": 0,
+  "bridge_cumulative_ms": 0.0,
+  "capacity": {
+    "available_cpu_count": 64,
+    "cleanup_survivors": 0,
+    "cleanup_timed_out": true,
+    "cross_invocation_lease_claimed": false,
+    "heavy_job_limit": 2,
+    "heavy_observed_max": 2,
+    "install_limit": 2,
+    "install_observed_max": 2,
+    "ordinary_observed_max": 4,
+    "ordinary_worker_limit": 4,
+    "queue_deadline_seconds": 120,
+    "queue_refused": true,
+    "rss_limit_bytes": 8589934592,
+    "rss_refused": true,
+    "temp_limit_bytes": 10737418240,
+    "temp_refused": true
+  },
+  "cold_processes": 15,
+  "current_index": {
+    "duration_ms": 15.168118,
+    "peak_rss_bytes": 25788416,
+    "scale": 1,
+    "scan_count": 1,
+    "source_bytes": 3550814,
+    "source_count": 350
+  },
+  "duplicate_implementation_imports": 0,
+  "generated_at": "2026-07-27T17:11:31.439572Z",
+  "probes": {
+    "console_help": {
+      "cold": {
+        "module_count": 128,
+        "module_digest": "sha256:282947da07142041665000739f4b090a93d88cc369e59677d8b6466d15eacaa2",
+        "p50_ms": 109.4408892095089,
+        "p95_ms": 112.48931977897882,
+        "peak_rss_bytes": 25788416,
+        "sample_count": 15
+      },
+      "warm": {
+        "module_count": 128,
+        "module_digest": "sha256:f55a6712a7412b3d450cebe907ee31de03ebbd122d706c934c60e1c3701ad9bd",
+        "p50_ms": 53.746258,
+        "p95_ms": 54.94428995,
+        "peak_rss_bytes": 25788416,
+        "sample_count": 30
+      }
+    },
+    "domain_help": {
+      "cold": {
+        "module_count": 149,
+        "module_digest": "sha256:e6854bd5c2fabb17078b0654512daadf9472091ec2271541a4fb2d33840b3ea9",
+        "p50_ms": 63.252491876482964,
+        "p95_ms": 64.43104669451714,
+        "peak_rss_bytes": 25788416,
+        "sample_count": 15
+      },
+      "warm": {
+        "module_count": 149,
+        "module_digest": "sha256:eb8b9be249a8a96234eadc4a74029dbda35761454f03ac1667d825adf7cb3c18",
+        "p50_ms": 0.599102,
+        "p95_ms": 0.69364995,
+        "peak_rss_bytes": 25788416,
+        "sample_count": 30
+      }
+    },
+    "factory_construct": {
+      "cold": {
+        "module_count": 447,
+        "module_digest": "sha256:bf3a793d66379374880ae16449cd2c151a88243252c6736fbaad679956d6ec8d",
+        "p50_ms": 427.8690256178379,
+        "p95_ms": 431.99139051139355,
+        "peak_rss_bytes": 52891648,
+        "sample_count": 15
+      },
+      "warm": {
+        "module_count": 447,
+        "module_digest": "sha256:4bbeb0836ef735f32aaa7f70318673e746457937ee3bd81c308379ad0c42ceb7",
+        "p50_ms": 37.141307,
+        "p95_ms": 45.61648539999999,
+        "peak_rss_bytes": 68157440,
+        "sample_count": 30
+      }
+    },
+    "import_trade": {
+      "cold": {
+        "module_count": 129,
+        "module_digest": "sha256:c61c0d619b0292536a5a86b155373a68b3fb002ac46ea23dcf0dc2ed40e8e9d3",
+        "p50_ms": 52.15802974998951,
+        "p95_ms": 53.150306828320026,
+        "peak_rss_bytes": 25788416,
+        "sample_count": 15
+      },
+      "warm": {
+        "module_count": 129,
+        "module_digest": "sha256:ac28391e090eae7e48b6789112a5e7e8fd91f03341a3d9128f61cbdd5f726373",
+        "p50_ms": 0.0002525,
+        "p95_ms": 0.0005358999999999995,
+        "peak_rss_bytes": 25788416,
+        "sample_count": 30
+      }
+    },
+    "import_trade_web": {
+      "cold": {
+        "module_count": 390,
+        "module_digest": "sha256:0f269b5da5d03343fbc41c4299976ca2eaf861bbbbb651d5e3cb982ab61292f4",
+        "p50_ms": 331.5020762383938,
+        "p95_ms": 359.9746296182275,
+        "peak_rss_bytes": 47042560,
+        "sample_count": 15
+      },
+      "warm": {
+        "module_count": 390,
+        "module_digest": "sha256:3db0a3d8f4664607f6d89a6fe8d26ab91889aae1b40f185dd5b8683f5f779c7f",
+        "p50_ms": 0.00017250000000000002,
+        "p95_ms": 0.0004058999999999992,
+        "peak_rss_bytes": 46841856,
+        "sample_count": 30
+      }
+    },
+    "root_help": {
+      "cold": {
+        "module_count": 128,
+        "module_digest": "sha256:282947da07142041665000739f4b090a93d88cc369e59677d8b6466d15eacaa2",
+        "p50_ms": 122.78085760772228,
+        "p95_ms": 124.77238141000271,
+        "peak_rss_bytes": 26742784,
+        "sample_count": 15
+      },
+      "warm": {
+        "module_count": 128,
+        "module_digest": "sha256:f55a6712a7412b3d450cebe907ee31de03ebbd122d706c934c60e1c3701ad9bd",
+        "p50_ms": 66.4671865,
+        "p95_ms": 68.027947,
+        "peak_rss_bytes": 26628096,
+        "sample_count": 30
+      }
+    }
+  },
+  "runner": {
+    "cpu_count": 64,
+    "frontend_lock_digest": "sha256:902d457e2f9544f46ba05fbcfcdbcda3ac7204ec51f520f7b9a7f616a76144f1",
+    "identity_digest": "sha256:58aed5ed25cf8c4df2cbdb0f412b0d3d325549ea4be69f2eb2d27faf3f895fb8",
+    "machine": "x86_64",
+    "memory_limit_bytes": 265765617664,
+    "node_version": "v22.22.0",
+    "npm_version": "11.14.1",
+    "platform": "Linux-5.4.143.bsk.8-amd64-x86_64-with-glibc2.28",
+    "python_executable_digest": "sha256:27dd984e24b8b2bff3c9d96745bbc8710f5ef0e9fbdb748f9321871cb008d191",
+    "python_implementation": "CPython",
+    "python_version": "3.14.3",
+    "runner_image": "local:sha256:c0c501c05a85ad53cbaf4028f75c078569dadda64ae8e793339096e05a3d98b0",
+    "uv_lock_digest": "sha256:fe385453c20961a915b5fa58222718ef59dbaa28166377a0275b9b9e7e6ab40a"
+  },
+  "schema_version": "trade.layout.performance-baseline.v1",
+  "source_commit": "d6307a625b90b8d3ce7b9f3650e7a9f170d3a4d3",
+  "synthetic_10x_index": {
+    "duration_ms": 144.164018,
+    "peak_rss_bytes": 25788416,
+    "scale": 10,
+    "scan_count": 1,
+    "source_bytes": 35508140,
+    "source_count": 3500
+  },
+  "warm_samples": 30,
+  "warmups": 5,
+  "web": {
+    "available": true,
+    "cache_invalidated": true,
+    "cache_key": "sha256:dc19f84c6c24f5895ddbf839438a67103ae7d1c196ec441d192709a43b4e00b5",
+    "cleanup_complete": true,
+    "cold_build_ms": 11170.544620603323,
+    "dependency_digest": "sha256:e85a87e36f02038cfcec504c26cf6d706cd5f8a697329cee41bf34a788dfbcd4",
+    "incremental_build_ms": 9940.352933481336,
+    "incremental_cache_key": "sha256:90613f248288121532e4679cf3bb60155480eae1a136a84cd33b017ec0976555",
+    "no_change_cache_hit": true,
+    "no_change_ms": 0.961889,
+    "output_digest": "sha256:5083a71083f865e01d0d969760ab8a2eae2c4233c06a9b7a4b9c331f077d2dc7",
+    "root": "trade_web/frontend",
+    "unavailable_reason": null
+  }
+}
