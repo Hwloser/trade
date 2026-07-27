@@ -131,13 +131,14 @@ The v1 causal relation SHALL be exact. A root command/query receives a new
 child command/event receives a new `message_id`, inherits its verified parent's
 `correlation_id` and sets `causation_id` to that parent's `message_id`.
 Transport retry or redelivery of the same logical envelope preserves all three
-identities and canonical envelope bytes; attempt metadata remains outside the
-canonical envelope. A newly submitted idempotent duplicate is a new root or
-child envelope under these rules, while any returned existing receipt preserves
-the original admitted envelope identities. Durable replay preserves the
-historical envelope identities; a message newly derived during replay follows
-the child rule and points to the replayed historical `message_id`. No adapter
-may accept caller payload values as trusted correlation or causation evidence.
+identities and exact `DurableEnvelopeProjectionV1` bytes; attempt metadata
+remains outside that projection. A newly submitted idempotent duplicate is a
+new root or child envelope under these rules, while any returned existing
+receipt preserves the original admitted envelope identities. Durable replay
+preserves the historical envelope identities and exact projection bytes; a
+message newly derived during replay follows the child rule and points to the
+replayed historical `message_id`. No adapter may accept caller payload values
+as trusted correlation or causation evidence.
 
 Platform message contracts SHALL describe an owner codec with an immutable
 descriptor binding owner namespace, schema name/version, payload purpose,
@@ -145,14 +146,55 @@ maximum canonical bytes, content policy and deterministic codec identity. This
 child SHALL supply only the Platform-owned descriptor value/validator and pure
 registry collision/freeze invariants; the later Platform foundation child SHALL
 implement the Bootstrap registry builder. Bootstrap SHALL assemble and freeze
-that registry before ingress, with unique keys. Kernel supplies only envelope
-composition and SHALL NOT own the descriptor or registry. A codec validates
-wire shape only and SHALL NOT confer authority, rights, publication, quality or
-PIT proof. The immutable-ref-only rule applies to cross-Context/canonical
-Platform envelopes. A Capture inbound adapter MAY boundedly receive/stage raw
-push, stream, import or provider input inside Capture, but external/raw provider,
-news, L2 or stream content SHALL cross the canonical boundary only as a
-committed owner-controlled Capture artifact reference.
+that registry before ingress, with unique keys and no more than 4,096
+descriptors. A 4,097th descriptor SHALL fail before ingress. Exact registry-key
+resolution SHALL use binary search over the immutable registry-key-sorted
+descriptor tuple, with at most 13 key comparisons, and SHALL NOT linearly scan
+all descriptors. Increasing the v1 capacity SHALL require a reviewed contract
+change rather than runtime configuration.
+Kernel supplies only envelope composition and SHALL NOT own the descriptor or
+registry. A codec validates wire shape only and SHALL NOT confer authority,
+rights, publication, quality or PIT proof. The immutable-ref-only rule applies
+to cross-Context/canonical Platform envelopes. A Capture inbound adapter MAY
+boundedly receive/stage raw push, stream, import or provider input inside
+Capture, but external/raw provider, news, L2 or stream content SHALL cross the
+canonical boundary only as a committed owner-controlled Capture artifact
+reference.
+
+Platform `CommandEnvelope` and `QueryEnvelope` SHALL be admission-local,
+non-wire and non-durable composites containing current verified authority and a
+process-local `Deadline`. They SHALL have no whole-object encoder or decoder.
+Their only durable/transport identity SHALL be the inert
+`DurableEnvelopeProjectionV1`, which contains exactly projection version 1,
+every `EnvelopeMeta` field, the complete `OwnerCodecDescriptor` identity and
+policy fields, and the exact owner canonical payload bytes. It SHALL exclude
+`ActorContext`, `Deadline`, remaining time, raw idempotency keys, keyed
+fingerprints, attempt counters, transport headers and framework state.
+
+Projection bytes SHALL start with ASCII
+`trade.durable-envelope-projection.v1`, one NUL byte, then these exact ordered
+components: projection version; metadata schema name/version; message namespace
+and value; correlation namespace and value; a one-byte causation presence
+marker and, when present, causation namespace and value; canonical envelope
+creation instant; descriptor owner namespace, schema name/version, payload
+purpose, maximum canonical bytes, content policy, digest algorithm and digest
+value; and exact canonical payload bytes. Each component SHALL be framed by an
+unsigned four-byte big-endian length. Integers SHALL use canonical positive
+base-10 ASCII, the presence marker SHALL be exactly byte `0` or `1`, and the
+whole projection SHALL be at most 65,536 bytes. Lengths and component count
+SHALL be validated before allocation. A descriptor's
+`max_canonical_bytes` SHALL remain a standalone payload ceiling; projection
+construction SHALL still reject framing plus metadata plus payload above
+65,536 bytes.
+
+Projection decoding SHALL yield only an authority-free
+`DurableEnvelopeProjectionV1`. It SHALL NOT construct a command/query envelope,
+verified actor or local `Deadline`. Execution after decode SHALL require exact
+descriptor resolution against the current frozen registry, owner-codec payload
+revalidation, separately verified current authority and a newly admitted local
+deadline. Changing only current authority or that fresh deadline SHALL NOT
+change projection bytes; changing projected metadata, descriptor identity or
+canonical payload SHALL change the projection or fail validation.
 
 #### Scenario: An EventBus event is mapped
 - **WHEN** compatibility code maps a durable legacy event
@@ -168,11 +210,23 @@ committed owner-controlled Capture artifact reference.
 
 #### Scenario: An envelope is redelivered or replayed
 - **WHEN** transport redelivers the same logical envelope or an operator replays a durable historical envelope
-- **THEN** the canonical message, correlation and causation identities remain unchanged and retry/replay attempt metadata stays outside the envelope
+- **THEN** the exact durable projection bytes and causal identities remain unchanged and retry/replay attempt metadata stays outside the projection
+
+#### Scenario: A whole admission envelope is serialized
+- **WHEN** generic or owner code attempts to encode `CommandEnvelope` or `QueryEnvelope` including its verified actor or local deadline
+- **THEN** serialization fails because only the authority-free durable projection has a public canonical codec
+
+#### Scenario: A durable projection is decoded for execution
+- **WHEN** a historical durable projection is decoded in another attempt or process
+- **THEN** it produces neither authority nor a remaining-time budget and cannot execute until trusted ingress attaches separately verified current authority and a fresh local deadline
 
 #### Scenario: Two codecs claim one wire identity
 - **WHEN** Bootstrap receives duplicate owner/schema/version/purpose descriptors or a codec identity is not deterministic
 - **THEN** registry assembly fails before command or event ingress starts
+
+#### Scenario: The codec registry exceeds its capacity
+- **WHEN** Bootstrap attempts to freeze 4,097 descriptors
+- **THEN** assembly fails before ingress rather than creating an unbounded or linearly scanned registry
 
 #### Scenario: A news body fits under the envelope limit
 - **WHEN** an owner codec is asked to inline external news content rather than a committed Capture artifact reference

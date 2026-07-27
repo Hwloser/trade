@@ -210,12 +210,26 @@ subject, policy and immutable input references.
 ### Requirement: Command and query envelopes SHALL use typed owner payloads
 
 Command and query envelopes SHALL compose Kernel metadata, trusted
-`ActorContext`, a finite deadline and one typed owner DTO. The pre-admission
-envelope SHALL expose deterministic canonical payload bytes and schema identity,
-but SHALL NOT expose or precompute a keyed command fingerprint. Platform
-ingress derives that fingerprint only after a stable idempotency result under
-the exact rules below. Envelopes SHALL NOT expose raw idempotency secrets, live
-callbacks, framework request objects or arbitrary payload dictionaries.
+`ActorContext`, a finite local `Deadline`, one `OwnerCodecDescriptor`, one
+typed owner DTO and its canonical payload bytes. They SHALL be
+admission-local, non-wire and non-durable composites with no whole-object
+encoder or decoder. Their authority-free durable identity SHALL be exactly the
+`DurableEnvelopeProjectionV1` defined by `kernel-primitives`; it SHALL contain
+only the complete metadata, complete codec descriptor identity/policy and exact
+canonical payload bytes, and SHALL exclude current actor authority, local
+deadline, remaining time and attempt state.
+
+Decoding a durable projection SHALL NOT produce an executable envelope,
+verified actor or deadline. Platform ingress SHALL resolve its exact descriptor
+against the current bounded frozen registry, revalidate the canonical payload,
+establish current authority from separate trusted evidence and admit a fresh
+local deadline before constructing a command/query envelope. The pre-admission
+composite SHALL expose deterministic canonical payload bytes and schema
+identity, but SHALL NOT expose or precompute a keyed command fingerprint.
+Platform ingress derives that fingerprint only after a stable idempotency
+result under the exact rules below. Envelopes SHALL NOT expose raw idempotency
+secrets, live callbacks, framework request objects or arbitrary payload
+dictionaries.
 
 Public command and idempotency fingerprints SHALL use exact
 `FingerprintV1 {algorithm, domain, key_version, value}` values. `algorithm`
@@ -350,6 +364,14 @@ shared transaction or cross-owner write is permitted.
 - **WHEN** a DTO contains a FastAPI request, Pydantic model, ORM object, DataFrame, connection, filesystem path or service object
 - **THEN** contract validation or the architecture guard rejects it before serialization
 
+#### Scenario: Current authority or a fresh deadline changes
+- **WHEN** the same durable projection is re-admitted with separately verified current authority or a newly admitted local deadline
+- **THEN** the durable canonical bytes remain unchanged while execution still uses only the current authority and fresh deadline
+
+#### Scenario: A durable projection is decoded directly
+- **WHEN** a consumer decodes historical metadata, codec identity and canonical payload bytes
+- **THEN** it receives an inert projection and cannot construct or execute a command/query envelope until trusted ingress performs descriptor resolution, payload validation, authority verification and deadline admission
+
 #### Scenario: A public observer guesses a low-entropy key
 - **WHEN** an observer has a receipt fingerprint and guesses a likely raw idempotency key
 - **THEN** the receipt exposes no unkeyed digest with which that guess can be verified offline
@@ -383,6 +405,27 @@ for an OperationReceipt. Platform and Processes SHALL link by opaque identity
 plus durable command/event handoff, not a shared transaction.
 The Platform-owned optional process link SHALL be `OpaqueId | None`; Platform
 SHALL NOT import the Processes-owned `ProcessId`.
+
+`OperationReceipt` SHALL NOT contain a deadline. The authoritative durable
+operation owner-deadline evidence SHALL be an internal immutable
+`OperationAdmissionDeadlineV1` owned by the future Platform persistence
+repository, containing exactly schema version 1, `operation_id`,
+`request_message_id`, `deadline: UtcInstant` and `accepted_at: UtcInstant`.
+It SHALL be created atomically with the command-admission claim, operation
+identity and initial receipt. Its operation/request/accepted-at values SHALL
+equal the receipt, its deadline SHALL NOT precede accepted-at, and a
+command-equivalent duplicate SHALL resolve the original unchanged record.
+It SHALL be retained for at least the common retention horizon of the operation
+claim and resolvable receipt; no member SHALL expire while another can still be
+replayed or inspected.
+
+An operation `deadline_exceeded` transition SHALL resolve that immutable
+admission record plus worker-exit or durable-write-fence evidence. A caller
+observation deadline, envelope creation time, fresh retry deadline or
+ProcessView deadline SHALL NOT replace or mutate operation admission evidence.
+The `platform-persistence-events-and-bootstrap-foundation` child SHALL
+implement and uniquely constrain the record before any durable operation
+writer is adopted. This child defines no repository or public query for it.
 
 Before a Platform or Processes child creates a repository, the parent
 architecture ownership matrix SHALL be governedly clarified to split Platform
@@ -423,6 +466,10 @@ process to owner `deadline_exceeded`.
 - **WHEN** an operation becomes completed, compensated, failed, cancelled or deadline-exceeded
 - **THEN** its terminal timestamp is set once and no later transition returns it to running or waiting
 
+#### Scenario: An operation reaches deadline-exceeded
+- **WHEN** the Platform owner terminalizes an operation for its owner deadline
+- **THEN** it resolves the immutable original OperationAdmissionDeadlineV1 and worker-exit or durable-write-fence evidence rather than using a caller observation or retry deadline
+
 #### Scenario: Caller observation expires while the owner still runs
 - **WHEN** the observation deadline expires before a newer owner state and the worker has neither exited nor been durably write-fenced
 - **THEN** the query reports `not_observed` while owner state remains non-terminal
@@ -449,7 +496,11 @@ view SHALL NOT execute a recovery action.
 Its public `deadline` SHALL be a canonical `UtcInstant` containing only the
 owner's declared wall-clock expiry evidence. Any local monotonic process budget
 SHALL remain owner-internal; decoding a `ProcessView` SHALL NOT construct,
-rebind or extend one.
+rebind or extend one. The deadline SHALL be immutable for one `process_id` in
+the same way as process type, triggering operation identity, causal tuple and
+creation time. V1 SHALL have no in-place deadline renewal. Work that needs a
+different owner deadline SHALL use a new causally linked process identity under
+an owner contract rather than silently changing a historical view.
 
 The top-level reason code SHALL be required for `blocked`, `retry_scheduled`,
 `failed`, `cancelled` and `deadline_exceeded`; optional for
@@ -488,6 +539,10 @@ neither authorize nor execute its action.
 #### Scenario: A process view is restored from durable bytes
 - **WHEN** a historical ProcessView is decoded after restart or in another process
 - **THEN** its deadline remains UTC evidence only and cannot be used as a reconstructed monotonic execution budget
+
+#### Scenario: A process transition changes deadline evidence
+- **WHEN** a later ProcessView for the same process identity has a different deadline
+- **THEN** transition validation rejects it rather than silently extending or shortening owner-deadline history
 
 ### Requirement: Status families SHALL remain orthogonal and closed
 
@@ -784,9 +839,12 @@ execution authority. The public `deadline` SHALL be the same canonical
 `UtcInstant` evidence as the linked control receipt, while the attempt consumes
 the separately admitted local monotonic `Deadline`. `control_id` SHALL resolve
 for the receipt retention period
-to an immutable actor-bearing `ControlReceipt` with the same request message,
-initiator, correlation, causation and UTC deadline. A mismatch SHALL be
-corruption. The
+to an immutable actor-bearing `ControlReceipt` whose `control_kind` is
+`shutdown` and whose `disposition` is `accepted`. Both records SHALL have the
+same control ID, operation/process target links, request message, initiator,
+correlation, causation, requested time and UTC deadline, and shutdown
+`finished_at` SHALL be no earlier than control `finished_at`. Any non-accepted
+disposition or mismatch SHALL be corruption. The
 causation field SHALL be absent in both records for a root control and equal the
 direct parent in both records for a child control. The
 optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require
@@ -845,6 +903,14 @@ bounded public API SHALL NOT perform an unbounded join after its deadline.
 #### Scenario: Shutdown completes
 - **WHEN** all owned work is terminal, durable receipts are committed and non-reentrant resources are released before the deadline
 - **THEN** exactly one completed shutdown receipt reports zero residual owners
+
+#### Scenario: Shutdown links a non-accepted control
+- **WHEN** a ShutdownReceipt names a shutdown ControlReceipt whose disposition is already-terminal, denied, not-found, unavailable or deadline-exceeded
+- **THEN** link validation rejects it as corruption because no accepted shutdown intent/outbox was admitted
+
+#### Scenario: Shutdown linkage differs from accepted control
+- **WHEN** any control ID, target link, request identity, causal identity, initiator attribution, requested time or UTC deadline differs, or shutdown finishes before control admission
+- **THEN** link validation rejects the pair as corruption
 
 #### Scenario: A stale owner writes after takeover
 - **WHEN** generation N+1 has durably taken over and generation N attempts a state or terminal-audit write

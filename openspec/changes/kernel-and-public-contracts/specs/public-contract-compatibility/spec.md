@@ -22,6 +22,15 @@ decoder SHALL NOT construct a local `Deadline` from that value. Floating-point
 numbers, `monotonic_expires_at`, receipt-finalization reserves and other
 process-clock state SHALL be forbidden on the v1 wire.
 
+`CommandEnvelope` and `QueryEnvelope` SHALL be admission-local composites, not
+public wire DTOs. Generic serialization and owner codecs SHALL reject either
+whole object. Only the exact `DurableEnvelopeProjectionV1` SHALL have a durable
+codec. That projection SHALL contain the complete `EnvelopeMeta`, complete
+`OwnerCodecDescriptor` identity/policy and exact canonical payload bytes under
+the framing defined by `kernel-primitives`; it SHALL contain no `ActorContext`,
+`Deadline`, remaining time or attempt state. Decoding it SHALL yield an inert
+projection and SHALL create neither executable authority nor a local budget.
+
 Any `ActorContext` encoded inside an operation, control or shutdown receipt
 SHALL have `assurance=unverified` and SHALL be attribution only. Encoding a
 verified receipt actor or decoding receipt attribution into executable
@@ -78,6 +87,14 @@ deep, integer and duplicate-key fixtures.
 #### Scenario: A public receipt carries process-local clock state
 - **WHEN** a receipt or view includes a monotonic float, `monotonic_expires_at`, a composite Deadline or a receipt-finalization reserve
 - **THEN** version 1 decoding rejects it and accepts only the declared UTC deadline evidence field
+
+#### Scenario: An admission-local envelope is passed to a public serializer
+- **WHEN** a caller attempts to encode a whole CommandEnvelope or QueryEnvelope
+- **THEN** the serializer rejects it and requires the authority-free DurableEnvelopeProjectionV1
+
+#### Scenario: A durable envelope projection is decoded
+- **WHEN** a public decoder accepts exact projected metadata, descriptor identity and canonical payload bytes
+- **THEN** it returns no verified actor or local Deadline and trusted ingress must separately establish both before execution
 
 #### Scenario: A public receipt claims verified actor assurance
 - **WHEN** an operation, control or shutdown receipt encodes `actor` or `initiator` with verified assurance

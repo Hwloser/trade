@@ -484,10 +484,67 @@ the boundary framework-free and auditable.
 
 ### 6. Define command, operation, process and query contracts
 
-`CommandEnvelope[T]` and `QueryEnvelope[T]` compose `EnvelopeMeta`,
-`ActorContext`, a deadline, and one typed owner DTO. Business command/query DTOs
-are not defined here. Serialization requires the owner codec; arbitrary
-`dict[str, Any]` payload admission is forbidden.
+`CommandEnvelope[T]` and `QueryEnvelope[T]` compose `EnvelopeMeta`, a currently
+verified `ActorContext`, one process-local `Deadline`, one
+`OwnerCodecDescriptor`, one typed owner DTO and its canonical payload bytes.
+They are admission-local, non-wire and non-durable composites. No generic or
+owner codec may encode or decode either whole object. Current authority and the
+local monotonic budget therefore cannot be transported, persisted, hashed or
+reconstructed from historical bytes. Business command/query DTOs are not
+defined here; arbitrary `dict[str, Any]` payload admission is forbidden.
+
+When an admitted logical message must be persisted, transported, retried or
+replayed, its only canonical identity is an inert, authority-free
+`DurableEnvelopeProjectionV1` with this exact ordered component set:
+
+```text
+projection_schema_version = 1
+EnvelopeMeta.schema_name
+EnvelopeMeta.schema_version
+EnvelopeMeta.message_id.namespace
+EnvelopeMeta.message_id.value
+EnvelopeMeta.correlation_id.namespace
+EnvelopeMeta.correlation_id.value
+EnvelopeMeta.causation_id presence byte
+EnvelopeMeta.causation_id.namespace and value when present
+EnvelopeMeta.envelope_created_at canonical UtcInstant
+OwnerCodecDescriptor.owner_namespace
+OwnerCodecDescriptor.schema_name
+OwnerCodecDescriptor.schema_version
+OwnerCodecDescriptor.payload_purpose
+OwnerCodecDescriptor.max_canonical_bytes
+OwnerCodecDescriptor.content_policy
+OwnerCodecDescriptor.codec_identity.algorithm
+OwnerCodecDescriptor.codec_identity.value
+canonical_payload exact bytes
+```
+
+Canonical projection bytes start with ASCII domain
+`trade.durable-envelope-projection.v1`, followed by one NUL byte, then each
+listed component framed as an unsigned four-byte big-endian length and its
+exact bytes. Positive integers use canonical base-10 ASCII; the causation
+presence component is exactly byte `0` or `1`; identifiers use their separate
+namespace/value components; instants use their sole canonical UTF-8 form; and
+descriptor enum/token components use their declared ASCII values. The payload
+component is the owner codec's already validated canonical byte sequence and
+is never decoded and re-encoded merely to form this projection. The projection
+excludes `ActorContext`, `Deadline`, wall-clock or monotonic remaining time,
+idempotency keys, keyed fingerprints, delivery attempts, retry/redelivery
+counters, transport headers and framework state. Component count and every
+framed length are validated before allocation, and the whole projection
+remains within the existing 65,536-byte canonical envelope budget. A
+descriptor's `max_canonical_bytes` remains its standalone owner-payload ceiling,
+not a promise that a 65,536-byte payload fits an envelope; projection
+construction fails when framing plus metadata plus payload exceeds the total
+budget.
+
+Decoding these bytes yields only a `DurableEnvelopeProjectionV1`; it does not
+yield a `CommandEnvelope`, `QueryEnvelope`, verified authority or execution
+budget. Before execution, trusted ingress resolves the exact descriptor
+against the current frozen registry, revalidates canonical payload with that
+owner codec, establishes current actor authority from trusted adapter
+evidence, admits a fresh local `Deadline`, and only then constructs an
+admission-local composite. Any failure is closed.
 
 Envelope causality is closed rather than adapter-defined:
 
@@ -500,9 +557,12 @@ Envelope causality is closed rather than adapter-defined:
 | Durable replay of historical envelope | preserved | preserved | preserved |
 | New message derived during replay | new | inherited from replayed envelope | replayed envelope `message_id` |
 
-Retry, redelivery and replay attempt metadata stays outside canonical envelope
-bytes. Caller payload values never establish trusted causal identity. An
-existing receipt returned to an idempotent duplicate keeps the original
+Transport retry, redelivery and durable replay preserve exact durable
+projection bytes. Changing only the currently verified actor or fresh local
+deadline does not change those bytes, while changing projected metadata,
+descriptor identity or canonical payload does. Attempt metadata stays outside
+the projection. Caller payload values never establish trusted causal identity.
+An existing receipt returned to an idempotent duplicate keeps the original
 admitted request message, correlation identity and optional direct-causation
 identity; it does not rewrite history to the duplicate request.
 
@@ -515,11 +575,20 @@ maximum canonical bytes (1-65,536), content policy
 as `ContentDigest` over the reviewed codec/schema manifest. Schema version is
 an integer 1-2,147,483,647.
 This child supplies only the descriptor value, descriptor validator and pure
-collision/freeze invariants. It does not supply a production registry builder.
+collision/freeze/lookup invariants. A frozen registry contains at most 4,096
+descriptors, rejects a 4,097th descriptor before ingress and resolves an exact
+registry key by binary search over its immutable sorted descriptor tuple, with
+at most 13 key comparisons rather than a linear scan. The cap is intentionally
+well above the audited zero-production-consumer starting point and expected
+Context/schema set while placing a deterministic ceiling on freeze memory and
+ingress lookup. Increasing it requires a reviewed schema version/change rather
+than runtime configuration. This child does not supply a production registry
+builder.
 The later `platform-persistence-events-and-bootstrap-foundation` child makes
 Bootstrap assemble and freeze the static registry before ingress. Assembly
 rejects duplicate owner/schema/version/purpose keys or non-deterministic codec
-identities. A codec validates wire shape only: registration grants no
+identities and proves the same capacity and lookup bound in the production
+composition root. A codec validates wire shape only: registration grants no
 authority, publication, source rights, quality or PIT evidence. The
 `immutable_ref_only` rule applies to cross-Context and canonical Platform
 envelopes. A Capture inbound adapter may boundedly receive and stage push,
@@ -568,6 +637,34 @@ Processes-owned `ProcessId`; Processes may wrap the same wire identity in its
 own contract. Process creation/linkage is coordinated by durable command/event
 handoff and owner-local transactions, never a shared Platform/Processes
 transaction.
+
+`OperationReceipt` intentionally has no `deadline` field. The durable home for
+operation owner-deadline evidence is instead the internal immutable
+`OperationAdmissionDeadlineV1` fact owned by the future Platform persistence
+repository:
+
+```text
+schema_version = 1
+operation_id
+request_message_id
+deadline: UtcInstant
+accepted_at: UtcInstant
+```
+
+That fact is atomically created with the command-admission claim, operation
+identity and initial receipt. Its operation/request/accepted-at values exactly
+match that receipt, `deadline >= accepted_at`, and a command-equivalent
+duplicate resolves the original fact without changing the deadline. It is not
+a public receipt or cross-Context query product. It is retained for at least
+the complete retention horizon of the operation claim and resolvable
+`OperationReceipt`; neither member may expire while the other can still be
+replayed or inspected. An operation `deadline_exceeded` transition must resolve
+this fact and the required worker-exit or durable-write-fence evidence. A
+caller observation deadline, envelope creation time or newly attached retry
+deadline cannot replace or mutate it. The
+`platform-persistence-events-and-bootstrap-foundation` child must implement and
+uniquely constrain this record before any durable operation writer is adopted;
+this contract child defines only its invariant and test-double boundary.
 
 This split follows the parent normative `platform-foundation` requirement and
 task 2.3, which assign command ingress and `OperationReceipt` to Platform, while
@@ -715,9 +812,12 @@ It intentionally exposes no idempotency fingerprint or workflow key. Duplicate
 handoff resolution is owner-internal; callers observe the stable `process_id`
 and `triggering_operation_id` without receiving Platform or Processes claim
 material. `deadline` is a canonical `UtcInstant` containing only the owning
-process's declared wall-clock expiry evidence. The owner retains any local
-monotonic execution budget outside `ProcessView`; a view decoder cannot
-construct or rebind one.
+process's declared wall-clock expiry evidence. It is immutable for one
+`process_id`, alongside process type, triggering operation, causal tuple and
+creation time. V1 has no in-place process deadline renewal product: work
+requiring another owner deadline creates a new causally linked process identity
+under its owner contract. The owner retains any local monotonic execution
+budget outside `ProcessView`; a view decoder cannot construct or rebind one.
 
 `reason_code` is required for `blocked`, `retry_scheduled`, `failed`,
 `cancelled` and `deadline_exceeded`; optional for `compensation_pending`; and
@@ -1057,11 +1157,16 @@ requested the control. It contains no credential, raw claim or executable
 authority. `deadline` is the declared UTC expiry copied from the linked
 control receipt, not a reconstructed local monotonic budget. `control_id` must
 resolve for the full receipt retention period to the immutable actor-bearing
-`ControlReceipt` with the same request message, initiator, correlation,
-causation and UTC deadline evidence; a mismatch is corruption. Causation is
-absent in both records for a root control and equals the direct parent in both
-records for a child control. The direct attribution copy keeps shutdown audit attribution available
-without a second read, while the linked control receipt proves the admission lifecycle.
+`ControlReceipt` whose `control_kind=shutdown` and
+`disposition=accepted`. The records must have the exact same control ID,
+operation/process target links, request message, initiator, correlation,
+causation, request time and UTC deadline evidence, and shutdown
+`finished_at >= control.finished_at`; any non-accepted disposition or mismatch
+is corruption. Causation is absent in both records for a root control and
+equals the direct parent in both records for a child control. The direct
+attribution copy keeps shutdown audit attribution available without a second
+read, while the linked accepted control receipt proves that durable shutdown
+intent/outbox admission actually occurred.
 The optional Platform `process_id` remains a non-semantic `OpaqueId` and does
 not import Processes contracts.
 
@@ -1624,6 +1729,14 @@ must still decide:
   recovery under its real unique constraint: equal bindings resolve one audit
   and receipt, conflicting bindings return `REPLAY_ADMISSION_CONFLICT`, and no
   database exception or duplicate row crosses the port;
+- that same Platform persistence child must retain the immutable
+  `OperationAdmissionDeadlineV1`, operation claim and resolvable
+  `OperationReceipt` under one common horizon and prove operation
+  `deadline_exceeded` resolves the original admission record rather than a
+  retry or observation deadline;
+- that same Platform foundation child must cap the frozen owner-codec registry
+  at 4,096 descriptors, reject overflow before ingress and use binary search
+  over an immutable sorted tuple with at most 13 key comparisons;
 - when the 300/3600/7200-second compatibility waits can become asynchronous
   receipt observation;
 - which Context first publishes a concrete immutable reference;
