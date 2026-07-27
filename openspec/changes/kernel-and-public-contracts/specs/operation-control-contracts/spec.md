@@ -965,14 +965,23 @@ create one `ShutdownLinkIntegrityObservationV1` and one outbox signal under an
 idempotency key derived from the exact safe owner namespace, owner instance,
 fence generation, control ID and request message ID. The bounded observation
 SHALL expose only that identity, reason, `attempt_count` and signal disposition
-`pending`, `delivered` or `delivery_failed`. It SHALL contain no credential,
-raw actor evidence, payload, path or mismatch field value. The signal handler
-SHALL make exactly one bounded delivery attempt, set `attempt_count=1`, and
-terminalize the disposition as `delivered` or `delivery_failed` with no retry
-or background continuation. Repeated or concurrent reads SHALL resolve the same
-observation/outbox and SHALL NOT create or attempt another signal. Delivery
-failure SHALL remain visible in this projection and in the Platform operator
-health query; it SHALL NOT alter the corruption QueryStatus or become success.
+`pending`, `claimed`, `delivered`, `delivery_failed` or
+`delivery_outcome_unknown`. It SHALL contain no credential, raw actor evidence,
+payload, path or mismatch field value. Before the external call, one owner
+transaction SHALL change `pending` to `claimed`, record the stable signal ID,
+current owner instance/fence, claim time and a finite claim expiry, and set
+`attempt_count=1`. Only that live claim MAY perform the one bounded external
+delivery call. A synchronous success or failure SHALL terminalize as
+`delivered` or `delivery_failed`. A crash before claim SHALL leave `pending`
+eligible for its first claim. A crash or lease expiry after claim but before a
+terminal commit SHALL terminalize the same observation as
+`delivery_outcome_unknown` without an automatic second external call. Repeated
+or concurrent reads SHALL resolve the same observation/outbox and SHALL NOT
+create or attempt another signal. Delivery failure and unknown outcome SHALL
+remain visible in this projection and in the Platform operator health query;
+they SHALL NOT alter the corruption QueryStatus or become success. Any later
+operator acknowledgment SHALL be a separate authorized owner contract, not an
+implicit retry or state rewrite by this query.
 The first observation transaction SHALL sample one trusted `UtcInstant` after
 the corrupt link resolves and use it for both the observation and
 `ErrorEnvelope.occurred_at`; repeated reads reuse that committed value. If the
@@ -988,8 +997,9 @@ corrupt shutdown completed, failed, missing or healthy.
 The future Platform foundation owns persistence, outbox delivery and operator
 health projection; this child owns the immutable values, idempotency-key
 derivation and pure composed-query/link-validation result. Runtime adoption
-SHALL remain blocked until those exactly-once-admission, one-attempt and
-delivery-failure fixtures pass. The
+SHALL remain blocked until exactly-once signal admission, claim fencing,
+pre-claim/post-claim/post-send crash, duplicate-read, delivery-failure,
+outcome-unknown and operator-health fixtures pass. The
 causation field SHALL be absent in both records for a root control and equal the
 direct parent in both records for a child control. The
 optional Platform process link SHALL be `OpaqueId | None` and SHALL NOT require
@@ -1064,6 +1074,10 @@ bounded public API SHALL NOT perform an unbounded join after its deadline.
 #### Scenario: Shutdown-link integrity delivery fails
 - **WHEN** the sole bounded signal attempt cannot deliver
 - **THEN** the observation terminalizes as `delivery_failed` with `attempt_count=1`, remains operator-visible and does not retry, continue in the background or make the corrupt shutdown healthy
+
+#### Scenario: Shutdown-link integrity delivery crashes after claim
+- **WHEN** the owner crashes after the durable claim and before a terminal delivery disposition commits
+- **THEN** claim expiry terminalizes the same observation as `delivery_outcome_unknown`, operators can distinguish the ambiguity, and no automatic second external call occurs
 
 #### Scenario: A stale owner writes after takeover
 - **WHEN** generation N+1 has durably taken over and generation N attempts a state or terminal-audit write

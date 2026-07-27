@@ -608,16 +608,45 @@ available for at least the full retention horizon of every durable projection,
 replay key and resolvable receipt that depends on them. Retained historical
 entries count toward the 4,096-entry bound. Retirement is permitted only after
 the owner proves no retained durable identity can reference that codec. The
-proof input is a complete generation-consistent
-`RequiredOwnerCodecManifestV1`, not a startup row scan. It contains at most
-4,096 sorted unique entries with exact registry key, expected codec identity,
-positive dependent-reference count and latest required retention instant. The
-future persistence owner updates that summary atomically with each dependent
-identity's visibility/retirement transaction. Bootstrap reads one complete
-generation under one finite local deadline, performs at most 4,096 times 13
-registry comparisons and never scans projection, replay, receipt or audit rows.
-Missing/corrupt/incomplete summary, exact binding mismatch, timeout or
-incompatible capacity returns
+V1 makes every codec-dependent durable projection, replay key, receipt
+dependency and retention identity Platform-persistence-owned. Processes stores
+only validated projection-independent handoff facts, immutable references and
+opaque Platform identities; it cannot persist owner canonical payload bytes,
+`DurableEnvelopeProjectionV1` bytes or codec manifests and cannot write through
+a Platform retention port. This preserves owner-local atomicity without a
+Platform/Processes shared transaction.
+
+The write-side proof is not one global hot counter and does not clone a complete
+manifest on every admission. Platform maintains exactly 16 deterministic
+retention shards. The first four bytes of SHA-256 over the length-framed durable
+dependent identity select one shard modulo 16. The dependent identity's
+visibility/retirement transaction touches at most its selected shard row for
+the exact registry key, uses at most three CAS attempts under the original
+deadline and fails the dependent transaction closed on exhaustion. Each row
+holds registry key, codec identity, shard index, positive reference count, a
+conservative retention high-water instant and monotonic shard revision. The
+high-water value may over-retain while a shard remains nonempty but can never
+retire early. One update never rewrites the other 15 shards or a 4,096-entry
+snapshot. The future Platform foundation owns these rows and concurrent
+hot-codec/load tests; this contract child defines no repository.
+
+Bootstrap or codec retirement closes ingress and retention-mutation admission,
+drains in-flight shard transactions, and holds the current Platform owner fence
+plus one exclusive retention-snapshot lease under one finite deadline. It reads
+one stable ordered 16-shard revision vector and boundedly aggregates at most
+`4,096 * 16` shard rows. In one Platform transaction it publishes an immutable
+`RequiredOwnerCodecManifestV1` snapshot whose header binds schema version,
+monotonic generation, owner instance/fence, entry count, exact
+source-shard-revision digest, exact ordered-entry digest and committed marker.
+Every sorted entry repeats the generation. Only after the header and all entries
+exist does that transaction switch the sole authoritative current-snapshot
+pointer. Bootstrap reads that pointer, header and matching entries in one
+transaction under the same closed gate/fence/lease and requires the source
+revision digest to equal the frozen 16-shard vector. It performs at most 4,096
+times 13 registry comparisons and never scans projection, replay, receipt or
+audit rows. A stale but internally complete owner/fence/source-revision
+generation, mixed generation, count/digest mismatch, absent pointer, exact
+binding mismatch, timeout or incompatible capacity returns
 `CODEC_REGISTRY_REQUIRED_CODEC_UNAVAILABLE` and blocks ingress. A
 request-scoped non-required missing identity remains `OWNER_CODEC_NOT_FOUND`
 and is never silently decoded by a newer version.
@@ -635,6 +664,19 @@ breach or noncanonical round trip is `OWNER_PAYLOAD_INVALID`. Binary lookup
 returns the executable binding, not an unexecutable descriptor. Capability
 objects, implementation names and callbacks never enter projection bytes, logs
 or public DTOs.
+
+Caller/readiness diagnostics remain redacted, but redaction does not erase
+operator actionability. The future authorized Platform health projection uses
+one bounded `MessageContractHealthObservationV1` with the public failure code,
+counts, a closed cause and a closed recovery action. Causes distinguish codec
+exception/type/size/round-trip/identity defects, projection malformed/overflow,
+manifest pointer/incomplete/digest/stale-fence/timeout defects, required binding
+missing/mismatch and registry duplicate/capacity/static-binding failures.
+Recovery is one of inspect codec, retry Bootstrap, repair snapshot, restore
+required codec, roll back codec release or reduce registry pressure. The
+observation contains no descriptor/key, actor, payload, callback, exception,
+credential or path. Runtime adoption waits for the Platform foundation health
+query; this child owns only the pure enum/value contract.
 
 Envelope causality is closed rather than adapter-defined:
 
@@ -1032,9 +1074,11 @@ recovery_hint
 ```
 
 `occurred_at` is `UtcInstant | None`. It is required for every v1 product
-except `REPLAY_AUDIT_CLOCK_UNAVAILABLE`, where it is forbidden because the
-trusted wall clock itself was unavailable. No historical, envelope, monotonic
-or fallback time may fill that absence.
+except the two closed trusted-clock failures
+`REPLAY_AUDIT_CLOCK_UNAVAILABLE` and
+`SHUTDOWN_LINK_INTEGRITY_CLOCK_UNAVAILABLE`, where it is forbidden because the
+owning trusted wall clock itself was unavailable. No historical, envelope,
+receipt, monotonic or fallback time may fill either absence.
 
 Reason codes are uppercase namespaced tokens and stable within a schema
 version. Categories are `invalid`, `denied`, `conflict`, `saturated`,
@@ -1328,15 +1372,26 @@ owner/instance/fence/control/request corruption identity atomically creates one
 `ShutdownLinkIntegrityObservationV1` and one outbox signal. This stable
 idempotency identity suppresses duplicate and concurrent reads. The redacted
 observation contains only that identity, the reason, `attempt_count` and
-`pending|delivered|delivery_failed`; credentials, actor evidence, payload,
-paths and mismatched field values are absent. The handler makes exactly one
-bounded delivery attempt and terminalizes at count 1 with no retry/background
-continuation. Delivery failure remains visible through the same projection and
-operator health query and does not alter the unavailable corruption response.
+`pending|claimed|delivered|delivery_failed|delivery_outcome_unknown`;
+credentials, actor evidence, payload, paths and mismatched field values are
+absent. Before external delivery, one owner transaction changes `pending` to
+`claimed`, records a stable signal ID, owner instance/fence, claim time and
+finite claim expiry, and sets `attempt_count=1`. Only that live claim may make
+the single bounded external call. Success/failure then commits `delivered` or
+`delivery_failed`. A crash before claim leaves `pending` and permits the first
+claim; a crash or lease expiry after claim but before a terminal commit changes
+the same observation to `delivery_outcome_unknown` without another external
+attempt. This makes possible loss or post-send ambiguity explicit instead of
+claiming exactly-once external delivery. Operators may inspect and acknowledge
+the stable signal under a later owner contract, but automatic/background retry
+is forbidden. Delivery failure and unknown outcome remain visible through the
+same projection and operator health query and do not alter the unavailable
+corruption response.
 The future Platform foundation owns its persistence/outbox/health delivery;
 this child owns the immutable values, pure idempotency derivation and composed
-result. Runtime adoption remains blocked until exactly-once admission,
-one-attempt, duplicate-read and delivery-failure fixtures pass.
+result. Runtime adoption remains blocked until exactly-once signal admission,
+claim fencing, pre-claim/post-claim/post-send crash, duplicate-read,
+delivery-failure and outcome-unknown fixtures pass.
 The first observation transaction samples trusted wall time once after link
 corruption resolves and stores that value on both the observation and error;
 repeated reads reuse it. Clock failure returns the distinct clockless

@@ -59,16 +59,20 @@ reported as successful cancellation.
   `trade.platform.contracts.messages` one authority-free binary
   `DurableEnvelopeProjectionV1` identity. Replay hashes those exact framed
   bytes; one owner-codec encode yields the typed DTO/byte equality product,
-  retained descriptors are proven by a bounded generation-consistent manifest
-  rather than startup row scans, and projection/registry failures use a closed
-  safe request/readiness diagnostic taxonomy.
+  retained descriptors are proven by Platform-owned bounded 16-shard
+  accounting plus one fenced authoritative generation/count/digest snapshot
+  rather than startup row scans, global hot counters, whole-manifest rewrites
+  or cross-owner transactions, and projection/registry failures use closed
+  safe caller/readiness products plus an authorized bounded operator
+  cause/action taxonomy.
 - Freeze the exact public DTO field correction: receipt actors become unverified
   attribution; only ControlReceipt, ShutdownReceipt and ProcessView retain UTC
   deadline evidence; OperationReceipt remains deadline-free and uses an
   internal immutable Platform admission-deadline contract. ShutdownReceipt can
   link only an exact accepted shutdown control and reports linkage corruption
-  through one unavailable query product plus an idempotent one-attempt
-  integrity observation.
+  through one unavailable query product plus an idempotent integrity
+  observation whose fenced claim allows at most one external call and whose
+  crash-ambiguous result is explicitly `delivery_outcome_unknown`.
 - Define owner-local operation and process admission-deadline facts plus
   process-local monotonic-clock-domain bindings. A live same-domain retry uses
   the original budget; restart or binding loss fails closed and cannot rebuild
@@ -78,7 +82,10 @@ reported as successful cancellation.
   idempotency claims, operation identity and the complete `OperationReceipt`
   lifecycle. Processes separately owns `ProcessStartKeyV1`/inbox claims,
   Process Manager workflow state and `ProcessView`; linkage uses an opaque ID
-  and never a shared transaction, secret or dual-writer receipt.
+  and never a shared transaction, secret or dual-writer receipt. All
+  codec-dependent durable projection bytes and retention identities remain
+  Platform-owned; Processes persists only projection-independent handoff facts,
+  immutable references and opaque Platform links.
 - Define an explicit legacy compatibility mapping inventory for current
   EventBus admission, `job_runs`, Web `/api/run`, Observatory error/artifact,
   CLI wait, and runtime shutdown surfaces. Data Operations remains an explicitly

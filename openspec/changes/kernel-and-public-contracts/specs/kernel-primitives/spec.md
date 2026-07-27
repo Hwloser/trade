@@ -58,8 +58,10 @@ remaining duration; wall-clock movement SHALL NOT extend a local wait.
 SHALL NOT be public wire values, durable fields or cross-process evidence.
 Public receipt/view fields named `deadline` SHALL contain only the canonical
 `UtcInstant` wall-clock evidence. Decoding that evidence SHALL NOT reconstruct,
-rebind, start or extend a monotonic budget; each executable attempt requires a
-new local `Deadline` admitted by its trusted boundary.
+rebind, start or extend a monotonic budget. Each newly admitted owner identity
+requires a new local `Deadline` from its trusted boundary; a retry for an
+existing owner identity SHALL instead resolve the exact original live
+monotonic-clock-domain binding and SHALL NOT create or resample a deadline.
 
 #### Scenario: A naive datetime is supplied
 - **WHEN** a caller constructs or decodes a time without timezone evidence
@@ -158,6 +160,14 @@ replay key and receipt that depends on it. Retained historical entries SHALL
 count toward 4,096. Retirement SHALL require owner proof that no retained
 durable identity references the codec; Bootstrap readiness SHALL fail when
 retention and the capacity bound cannot both be satisfied.
+All v1 codec-dependent durable projection bytes, replay keys, receipt
+dependencies and retention-accounting identities SHALL be owned by Platform
+persistence. Processes SHALL persist only validated projection-independent
+handoff facts, immutable references and opaque Platform identities; it SHALL
+NOT persist canonical owner payload bytes, `DurableEnvelopeProjectionV1` bytes,
+codec manifests or any second retention identity requiring an owner codec.
+Processes SHALL NOT write through a Platform codec-retention port or share the
+Platform transaction.
 The immutable local registry entry SHALL be a non-wire
 `RegisteredOwnerCodecV1` pairing exactly one descriptor with one typed
 `OwnerPayloadCodec[T]` encode/decode capability validated against that
@@ -286,32 +296,103 @@ dependent identity, payload, path or codec implementation.
 
 The future Platform persistence owner SHALL maintain a complete bounded
 `RequiredOwnerCodecManifestV1` instead of proving retention by scanning durable
-projections, replay keys or receipts at startup. It SHALL contain a generation
-and at most 4,096 immutable entries sorted by exact registry key. Each
+projections, replay keys or receipts at startup. Runtime write accounting SHALL
+use exactly 16 Platform-owned retention shards selected by the first four bytes
+of SHA-256 over the length-framed durable dependent identity modulo 16. A
+visibility or retirement transaction SHALL update at most one shard row for
+the referenced registry key, SHALL NOT clone or rewrite the complete manifest,
+and SHALL use at most three CAS attempts under the existing admission
+deadline. Exhaustion SHALL fail the dependent transaction closed. Each shard
+row SHALL contain the exact registry key and codec identity, shard index,
+positive retained-reference count, conservative latest-required-retention
+high-water mark and monotonic shard revision. The retention high-water mark
+MAY remain later than the current exact maximum while the shard count is
+positive, but SHALL never permit early codec retirement; the row is removed
+only when its count reaches zero after the retention horizon.
+
+Bootstrap and codec retirement SHALL first close ingress and codec-retention
+mutation admission, drain all in-flight shard transactions under the same
+finite local `Deadline`, and hold the current Platform owner fence plus one
+exclusive retention-snapshot lease. They SHALL then read one stable ordered
+16-shard revision vector and aggregate at most 4,096 times 16 shard rows. They
+SHALL publish one immutable
+`RequiredOwnerCodecManifestV1` snapshot in one Platform persistence
+transaction. The snapshot SHALL contain schema version 1, a monotonically
+increasing generation in 1..9,223,372,036,854,775,807, current owner instance
+and fence generation, exact entry count, exact source-shard-revision digest,
+exact ordered-entry digest, committed marker and at most 4,096 immutable
+entries sorted by exact registry key. Every entry SHALL repeat the snapshot
+generation. The same transaction SHALL atomically switch the sole
+authoritative current-snapshot pointer only after writing the complete header
+and entries. A pointer from another owner instance or fence, a non-committed
+header, mixed generation, count mismatch, source revision mismatch or digest
+mismatch SHALL be corruption; a stale but internally complete snapshot SHALL
+NOT satisfy readiness.
+
+Each
 `RequiredOwnerCodecManifestEntryV1` SHALL contain only owner namespace, schema
 name/version, payload purpose, exact codec identity, retained-reference count
 from 1 through 9,223,372,036,854,775,807 and latest required retention
-`UtcInstant`. A durable dependent identity SHALL increment or create its entry
-in the same owner-local transaction that makes the identity visible; final
-retirement SHALL decrement or remove it only in the transaction that makes the
-last dependent identity permanently unresolvable and only after its retention
-horizon. Duplicate keys, zero counts, incomplete generations or more than 4,096
-entries SHALL be corruption.
+`UtcInstant`, plus the exact snapshot generation. A durable dependent identity
+SHALL increment or create its one selected shard row in the same Platform
+owner-local transaction that makes the identity visible; final retirement
+SHALL decrement or remove that row only in the transaction that makes the
+dependent identity permanently unresolvable and only after its retention
+horizon. Duplicate keys, zero counts, incomplete generations or more than
+4,096 aggregate entries SHALL be corruption.
 
-Bootstrap SHALL read one complete manifest generation through a bounded
-Platform persistence port under one finite local `Deadline`. It SHALL compare
-at most 4,096 entries to the frozen registry, using at most 13 registry-key
-comparisons per entry. It SHALL NOT enumerate or scan durable projection,
-replay, receipt or audit rows. A missing manifest generation, timeout,
-incomplete/corrupt manifest, missing required registry key, descriptor/capability
-identity mismatch, or inability to satisfy both retention and the 4,096-entry
-registry limit SHALL block ingress with
+Bootstrap SHALL read the sole authoritative current-snapshot pointer and one
+complete matching manifest generation through a bounded Platform persistence
+port in one transaction under the same closed mutation gate, owner fence and
+exclusive snapshot lease. It SHALL require the snapshot source-revision digest
+to equal the exact stable 16-shard revision vector observed in that frozen
+window. It SHALL compare at most 4,096 entries to the frozen registry, using at
+most 13 registry-key comparisons per entry. It SHALL NOT enumerate or scan
+durable projection, replay, receipt or audit rows. A missing current pointer or
+generation, timeout, incomplete/corrupt/stale-fence or stale-source-revision
+manifest, missing required registry key, descriptor/capability identity
+mismatch, or inability to satisfy both retention and the 4,096-entry registry
+limit SHALL block ingress with
 `CODEC_REGISTRY_REQUIRED_CODEC_UNAVAILABLE`. Request-time lookup of an
 unregistered non-required identity SHALL remain `OWNER_CODEC_NOT_FOUND`.
 Descriptor/capability/manifest mismatch while freezing a proposed static
 registry entry SHALL instead block ingress with
 `CODEC_REGISTRY_BINDING_MISMATCH`, whether or not a historical manifest
 currently requires that key.
+
+Caller and readiness DTOs SHALL remain redacted as above. The future authorized
+Platform operator health query SHALL additionally expose one bounded
+`MessageContractHealthObservationV1` with the public failure code, descriptor
+count, manifest-entry count, one closed cause and one closed recovery action.
+The v1 cause set SHALL be exactly `codec_exception`,
+`codec_result_type_invalid`, `codec_output_too_large`,
+`codec_round_trip_mismatch`, `codec_identity_mismatch`,
+`projection_malformed`, `projection_too_large`,
+`manifest_pointer_missing`, `manifest_snapshot_incomplete`,
+`manifest_snapshot_digest_mismatch`, `manifest_snapshot_stale_fence`,
+`manifest_read_timeout`, `required_binding_missing`,
+`required_binding_identity_mismatch`, `registry_duplicate_key`,
+`registry_capacity_conflict` and `registry_static_binding_mismatch`.
+Recovery actions SHALL be exactly `inspect_owner_codec`,
+`retry_bootstrap`, `repair_manifest_snapshot`, `restore_required_codec`,
+`rollback_codec_release` or `reduce_registry_capacity_pressure`. This
+authorized observation SHALL contain no descriptor, registry key, actor,
+payload, callback, exception text, credential or path. Runtime adoption SHALL
+remain blocked until the named Platform foundation supplies this health query.
+The cause-to-action relation SHALL be exact:
+`codec_exception`, `codec_result_type_invalid`, `codec_output_too_large`,
+`codec_round_trip_mismatch`, `projection_malformed` and
+`projection_too_large` map to `inspect_owner_codec`;
+`manifest_pointer_missing`, `manifest_snapshot_incomplete` and
+`manifest_snapshot_digest_mismatch` map to `repair_manifest_snapshot`;
+`manifest_snapshot_stale_fence` and `manifest_read_timeout` map to
+`retry_bootstrap`; `required_binding_missing` maps to
+`restore_required_codec`; `codec_identity_mismatch`,
+`required_binding_identity_mismatch`, `registry_duplicate_key` and
+`registry_static_binding_mismatch` map to `rollback_codec_release`; and
+`registry_capacity_conflict` maps to
+`reduce_registry_capacity_pressure`. No arbitrary operator hint SHALL be
+accepted.
 
 #### Scenario: An EventBus event is mapped
 - **WHEN** compatibility code maps a durable legacy event
@@ -339,11 +420,23 @@ currently requires that key.
 
 #### Scenario: Bootstrap validates retained codec requirements
 - **WHEN** a complete required-codec manifest generation contains no more than 4,096 entries
-- **THEN** Bootstrap validates it under one finite deadline with at most 13 registry comparisons per entry and without scanning dependent durable rows
+- **THEN** Bootstrap closes retention mutation admission, drains in-flight shard transactions, holds the current owner fence and exclusive snapshot lease, publishes and reads the authoritative generation/count/digest-bound snapshot against the stable 16-shard revision vector, and validates it under one finite deadline with at most 13 registry comparisons per entry and without scanning dependent durable rows
 
 #### Scenario: A required historical codec is unavailable
 - **WHEN** the bounded manifest is absent, incomplete or corrupt, or any required key cannot resolve the exact executable codec identity
 - **THEN** Bootstrap returns `CODEC_REGISTRY_REQUIRED_CODEC_UNAVAILABLE`, blocks ingress and exposes only descriptor and manifest counts
+
+#### Scenario: One codec receives concurrent dependent identities
+- **WHEN** many Platform transactions make durable identities for the same codec visible
+- **THEN** each transaction updates only its deterministic one-of-16 shard under the original deadline, never clones the whole manifest and fails closed after at most three CAS attempts
+
+#### Scenario: A stale complete manifest is observed
+- **WHEN** a complete manifest points to a previous owner instance, fence, source-shard revision set or non-current generation
+- **THEN** Bootstrap rejects it as required-codec unavailable rather than treating internal completeness as current readiness evidence
+
+#### Scenario: Processes persists a handoff
+- **WHEN** Processes accepts a Platform-triggered workflow
+- **THEN** it stores only projection-independent facts, immutable references and opaque links and cannot persist owner canonical payload, durable projection bytes or write Platform codec-retention accounting
 
 #### Scenario: One typed payload becomes a durable projection
 - **WHEN** an envelope is constructed, projected and digested
