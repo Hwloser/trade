@@ -502,6 +502,11 @@ generation compare-and-swap, and one flag switching all scopes are forbidden.
 An operator confirms the scope and expected current generation; a stale
 expected generation fails without activation. The post-action diagnostic must
 observe the requested generation and evidence digest before the slice advances.
+These selector rules govern deployment cutover. They do not change the current
+local-development `trade web --build` and source-newer auto-build behavior in
+this layout child; that behavior remains a compatibility contract until a
+separate Web developer-workflow change versions it. Deployment activation never
+uses that mutable local build path as `WebBuildRef` evidence.
 
 ### Package discovery and installation model
 

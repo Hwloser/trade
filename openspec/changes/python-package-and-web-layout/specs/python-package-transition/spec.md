@@ -30,10 +30,11 @@ wheel digest, sorted member set and module origins.
 
 Each migrated logical module SHALL have an immutable authority record naming
 the legacy module, target module, semantic owner, contract generation,
-consumer-inventory digest, implementation digest, compatibility direction,
-state, rollback target and retirement condition. At most one module SHALL own
-business behavior, registries, singletons, handlers, repositories, resources
-or import-time side effects in a generation.
+`ConsumerInventoryRef`, implementation digest, compatibility direction,
+`LayoutActivationPlanV1`, `MigrationEvidenceRef`, state, rollback target and
+retirement condition. At most one module SHALL own business behavior,
+registries, singletons, handlers, repositories, resources or import-time side
+effects in a generation.
 
 A compatibility module SHALL forward explicitly from the legacy path to the
 target public module. Target modules SHALL NOT import legacy implementation,

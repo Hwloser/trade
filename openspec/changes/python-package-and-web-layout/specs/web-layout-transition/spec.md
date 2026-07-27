@@ -61,6 +61,11 @@ reversible between the old and target build. Static hosting SHALL preserve
 `/assets`, optional legacy `/static`, root response and non-API SPA deep-link
 fallback.
 
+Immutable `WebBuildRef` selection SHALL govern deployment cutover. Current
+local-development `trade web --build` and source-newer auto-build behavior
+SHALL remain compatible in this child and SHALL NOT be treated as deployment
+activation evidence.
+
 #### Scenario: Target Web build succeeds but assets are incomplete
 - **WHEN** `web/` emits `index.html` but a manifest-referenced asset is missing or its digest differs from the recorded build
 - **THEN** target-default activation fails and the prior Web build remains selected
