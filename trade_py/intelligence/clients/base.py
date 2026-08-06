@@ -36,7 +36,7 @@ USER_TEMPLATE = """分析以下A股市场新闻：
 {{
   "sentiment_score": <float -1.0到1.0，-1.0极负面，1.0极正面>,
   "sentiment_label": <"positive"|"neutral"|"negative">,
-  "event_type": <{event_types}>,
+  "event_type": <单个字符串，从这个列表里选一个：{event_types}>,
   "event_magnitude": <float 0.0到1.0，0.0微小影响，1.0重大影响>,
   "affected_sectors": <受影响行业列表，如["半导体","新能源"]>,
   "key_entities": <关键实体，公司/人物/政策名称列表>,
@@ -91,8 +91,17 @@ def parse_result(data: dict, model: str,
     sensitivity = str(data.get("time_sensitivity", "short_term"))
     if sensitivity not in {"immediate", "short_term", "medium_long"}:
         sensitivity = "short_term"
-    event_type = str(data.get("event_type", "other"))
+    # Models often answer with a list even though a single label is asked for;
+    # take the first entry rather than stringifying the list into "other".
+    raw_event = data.get("event_type", "other")
+    if isinstance(raw_event, (list, tuple)):
+        raw_event = raw_event[0] if raw_event else "other"
+    event_type = str(raw_event)
     if event_type not in _EVENT_TYPE_OPTIONS:
+        # Silent coercion here once hid a prompt bug that made every article
+        # land on "other"; log it so the next one surfaces immediately.
+        logger.warning("Unknown event_type %r from %s, coercing to 'other'",
+                       event_type, model)
         event_type = "other"
     return SentimentResult(
         sentiment_score=float(data.get("sentiment_score", 0.0)),
