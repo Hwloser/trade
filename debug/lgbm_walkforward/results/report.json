@@ -1,0 +1,51 @@
+{
+  "lightgbm": {
+    "days": 785,
+    "mean_ic": 0.0283,
+    "icir": 0.172,
+    "t_stat": 4.83,
+    "hit_rate": 0.55,
+    "quintile_spread_net": -0.00414
+  },
+  "best_single_factor": {
+    "days": 785,
+    "mean_ic": 0.0223,
+    "icir": 0.082,
+    "t_stat": 2.31,
+    "hit_rate": 0.536,
+    "quintile_spread_net": -0.00791
+  },
+  "equal_weight_blend": {
+    "days": 785,
+    "mean_ic": 0.0005,
+    "icir": 0.003,
+    "t_stat": 0.08,
+    "hit_rate": 0.52,
+    "quintile_spread_net": 0.00234
+  },
+  "shuffled_null": {
+    "days": 785,
+    "mean_ic": -0.0009,
+    "icir": -0.016,
+    "t_stat": -0.44,
+    "hit_rate": 0.492,
+    "quintile_spread_net": -0.00251
+  },
+  "feature_gain": {
+    "tech_volatility_20d": 244.6,
+    "tech_macd_cross": 239.6,
+    "tech_macd_hist": 207.9,
+    "tech_kdj_cross": 154.6,
+    "tech_kdj_d": 149.5,
+    "tech_ma_gap_5_20": 118.8,
+    "tech_rsi_14": 99.9,
+    "tech_volume_ratio_5_20": 92.2,
+    "tech_price_vs_ma20": 87.8,
+    "tech_kdj_j": 81.2,
+    "tech_kdj_k": 63.7
+  },
+  "verdict": {
+    "bar": "mean_ic>=0.02 and t_stat>=2 and quintile_spread_net>0",
+    "passed": false
+  }
+}
