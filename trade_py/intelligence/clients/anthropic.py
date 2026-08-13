@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 class AnthropicClient(BaseLLMClient):
     """Calls Claude via the Anthropic Messages API."""
 
-    MODEL = "claude-sonnet-5"
+    # MODEL = "claude-sonnet-5"
+    MODEL = "claude-haiku-4-5"
 
     @classmethod
     def factory_fields(cls) -> set[str]:
@@ -58,10 +59,20 @@ class AnthropicClient(BaseLLMClient):
         self._total_output_tokens += out_tok
         return raw, in_tok, out_tok
 
+    # USD per 1M tokens (input, output), matched by model-id prefix.
+    _PRICING = {
+        "claude-haiku": (1.00, 5.00),
+        "claude-sonnet": (3.00, 15.00),
+        "claude-opus": (5.00, 25.00),
+    }
+
     @property
     def estimated_cost(self) -> float:
-        # Claude Sonnet 5: $3.00/M input, $15.00/M output
-        return (self._total_input_tokens * 3.00 + self._total_output_tokens * 15.00) / 1_000_000
+        in_price, out_price = next(
+            (p for prefix, p in self._PRICING.items() if self.model.startswith(prefix)),
+            (3.00, 15.00),  # default to Sonnet pricing for unknown ids
+        )
+        return (self._total_input_tokens * in_price + self._total_output_tokens * out_price) / 1_000_000
 
     @property
     def token_usage(self) -> dict:
