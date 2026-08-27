@@ -433,6 +433,18 @@ def make_parser() -> argparse.ArgumentParser:
     p_kview.add_argument("--no-color", action="store_true", help="Disable ANSI colors in table output")
 
     # Unified meta-driven sync command (new)
+    p_edgar = sub.add_parser(
+        "edgar",
+        description="SEC EDGAR 申报摄入 (美股事件源: 8-K 重大事件等, 落 Bronze 层)",
+    )
+    edgar_sub = p_edgar.add_subparsers(dest="edgar_cmd")
+    p_edgar_sync = edgar_sub.add_parser("sync", description="按日拉取申报元数据 (幂等, 已有日期跳过)")
+    p_edgar_sync.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p_edgar_sync.add_argument("--end", default=None, help="YYYY-MM-DD (default: start)")
+    p_edgar_sync.add_argument("--forms", default="8-K", help="Comma-separated form types (default: 8-K)")
+    p_edgar_sync.add_argument("--overwrite", action="store_true", help="重新拉取已存在的日期")
+    p_edgar_sync.add_argument("--data-root", default=str(default_data_root()))
+
     p_sync_unified = sub.add_parser(
         "sync",
         description=(
@@ -1739,6 +1751,22 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.as_json,
             detail=args.detail,
         )
+
+    if args.command == "edgar":
+        if args.edgar_cmd != "sync":
+            parser.parse_args(["edgar", "--help"])
+            return 2
+        from datetime import date as _date
+
+        from trade_py.data.news.edgar import sync_edgar
+
+        start = _date.fromisoformat(args.start)
+        end = _date.fromisoformat(args.end) if args.end else start
+        forms = tuple(f.strip() for f in args.forms.split(",") if f.strip())
+        result = sync_edgar(args.data_root, start, end, forms=forms,
+                            overwrite=args.overwrite)
+        print(json.dumps({"ok": True, **result.to_dict()}, ensure_ascii=False))
+        return 0
 
     if args.command == "sync":
         return _dispatch_sync(args)
