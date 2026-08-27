@@ -6,7 +6,9 @@ import pandas as pd
 import pytest
 
 from trade_py.data.market.kline.providers import (
-    YfinanceKlineProvider, _finalize_frame, build_provider_chain,
+    YfinanceKlineProvider,
+    _finalize_frame,
+    build_provider_chain,
 )
 from trade_py.utils.market_symbols import detect_market
 
