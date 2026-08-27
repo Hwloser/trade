@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from trade_py.utils.a_share_symbols import ensure_a_share_symbol, infer_a_share_suffix
+from trade_py.utils.market_symbols import detect_market
 from trade_py.utils.retry import retry
 
 logger = logging.getLogger(__name__)
@@ -145,9 +146,12 @@ def _finalize_frame(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
     prev_close = prev_close.where(prev_close.notna() & (prev_close > 0), shifted_prev)
     # prev_close is a price — leave NaN, do not zero-fill.
     out["prev_close"] = pd.to_numeric(prev_close, errors="coerce")
-    total_shares = out["volume"] * 100
-    # vwap = amount / total_shares; when volume==0, vwap must be NaN, not 0.
-    out["vwap"] = out["amount"] / total_shares.where(total_shares > 0, other=float("nan"))
+    # A-share volume is stored in lots of 100 shares (手); US volume in shares.
+    lot_size = 100 if detect_market(symbol) == "cn" else 1
+    total_shares = out["volume"] * lot_size
+    # vwap = amount / total_shares; when volume==0 OR amount is missing (0),
+    # vwap must be NaN, not 0 — vwap is a price and zero-prices poison training.
+    out["vwap"] = out["amount"].where(out["amount"] > 0) / total_shares.where(total_shares > 0, other=float("nan"))
 
     # Drop rows that claim to be real trading days (volume > 0) but have NaN
     # prices in any OHLC column — these are parse/upstream failures that would
@@ -341,6 +345,51 @@ class TencentKlineProvider:
         return _finalize_frame(sym, raw)
 
 
+class YfinanceKlineProvider:
+    """US equity daily klines via Yahoo Finance (free, reachable from JP).
+
+    adjust="hfq"/"qfq" both map to auto_adjust=True (split+dividend adjusted,
+    the only adjustment Yahoo offers); "none" returns unadjusted prices.
+    Volume is kept in shares (see lot_size in _finalize_frame); amount is not
+    provided by Yahoo and stays 0 so vwap is NaN rather than fabricated.
+    """
+
+    name = "yfinance"
+
+    @staticmethod
+    @retry(delays=_RETRY_DELAYS_SEC, on=(Exception,))
+    def _fetch_raw(yf, ticker: str, start: str, end: str, adjust: str):
+        with _socket_timeout(30):
+            return yf.download(
+                ticker, start=start, end=end,
+                auto_adjust=adjust != "none",
+                progress=False, threads=False,
+            )
+
+    @staticmethod
+    def _normalize(raw: pd.DataFrame) -> pd.DataFrame:
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        df = raw.copy()
+        if isinstance(df.columns, pd.MultiIndex):  # single ticker still nests
+            df.columns = df.columns.get_level_values(0)
+        df.columns.name = None
+        df = df.reset_index()
+        df = df.rename(columns={c: str(c).lower() for c in df.columns})
+        keep = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in df.columns]
+        return df[keep].dropna(subset=["close"])
+
+    def fetch(self, symbol: str, start: str, end: str, adjust: str = "hfq") -> pd.DataFrame:
+        import yfinance as yf
+
+        ticker = str(symbol).strip().upper().replace(".", "-")
+        raw = self._fetch_raw(yf, ticker, start, end, adjust)
+        df = self._normalize(raw)
+        if df.empty:
+            return pd.DataFrame(columns=_COLUMN_ORDER)
+        return _finalize_frame(symbol, df)
+
+
 @dataclass
 class FetchResult:
     df: pd.DataFrame
@@ -390,6 +439,8 @@ def build_provider_chain(provider: str, data_root: str = "data") -> ProviderChai
     if provider == "tushare":
         from trade_py.data.market.kline.tushare import TushareKlineProvider
         return ProviderChain([TushareKlineProvider(data_root)])
+    if provider == "yfinance":
+        return ProviderChain([YfinanceKlineProvider()])
     # auto: try Tushare first (primary), then akshare, then sina, then baostock
     try:
         from trade_py.data.market.kline.tushare import TushareKlineProvider

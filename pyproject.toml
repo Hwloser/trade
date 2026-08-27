@@ -15,6 +15,7 @@ dependencies = [
     "tqdm>=4.0",
     "tushare>=1.2",
     "akshare>=1.12",
+    "yfinance>=0.2.50",
     "baostock>=0.8",
     "streamlit>=1.35",
     "schedule>=1.2",
