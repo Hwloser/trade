@@ -60,7 +60,9 @@ Testing/
 
 .venv
 node_modules/
-data/
+# Root data dir only — an unanchored data/ would swallow new source files
+# under trade_py/data/ (see the comment near the top of this file).
+/data/
 
 /engine/vendor/*
 
