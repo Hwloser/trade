@@ -1,0 +1,4 @@
+data/
+results/factor_panel.parquet
+results/oos_predictions.parquet
+results/daily_ic.csv
