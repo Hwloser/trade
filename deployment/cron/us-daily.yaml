@@ -50,7 +50,7 @@ steps:
       type: ssh2
       config:
         host: server
-    command: cd $PROJ && ./trade py data sentiment --rss-feeds catalog:us_public
+    command: cd $PROJ && ./trade py data sentiment --rss-feeds catalog:us_public --market us
 
   # ── 报告层(等四条输入腿全部完成)────────────────────────────
   - name: sentinel-report
