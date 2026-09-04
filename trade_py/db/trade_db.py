@@ -236,6 +236,12 @@ _CONFIG_JSON_SEEDS: list[tuple[str, str, str, str]] = [
         "全球公开 feed 目录",
     ),
     (
+        "catalog.feeds.us_public",
+        "trade_py/infra/config/feeds/us_public.json",
+        "catalog",
+        "美股公开 feed 目录",
+    ),
+    (
         "catalog.feeds.premium",
         "trade_py/infra/config/feeds/premium.json",
         "catalog",

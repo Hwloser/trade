@@ -444,6 +444,14 @@ def make_parser() -> argparse.ArgumentParser:
     p_edgar_sync.add_argument("--forms", default="8-K", help="Comma-separated form types (default: 8-K)")
     p_edgar_sync.add_argument("--overwrite", action="store_true", help="重新拉取已存在的日期")
     p_edgar_sync.add_argument("--data-root", default=str(default_data_root()))
+    p_edgar_f4 = edgar_sub.add_parser("form4", description="拉取内部人交易 (Form 4), 限定股票池以控制请求量")
+    p_edgar_f4.add_argument("--start", required=True, help="YYYY-MM-DD")
+    p_edgar_f4.add_argument("--end", default=None, help="YYYY-MM-DD (default: start)")
+    g_universe = p_edgar_f4.add_mutually_exclusive_group(required=True)
+    g_universe.add_argument("--tickers", default=None, help="Comma-separated tickers")
+    g_universe.add_argument("--universe-file", default=None, help="File with one ticker per line")
+    p_edgar_f4.add_argument("--overwrite", action="store_true", help="重新拉取已存在的日期")
+    p_edgar_f4.add_argument("--data-root", default=str(default_data_root()))
 
     p_sync_unified = sub.add_parser(
         "sync",
@@ -1753,18 +1761,28 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "edgar":
-        if args.edgar_cmd != "sync":
+        if args.edgar_cmd not in {"sync", "form4"}:
             parser.parse_args(["edgar", "--help"])
             return 2
         from datetime import date as _date
 
-        from trade_py.data.news.edgar import sync_edgar
-
         start = _date.fromisoformat(args.start)
         end = _date.fromisoformat(args.end) if args.end else start
-        forms = tuple(f.strip() for f in args.forms.split(",") if f.strip())
-        result = sync_edgar(args.data_root, start, end, forms=forms,
-                            overwrite=args.overwrite)
+        if args.edgar_cmd == "sync":
+            from trade_py.data.news.edgar import sync_edgar
+
+            forms = tuple(f.strip() for f in args.forms.split(",") if f.strip())
+            result = sync_edgar(args.data_root, start, end, forms=forms,
+                                overwrite=args.overwrite)
+        else:
+            from trade_py.data.news.edgar import sync_form4
+
+            if args.tickers:
+                tickers = args.tickers.split(",")
+            else:
+                tickers = Path(args.universe_file).read_text().split()
+            result = sync_form4(args.data_root, start, end, tickers=tickers,
+                                overwrite=args.overwrite)
         print(json.dumps({"ok": True, **result.to_dict()}, ensure_ascii=False))
         return 0
 

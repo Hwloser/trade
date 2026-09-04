@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_FEED_CATALOGS = (
     "global_public.json",
     "china_public.json",
+    "us_public.json",
     "rss.json",
     "premium.json",
 )

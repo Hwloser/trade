@@ -79,3 +79,75 @@ def test_ticker_map_prefers_primary_listing(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(edgar, "_get_json",
                         lambda _url: pytest.fail("cache not used"))
     assert edgar.load_cik_ticker_map(tmp_path)["1067983"] == "BRK-B"
+
+
+FORM4_XML = """<?xml version="1.0"?>
+<ownershipDocument>
+    <issuer>
+        <issuerCik>0001576427</issuerCik>
+        <issuerName>Criteo S.A.</issuerName>
+        <issuerTradingSymbol>CRTO</issuerTradingSymbol>
+    </issuer>
+    <reportingOwner>
+        <reportingOwnerId>
+            <rptOwnerCik>0002148390</rptOwnerCik>
+            <rptOwnerName>McGogney Connor</rptOwnerName>
+        </reportingOwnerId>
+        <reportingOwnerRelationship>
+            <isDirector>0</isDirector>
+            <isOfficer>1</isOfficer>
+            <officerTitle>Chief Financial Officer</officerTitle>
+        </reportingOwnerRelationship>
+    </reportingOwner>
+    <nonDerivativeTable>
+        <nonDerivativeTransaction>
+            <transactionDate><value>2026-08-24</value></transactionDate>
+            <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+            <transactionAmounts>
+                <transactionShares><value>671</value></transactionShares>
+                <transactionPricePerShare><value>17.37</value></transactionPricePerShare>
+                <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode>
+            </transactionAmounts>
+            <postTransactionAmounts>
+                <sharesOwnedFollowingTransaction><value>185887</value></sharesOwnedFollowingTransaction>
+            </postTransactionAmounts>
+        </nonDerivativeTransaction>
+    </nonDerivativeTable>
+</ownershipDocument>"""
+
+
+def test_parse_form4_xml() -> None:
+    rows = edgar.parse_form4_xml(FORM4_XML)
+    assert len(rows) == 1
+    t = rows[0]
+    assert t["ticker"] == "CRTO"
+    assert t["issuer_cik"] == "1576427"
+    assert t["owner_title"] == "Chief Financial Officer"
+    assert t["is_officer"] and not t["is_director"]
+    assert t["code"] == "S" and t["acquired_disposed"] == "D"
+    assert t["shares"] == 671 and t["price"] == 17.37
+    assert t["value_usd"] == pytest.approx(671 * 17.37)
+    assert t["shares_after"] == 185887
+
+
+def test_fetch_form4_day_filters_by_issuer(monkeypatch) -> None:
+    hits = [
+        ("0001-26-000001:wk-form4_1.xml",
+         {"adsh": "0001-26-000001", "ciks": ["0002148390", "0001576427"],
+          "file_date": "2026-08-25"}),
+        ("0001-26-000002:other.xml",
+         {"adsh": "0001-26-000002", "ciks": ["0009999999", "0008888888"],
+          "file_date": "2026-08-25"}),
+    ]
+    fetched: list[str] = []
+    monkeypatch.setattr(edgar, "_iter_form_hits", lambda form, day: iter(hits))
+    monkeypatch.setattr(edgar, "_get_text",
+                        lambda url: (fetched.append(url), FORM4_XML)[1])
+    monkeypatch.setattr(edgar.time, "sleep", lambda _s: None)
+
+    rows = edgar.fetch_form4_day(date(2026, 8, 25), issuer_ciks={"1576427"})
+    assert len(rows) == 1                      # non-universe filing not fetched
+    assert len(fetched) == 1
+    assert "1576427" in fetched[0]
+    assert rows[0]["adsh"] == "0001-26-000001"
+    assert rows[0]["ticker"] == "CRTO"
